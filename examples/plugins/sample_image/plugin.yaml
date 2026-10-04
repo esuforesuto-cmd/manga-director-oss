@@ -1,0 +1,6 @@
+name: sample-image
+version: 1.0.0
+description: Adds a deterministic sample image provider.
+entry_point: sample_image:SampleImagePlugin
+dependencies: []
+enabled: true

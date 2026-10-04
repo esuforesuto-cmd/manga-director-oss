@@ -1,0 +1,7 @@
+id: runtime-example
+name: Runtime Example
+version: 1.0.0
+author: manga-director contributors
+license: MIT
+description: Uses the built-in Extension only to demonstrate validator caching.
+entry_point: manga_director.sdk.extension:Extension

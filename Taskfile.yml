@@ -1,0 +1,9 @@
+version: '3'
+tasks:
+  format: {cmd: python -m ruff format src tests}
+  lint: {cmd: python -m ruff check .}
+  typecheck: {cmd: python -m mypy src}
+  test: {cmd: python -m pytest}
+  coverage: {cmd: python -m pytest --cov=manga_director --cov-report=term-missing}
+  build: {cmd: python -m build}
+  verify: {deps: [lint, typecheck, test, build]}

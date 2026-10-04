@@ -1,0 +1,33 @@
+"""Measure redacted Knowledge Evolution projection construction."""
+
+from time import perf_counter
+
+from manga_director.adapters.runtime import LLMProviderRuntime
+from manga_director.domain.project import Page, Project
+from manga_director.production import (
+    CollaborationPlanningService,
+    DirectorFoundationService,
+    DirectorPlanningService,
+    KnowledgeService,
+    PlanningService,
+    ProviderOrchestrator,
+    V31FoundationService,
+    WorkflowPlanner,
+)
+from manga_director.repositories import InMemoryRepository
+
+
+def run(iterations: int = 500) -> float:
+    repository = InMemoryRepository()
+    repository.save(Project(id="benchmark", title="Benchmark", pages=[Page(page_number=1)]))
+    planning = PlanningService(
+        planner=WorkflowPlanner(), providers=ProviderOrchestrator(LLMProviderRuntime())
+    )
+    foundation = DirectorPlanningService(
+        DirectorFoundationService(planning, KnowledgeService(repository)), planning
+    )
+    service = V31FoundationService(foundation, CollaborationPlanningService(foundation), repository)
+    started = perf_counter()
+    for _ in range(iterations):
+        service.knowledge_evolution_dashboard()
+    return perf_counter() - started

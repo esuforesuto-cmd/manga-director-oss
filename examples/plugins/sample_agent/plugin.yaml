@@ -1,0 +1,6 @@
+name: sample-agent
+version: 1.0.0
+description: Adds a support-only tone check agent.
+entry_point: sample_agent:SampleAgentPlugin
+dependencies: []
+enabled: true

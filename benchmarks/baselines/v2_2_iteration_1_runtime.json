@@ -1,0 +1,10 @@
+{
+  "plugin_loading": 0.08,
+  "extension_loading": 0.02,
+  "event_dispatch": 0.03,
+  "configuration_load": 0.01,
+  "diagnostics": 0.02,
+  "multiplier": 8.0,
+  "minimum_threshold_seconds": 0.1,
+  "method": "provider-free local runtime smoke baseline; thresholds detect material regressions, not cross-machine performance targets"
+}

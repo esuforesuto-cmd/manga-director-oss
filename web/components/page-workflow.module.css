@@ -1,0 +1,5 @@
+.state { background: #dfeaff; border-radius: 999px; color: #17477f; font-weight: 800; padding: .45rem .75rem; }
+.stages { display: flex; flex-wrap: wrap; gap: .5rem; list-style: none; margin: 0 0 1.5rem; padding: 0; }
+.stages li { background: #e7ebf2; border-radius: 999px; font-size: .82rem; padding: .35rem .6rem; }
+.panel { background: white; border: 1px solid #d7dce5; border-radius: .6rem; margin: 1rem 0; padding: 1.25rem; }
+.panel pre { background: #1d2433; border-radius: .45rem; color: #dfe6f3; max-height: 22rem; overflow: auto; padding: 1rem; white-space: pre-wrap; }

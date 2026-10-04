@@ -1,0 +1,27 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "manga-director-6.0.0",
+  "documentNamespace": "https://github.com/manga-director/manga-director/sbom/6.0.0",
+  "creationInfo": {
+    "created": "2026-07-29T00:00:00Z",
+    "creators": ["Tool: manga-director release review"]
+  },
+  "packages": [
+    {"SPDXID": "SPDXRef-Package-manga-director", "name": "manga-director", "versionInfo": "6.0.0", "downloadLocation": "NOASSERTION", "licenseConcluded": "MIT", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"},
+    {"SPDXID": "SPDXRef-Package-pydantic", "name": "pydantic", "versionInfo": ">=2.7,<3", "downloadLocation": "NOASSERTION", "licenseConcluded": "NOASSERTION", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"},
+    {"SPDXID": "SPDXRef-Package-pyyaml", "name": "PyYAML", "versionInfo": ">=6.0,<7", "downloadLocation": "NOASSERTION", "licenseConcluded": "MIT", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"},
+    {"SPDXID": "SPDXRef-Package-typer", "name": "typer", "versionInfo": ">=0.12,<1", "downloadLocation": "NOASSERTION", "licenseConcluded": "NOASSERTION", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"},
+    {"SPDXID": "SPDXRef-Package-sqlalchemy", "name": "SQLAlchemy", "versionInfo": ">=2.0,<3", "downloadLocation": "NOASSERTION", "licenseConcluded": "MIT", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"},
+    {"SPDXID": "SPDXRef-Package-fastapi", "name": "FastAPI", "versionInfo": ">=0.110,<1", "downloadLocation": "NOASSERTION", "licenseConcluded": "NOASSERTION", "licenseDeclared": "MIT", "copyrightText": "NOASSERTION"}
+  ],
+  "relationships": [
+    {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-Package-manga-director"},
+    {"spdxElementId": "SPDXRef-Package-manga-director", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-pydantic"},
+    {"spdxElementId": "SPDXRef-Package-manga-director", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-pyyaml"},
+    {"spdxElementId": "SPDXRef-Package-manga-director", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-typer"},
+    {"spdxElementId": "SPDXRef-Package-manga-director", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-sqlalchemy"},
+    {"spdxElementId": "SPDXRef-Package-manga-director", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-fastapi"}
+  ]
+}

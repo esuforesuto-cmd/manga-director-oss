@@ -1,0 +1,6 @@
+name: sample-repository
+version: 1.0.0
+description: Declares a future repository adapter contribution.
+entry_point: sample_repository:SampleRepositoryPlugin
+dependencies: []
+enabled: true

@@ -1,0 +1,5 @@
+.tableWrap { background: white; border: 1px solid #d7dce5; border-radius: .6rem; overflow-x: auto; }
+.tableWrap table { border-collapse: collapse; min-width: 560px; width: 100%; }
+.tableWrap caption { font-size: 1.1rem; font-weight: 700; padding: 1rem; text-align: left; }
+.tableWrap th, .tableWrap td { border-top: 1px solid #d7dce5; padding: .8rem 1rem; text-align: left; }
+.tableWrap th { color: #59667a; font-size: .85rem; }

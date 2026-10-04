@@ -1,0 +1,9 @@
+.summary { display: grid; gap: 1px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 2rem; overflow: hidden; border: 1px solid #d7dce5; border-radius: .6rem; }
+.summary div { background: white; padding: 1rem; }
+.summary dt { color: #59667a; font-size: .85rem; }
+.summary dd { font-size: 1.1rem; font-weight: 700; margin: .35rem 0 0; }
+.chapters { display: grid; gap: .7rem; list-style: none; padding: 0; }
+.chapters a { align-items: center; background: white; border: 1px solid #d7dce5; border-radius: .45rem; display: flex; justify-content: space-between; padding: 1rem; text-decoration: none; }
+.chapters span { color: #59667a; }
+.history { background: #1d2433; border-radius: .45rem; color: #dfe6f3; font-family: ui-monospace, monospace; font-size: .8rem; max-height: 16rem; overflow: auto; padding: 1.2rem 1.2rem 1.2rem 2.5rem; }
+@media (max-width: 720px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

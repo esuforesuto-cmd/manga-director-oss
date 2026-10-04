@@ -1,0 +1,14 @@
+{
+  "scenario": "v6_0_platform_kernel",
+  "benchmark_module": "benchmarks.v6_0_platform_rc1",
+  "target_version": "6.0.0",
+  "iterations": 500,
+  "execution_scope": "local-only",
+  "page_scope": "single-page",
+  "operation_mode": "read-only, non-executing",
+  "persistence": "none",
+  "providers": "none",
+  "timing_threshold": null,
+  "cross_version_comparison": false,
+  "method": "provider-free local Platform Kernel baseline manifest; metadata only, with no fixed performance threshold or cross-version comparison"
+}

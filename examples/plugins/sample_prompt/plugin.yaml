@@ -1,0 +1,6 @@
+name: sample-prompt
+version: 1.0.0
+description: Declares a Markdown prompt template contribution.
+entry_point: sample_prompt:SamplePromptPlugin
+dependencies: []
+enabled: true

@@ -1,0 +1,10 @@
+{
+  "large_project": 0.01,
+  "repository_index": 0.01,
+  "database_query": 0.01,
+  "batch_resume": 0.15,
+  "workflow_scale": 0.02,
+  "multiplier": 8.0,
+  "minimum_threshold_seconds": 0.1,
+  "method": "provider-free local smoke baseline; thresholds detect material regressions, not cross-machine performance targets"
+}
