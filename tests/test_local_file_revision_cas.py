@@ -13,7 +13,7 @@ from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.local_file_durability import (
     LocalFileDurabilityError,
     StaleRevisionError,
-    WindowsProjectCommitFence,
+    _select_project_commit_fence,
 )
 
 
@@ -31,8 +31,8 @@ def _renamed(project: Project, title: str) -> Project:
     return project.model_copy(update={"title": title}, deep=True)
 
 
-def _hold_fence(identity: str, ready: multiprocessing.Queue[bool]) -> None:
-    with WindowsProjectCommitFence(identity, timeout_ms=1_000):
+def _hold_fence(root: Path, project_id: str, ready: multiprocessing.Queue[bool]) -> None:
+    with _select_project_commit_fence(root, project_id, timeout_ms=1_000):
         ready.put(True)
         time.sleep(0.5)
 
@@ -73,20 +73,22 @@ def test_stale_snapshot_fails_before_authoritative_replacement(tmp_path: Path) -
     assert repository.load("durable-demo").title == "First"
 
 
-def test_project_commit_fence_contends_and_repeated_release_is_safe() -> None:
-    identity = "Local\\MangaDirectorTestRevisionFence"
+def test_project_commit_fence_contends_and_repeated_release_is_safe(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    root.mkdir()
+    project_id = "durable-demo"
     ready: multiprocessing.Queue[bool] = multiprocessing.Queue()
-    holder = multiprocessing.Process(target=_hold_fence, args=(identity, ready))
+    holder = multiprocessing.Process(target=_hold_fence, args=(root, project_id, ready))
     holder.start()
     assert ready.get(timeout=2) is True
     try:
         with pytest.raises(LocalFileDurabilityError, match="project_commit_fence_contended"):
-            with WindowsProjectCommitFence(identity, timeout_ms=1):
+            with _select_project_commit_fence(root, project_id, timeout_ms=1):
                 pass
     finally:
         holder.join(timeout=2)
     assert holder.exitcode == 0
-    first = WindowsProjectCommitFence(identity, timeout_ms=50)
+    first = _select_project_commit_fence(root, project_id, timeout_ms=50)
     with first:
         pass
     first.release()

@@ -514,11 +514,12 @@ def _assert_private_path(path: Path, parent: Path) -> None:
 
 def _is_link_or_reparse_point(path: Path) -> bool:
     try:
-        mode = path.lstat().st_mode
-    except FileNotFoundError:
+        status = path.lstat()
+    except OSError:
         return False
-    attributes = getattr(path.lstat(), "st_file_attributes", 0)
-    return stat.S_ISLNK(mode) or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    attributes = getattr(status, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(status.st_mode) or bool(attributes & reparse_point)
 
 
 def _has_user_tables(connection: sqlite3.Connection) -> bool:

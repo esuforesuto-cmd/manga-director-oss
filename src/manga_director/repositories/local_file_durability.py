@@ -7,13 +7,19 @@ does not know about workflow transitions, agents, assets, or events.
 from __future__ import annotations
 
 import ctypes
+import errno
 import hashlib
+import importlib
 import json
 import os
+import stat
 import tempfile
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Protocol
 
 from manga_director.domain.exceptions import RepositoryError
 from manga_director.domain.project import Project
@@ -187,6 +193,16 @@ class _RawNumber:
     text: str
 
 
+class _ProjectCommitFence(Protocol):
+    """Private context-managed fence for one exact LocalFile project binding."""
+
+    def __enter__(self) -> _ProjectCommitFence: ...
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
+
+    def release(self) -> None: ...
+
+
 class WindowsProjectCommitFence:
     """A bounded, same-session project commit fence backed by a Local mutex."""
 
@@ -240,6 +256,182 @@ class WindowsProjectCommitFence:
             self._acquired = False
 
 
+_project_fence_process_guard = threading.Lock()
+_project_fence_process_owned: set[tuple[int, str]] = set()
+
+
+def _claim_project_fence_process_ownership(identity: str) -> bool:
+    key = (os.getpid(), identity)
+    with _project_fence_process_guard:
+        if key in _project_fence_process_owned:
+            return False
+        _project_fence_process_owned.add(key)
+        return True
+
+
+def _release_project_fence_process_ownership(identity: str, owner_pid: int) -> None:
+    with _project_fence_process_guard:
+        _project_fence_process_owned.discard((owner_pid, identity))
+
+
+def _effective_user_id() -> int | None:
+    get_effective_user_id = getattr(os, "geteuid", None)
+    return int(get_effective_user_id()) if callable(get_effective_user_id) else None
+
+
+class _PosixProjectCommitFence:
+    """Bounded POSIX kernel lock over one private, zero-payload artifact."""
+
+    def __init__(
+        self,
+        identity: str,
+        durability_root: Path,
+        *,
+        timeout_ms: int = 1_000,
+    ) -> None:
+        self._identity = identity
+        self._durability_root = durability_root
+        self._timeout_ms = timeout_ms
+        self._descriptor: int | None = None
+        self._owner_pid: int | None = None
+        self._fcntl: object | None = None
+
+    def __enter__(self) -> _PosixProjectCommitFence:
+        if os.name != "posix":
+            raise LocalFileDurabilityError("project_commit_fence_unavailable")
+        owner_pid = os.getpid()
+        if not _claim_project_fence_process_ownership(self._identity):
+            raise LocalFileDurabilityError("project_commit_fence_contended")
+        descriptor: int | None = None
+        try:
+            fcntl = importlib.import_module("fcntl")
+            lock_path = self._prepare_lock_path()
+            descriptor = self._open_verified_artifact(lock_path)
+            deadline = time.monotonic() + max(self._timeout_ms, 0) / 1_000
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as error:
+                    if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise LocalFileDurabilityError(
+                            "project_commit_fence_unavailable"
+                        ) from error
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LocalFileDurabilityError(
+                            "project_commit_fence_contended"
+                        ) from None
+                    time.sleep(min(0.01, remaining))
+            self._verify_artifact(descriptor, lock_path)
+        except LocalFileDurabilityError:
+            if descriptor is not None:
+                os.close(descriptor)
+            _release_project_fence_process_ownership(self._identity, owner_pid)
+            raise
+        except (ImportError, OSError) as error:
+            if descriptor is not None:
+                os.close(descriptor)
+            _release_project_fence_process_ownership(self._identity, owner_pid)
+            raise LocalFileDurabilityError("project_commit_fence_unavailable") from error
+        self._descriptor = descriptor
+        self._owner_pid = owner_pid
+        self._fcntl = fcntl
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release()
+
+    def release(self) -> None:
+        """Release only this owner's lock; repeated release is a no-op."""
+
+        descriptor = self._descriptor
+        owner_pid = self._owner_pid
+        fcntl = self._fcntl
+        self._descriptor = None
+        self._owner_pid = None
+        self._fcntl = None
+        if descriptor is None or owner_pid is None:
+            return
+        try:
+            if owner_pid == os.getpid() and fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+            if owner_pid == os.getpid():
+                _release_project_fence_process_ownership(self._identity, owner_pid)
+
+    def _prepare_lock_path(self) -> Path:
+        try:
+            self._durability_root.mkdir(parents=True, exist_ok=True)
+            status = self._durability_root.lstat()
+        except OSError as error:
+            raise LocalFileDurabilityError("project_commit_fence_unavailable") from error
+        owner_id = _effective_user_id()
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or stat.S_ISLNK(status.st_mode)
+            or owner_id is None
+            or status.st_uid != owner_id
+            or stat.S_IMODE(status.st_mode) & 0o022
+        ):
+            raise LocalFileDurabilityError("project_commit_fence_unavailable")
+        return self._durability_root / f"{self._identity}.project-commit.lock"
+
+    def _open_verified_artifact(self, lock_path: Path) -> int:
+        flags = os.O_RDWR | os.O_CREAT
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        try:
+            self._verify_artifact(descriptor, lock_path)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    @staticmethod
+    def _verify_artifact(descriptor: int, lock_path: Path) -> None:
+        descriptor_status = os.fstat(descriptor)
+        path_status = lock_path.lstat()
+        owner_id = _effective_user_id()
+        if (
+            not stat.S_ISREG(descriptor_status.st_mode)
+            or stat.S_ISLNK(path_status.st_mode)
+            or not stat.S_ISREG(path_status.st_mode)
+            or descriptor_status.st_dev != path_status.st_dev
+            or descriptor_status.st_ino != path_status.st_ino
+            or owner_id is None
+            or descriptor_status.st_uid != owner_id
+            or stat.S_IMODE(descriptor_status.st_mode) & 0o077
+            or descriptor_status.st_nlink != 1
+            or descriptor_status.st_size != 0
+        ):
+            raise LocalFileDurabilityError("project_commit_fence_unavailable")
+
+
+def _project_commit_identity(root: Path, project_id: str) -> str:
+    binding = f"{root.resolve()}\x00{project_id}".encode()
+    return hashlib.sha256(binding).hexdigest()
+
+
+def _select_project_commit_fence(
+    root: Path, project_id: str, *, timeout_ms: int = 1_000
+) -> _ProjectCommitFence:
+    identity = _project_commit_identity(root, project_id)
+    if os.name == "nt":
+        return WindowsProjectCommitFence(
+            f"Local\\MangaDirectorProjectCommit-{identity}", timeout_ms=timeout_ms
+        )
+    if os.name == "posix":
+        durability_root = root.resolve() / "_durability"
+        return _PosixProjectCommitFence(identity, durability_root, timeout_ms=timeout_ms)
+    raise LocalFileDurabilityError("project_commit_fence_unavailable")
+
+
 class LocalFileRevisionStore:
     """Own revision records, staged aggregate replacement, and reconciliation."""
 
@@ -247,7 +439,7 @@ class LocalFileRevisionStore:
         self,
         root: Path,
         *,
-        fence_factory: Callable[[str], WindowsProjectCommitFence] = WindowsProjectCommitFence,
+        fence_factory: Callable[[str], _ProjectCommitFence] | None = None,
     ) -> None:
         self._root = root
         self._fence_factory = fence_factory
@@ -262,7 +454,7 @@ class LocalFileRevisionStore:
         requires_existing_revision: Callable[[bytes], bool] | None = None,
         validate_revision_record: Callable[[bytes, str, int, str], None] | None = None,
     ) -> RevisionedProjectSnapshot:
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             payload = self._read_aggregate(aggregate_path)
             if self._r29_restart_applies(project_id, payload):
                 return self._load_r29_aware_snapshot(
@@ -292,7 +484,7 @@ class LocalFileRevisionStore:
     ) -> _R29PreReconciliationSnapshot:
         """Capture R29 restart facts without invoking any reconciliation path."""
 
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             return self._capture_r29_pre_reconciliation_snapshot_locked(project_id, aggregate_path)
 
     def _capture_r29_pre_reconciliation_snapshot_locked(
@@ -515,7 +707,7 @@ class LocalFileRevisionStore:
         project_id = snapshot.project.id
         if project_id != self._project_id_from_path(project_id):
             raise LocalFileDurabilityError("invalid_revision_snapshot")
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             current_payload = self._read_aggregate(aggregate_path)
             self._assert_r29_raw_replacement_allowed(project_id, current_payload)
             current = self._reconcile_or_initialize(project_id, current_payload)
@@ -559,7 +751,7 @@ class LocalFileRevisionStore:
 
         if project_id != self._project_id_from_path(project_id):
             raise LocalFileDurabilityError("invalid_revision_snapshot")
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             try:
                 current_payload = self._read_aggregate(aggregate_path)
             except LocalFileDurabilityError as exc:
@@ -603,7 +795,7 @@ class LocalFileRevisionStore:
 
         project_id = snapshot.project.id
         _validate_r27_request(request, snapshot, project_id)
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             current_payload = self._read_aggregate(aggregate_path)
             current = self._reconcile_or_initialize(project_id, current_payload)
             if current.revision != snapshot.revision or current.fingerprint != snapshot.fingerprint:
@@ -688,7 +880,7 @@ class LocalFileRevisionStore:
             project_id=project_id,
             state="ACTIVATION_PREPARED",
         )
-        with self._fence_factory(self._fence_name(project_id)):
+        with self._project_fence(project_id):
             current_payload = self._read_aggregate(aggregate_path)
             self._assert_r29_raw_replacement_allowed(project_id, current_payload)
             current = self._reconcile_or_initialize(project_id, current_payload)
@@ -848,8 +1040,7 @@ class LocalFileRevisionStore:
         return self._root / "_durability"
 
     def _record_stem(self, project_id: str) -> str:
-        identity = f"{self._root.resolve()}\x00{project_id}".encode()
-        return hashlib.sha256(identity).hexdigest()
+        return _project_commit_identity(self._root, project_id)
 
     def _committed_path(self, project_id: str) -> Path:
         return self._durability_directory() / f"{self._record_stem(project_id)}.revision.json"
@@ -862,6 +1053,11 @@ class LocalFileRevisionStore:
 
     def _fence_name(self, project_id: str) -> str:
         return f"Local\\MangaDirectorProjectCommit-{self._record_stem(project_id)}"
+
+    def _project_fence(self, project_id: str) -> _ProjectCommitFence:
+        if self._fence_factory is not None:
+            return self._fence_factory(self._fence_name(project_id))
+        return _select_project_commit_fence(self._root, project_id)
 
     def _read_committed(self, project_id: str) -> _RevisionRecord | _R27CommittedRecord | None:
         try:

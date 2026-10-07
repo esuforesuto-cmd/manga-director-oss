@@ -510,10 +510,10 @@ def _prepare_owner_root(owner_root: Path) -> Path:
 
 
 def _prepare_child_directory(root: Path, name: str) -> Path:
-    path = _private_child(root, name)
     try:
+        path = _private_child(root, name)
         path.mkdir(exist_ok=True)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise ValueError("asset owner root is unavailable") from error
     if _is_link_or_reparse_point(path) or not path.is_dir():
         raise ValueError("asset owner root is unavailable")

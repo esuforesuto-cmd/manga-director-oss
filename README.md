@@ -232,7 +232,7 @@ check`, and `backend check` for safe operating evidence. Existing `health
 check` and diagnostics commands remain available.
 
 See [Health](docs/HEALTH.md), [Runtime Health](docs/RUNTIME_HEALTH.md),
-[Diagnostics](docs/DIAGNOSTICS.md), [Recovery](docs/RECOVERY.md), and
+[Diagnostics](docs/diagnostics.md), [Recovery](docs/RECOVERY.md), and
 [Repository Integrity](docs/REPOSITORY_INTEGRITY.md).
 Validation evidence is recorded in the
 [v2.3 Iteration 3 Reliability Report](docs/V2_3_ITERATION_3_RELIABILITY_REPORT.md).
@@ -451,8 +451,8 @@ changing workflow legality. See [Observability](docs/observability.md) and
 insight and planning DTOs. Runtime cache behavior is documented in
 [Plugin Runtime](docs/PLUGIN_RUNTIME.md), [Extension Runtime](docs/EXTENSION_RUNTIME.md),
 and [Configuration](docs/CONFIGURATION.md). Iteration 2 also documents
-[performance](docs/PERFORMANCE.md), [profiling](docs/PROFILING.md),
-[error handling](docs/ERROR_HANDLING.md), and [logging](docs/LOGGING.md).
+[performance](docs/performance.md), [profiling](docs/PROFILING.md),
+[error handling](docs/ERROR_HANDLING.md), and [logging](docs/logging.md).
 
 ## Reliability and health
 

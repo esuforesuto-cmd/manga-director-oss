@@ -243,6 +243,36 @@ def test_windows_fence_is_hashed_bounded_idempotent_and_released_after_holder_te
     recovered.release()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux page fence fail-closed contract")
+def test_linux_page_fence_rejects_before_repository_or_workflow_mutation() -> None:
+    fence = WindowsPageExecutionFence("project:durable-core", "1")
+    with pytest.raises(PageExecutionFenceError, match="page_execution_fence_unavailable"):
+        fence.acquire()
+
+    store = FakeDurablePageStore(_project(1))
+    agent = RecordingDesignAgent()
+    bus = InspectingEventBus(store)
+    coordinator = DurableWorkflowExecutionCoordinator(_engine(bus, agent), store)
+
+    result = coordinator.execute(store.project.id, "1", "design")
+
+    assert result.code == "PAGE_EXECUTION_FENCE_UNAVAILABLE"
+    assert agent.calls == 0
+    assert store.load_calls == store.context_calls == store.commit_calls == store.verify_calls == 0
+    assert bus.calls == len(bus.published) == 0
+
+
+@pytest.mark.parametrize(
+    ("project_id", "page_id", "timeout_ms"),
+    (("", "1", 1_000), ("project", "", 1_000), ("project", "1", 0)),
+)
+def test_page_fence_constructor_validation_precedes_platform_rejection(
+    project_id: str, page_id: str, timeout_ms: int
+) -> None:
+    with pytest.raises(ValueError):
+        WindowsPageExecutionFence(project_id, page_id, timeout_ms=timeout_ms)
+
+
 def test_durable_execution_commits_before_one_canonical_event_and_uses_authoritative_page() -> None:
     store = FakeDurablePageStore(_project(1))
     agent = RecordingDesignAgent()

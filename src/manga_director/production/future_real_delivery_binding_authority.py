@@ -188,11 +188,12 @@ def _is_sha256(value: object) -> bool:
 
 def _is_reparse_point(path: Path) -> bool:
     try:
-        attributes = path.stat().st_file_attributes
+        status = path.lstat()
     except OSError:
         return False
+    attributes = getattr(status, "st_file_attributes", 0)
     marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return bool(path.is_symlink() or marker and attributes & marker)
+    return stat.S_ISLNK(status.st_mode) or bool(marker and attributes & marker)
 
 
 def _evidence_canonical_json(envelope: GenerationEvidenceEnvelopeDTO) -> str:
