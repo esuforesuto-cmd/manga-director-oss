@@ -1,89 +1,30 @@
 # manga-director
 
-`manga-director` v6.0.0 is a typed, headless Python library and CLI for managing a commercial manga-production workflow one page at a time. It coordinates work; it is not an image model or a drawing UI.
+[![CI](https://github.com/esuforesuto-cmd/manga-director-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/esuforesuto-cmd/manga-director-oss/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Stable release: Manga Production Platform v5.7 adds optional, read-only
-> Production Workspace and Platform orchestration diagnostics. Platform API v1,
-> Plugin SDK v1, and Workspace Standard v1 are frozen while preserving
-> StateMachine authority. See the [v5.7 release notes](RELEASE_V5_7.md).
+`manga-director` is a typed, headless Python library and CLI for coordinating
+manga production one page at a time. It makes the workflow stateful, resumable,
+provider-neutral, and explicitly human-approved; it is not an image model or a
+drawing UI.
 
-> Stable release: v6.0.0 adds optional Creative Production Platform
-> foundation reports for Production Core, multi-project/workspace references,
-> Knowledge, AI planning support, Collaboration, and Service Registry. These
-> reports preserve all v5.x public surfaces and never execute a workflow.
-> Iteration 2 adds read-only Knowledge Graph, Context Engine, Workflow
-> Orchestrator, Automation Hub, Collaboration Workspace, Production Analytics,
-> and Service Discovery projections. They report evidence only; they do not
-> persist data, dispatch work, register services, or mutate a workflow.
-> Iteration 3 completes the optional v6.0 Platform Kernel with Unified Context,
-> Extension, SDK, Marketplace, Policy, Governance, and Observability reports.
-> These additions are local, human-gated, and non-enforcing. The v6.0.0
-> release is the current stable and v6.0.x is the compatibility baseline. See
-> the [v6.0 release notes](RELEASE_V6_0.md).
+Use it to:
 
-> LTS: v6.0.x is the current Creative Production Platform maintenance line.
-> It preserves the frozen Platform API, SDK, Extension API, and Marketplace
-> Specification without adding execution behavior. See the [LTS policy](docs/V6_LTS_POLICY.md).
+- enforce a forward-only Page workflow with explicit approval;
+- persist Projects, Chapters, Pages, events, and checkpoints for safe resume;
+- connect replaceable image and LLM providers without coupling them to Core;
+- use the same workflow rules through Python, CLI, MCP, and delivery adapters;
+- run deterministically with mock providers for development and verification.
 
-> Stable release: v5.4.0 completes the optional Creative Quality Framework
-> Framework while preserving v5.0 LTS contracts for Python, CLI, MCP, Project,
-> Repository, Plugin, Extension SDK, Provider, Image Backend, and page workflow.
-> See the [v5.4 release notes](RELEASE_V5_4.md),
-> [compatibility verification](docs/COMPATIBILITY_V5_4.md), and
-> [release-ready report](docs/V5_4_RELEASE_READY_REPORT.md).
+## Project status
 
-> The v5.0.0 LTS record is retained as historical compatibility context. v5.2
-> automation is optional, local, declarative, human-gated, and requires no data
-> migration.
-
-v5.2 adds an optional Creative Automation Framework for local rule, event,
-template, intelligence, governance, reliability, and lifecycle diagnostics. It
-does not add an automation runtime. See the [v5.2 vision](docs/VISION_V5_2.md),
-[automation roadmap](docs/ROADMAP_V5_2.md), and
-[migration strategy](docs/MIGRATION_V5_1_TO_V5_2.md).
-
-v5.3 adds an optional local **Creative Integration Framework** for Connector,
-event-reference, data-exchange, and governance diagnostics without external
-connectivity. See the [v5.3 vision](docs/VISION_V5_3.md),
-[integration roadmap](docs/ROADMAP_V5_3.md), and
-[migration strategy](docs/MIGRATION_V5_2_TO_V5_3.md).
-
-v5.4 adds an optional, local **Creative Quality Framework Foundation** for
-quality evidence, human review, validation, metrics, and release criteria. It
-does not add automatic approval, workflow control, CI/CD control, or release
-automation. See the [v5.4 vision](docs/VISION_V5_4.md),
-[quality roadmap](docs/ROADMAP_V5_4.md), and
-[migration strategy](docs/MIGRATION_V5_3_TO_V5_4.md), and
-[Iteration 1 report](docs/V5_4_ITERATION_1_QUALITY_FOUNDATION_REPORT.md).
-
-v5.4 Iteration 2 adds optional Quality Intelligence, review and validation
-analytics, a human-gated release-readiness dashboard, and snapshot-only quality
-monitoring. These are diagnostics only: they do not run reviews or CI/CD,
-approve Pages, change workflows, persist monitoring data, or publish releases.
-See the [Iteration 2 report](docs/V5_4_ITERATION_2_QUALITY_INTELLIGENCE_REPORT.md).
-
-v5.4 Iteration 3 completes the local Quality Framework with non-enforcing
-Governance, Review Audit, Validation Governance, Reliability, and Release
-Lifecycle reports. These additions do not control policy, CI/CD, workflow,
-approvals, recovery, or publication. See the
-[Iteration 3 report](docs/V5_4_ITERATION_3_QUALITY_GOVERNANCE_REPORT.md).
-
-v5.4.0 completes the optional Creative Quality Framework as a local,
-human-gated diagnostic layer. It preserves v5.0 LTS and v5.3 contracts and adds
-no policy enforcement, CI/CD control, approval, or release action. See
-[the v5.4 release notes](RELEASE_V5_4.md).
-
-v5.1 is a design-only, backward-compatible **Composable Creative Platform**
-planning cycle. See the [v5.1 vision](docs/VISION_V5_1.md),
-[modularization roadmap](docs/ROADMAP_V5_1.md), and
-[v5.0 LTS to v5.1 migration strategy](docs/MIGRATION_V5_0_TO_V5_1.md).
-
-Final validation details are recorded in the [One Creative Platform architecture summary](docs/ARCHITECTURE_SUMMARY_V5.md),
-[workflow regression verification](docs/WORKFLOW_REGRESSION_V5.md),
-[benchmark verification](docs/BENCHMARK_V5.md),
-[security audit](docs/SECURITY_AUDIT_V5.md),
-[package audit](docs/PACKAGE_AUDIT_V5.md), and
-[release checklist](docs/RELEASE_CHECKLIST_V5.md).
+The source tree is on the v6.0.x LTS maintenance line. No GitHub Release or
+PyPI distribution has been published yet, so install from this repository as
+shown below. See the [v6.0 release notes](RELEASE_V6_0.md),
+[LTS policy](docs/V6_LTS_POLICY.md), [changelog](CHANGELOG.md), and
+[roadmap](ROADMAP.md) for version and maintenance details. Earlier release
+records are retained as historical compatibility evidence.
 
 ## Features
 
@@ -428,8 +369,12 @@ states, responsive CSS, and unit/E2E starter tests. See [Web UI](docs/web_ui.md)
 
 ## Installation
 
+PyPI publication is not available yet. Install the current public source:
+
 ```bash
-python -m pip install manga-director
+git clone https://github.com/esuforesuto-cmd/manga-director-oss.git
+cd manga-director-oss
+python -m pip install .
 ```
 
 ## Database
