@@ -82,6 +82,9 @@ exclude = [
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["src"]
+markers = [
+  "requires_windows_page_authority: test requires the canonical Windows page authority, R05 lease, or R26 proof chain",
+]
 
 [tool.coverage.run]
 branch = true

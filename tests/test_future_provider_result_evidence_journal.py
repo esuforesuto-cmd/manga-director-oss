@@ -10,16 +10,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from generation_admission_v1_fixtures import manifest
 
 import manga_director
 import manga_director.production as production
-from manga_director.domain.project import Page, Project
-from manga_director.domain.state_machine import PageState
 from manga_director.production import future_fake_provider_receipt_journal as d09
 from manga_director.production import future_provider_result_evidence_journal as i02
+from manga_director.production.future_durable_generation_boundary import ProviderDispatchRequestV1
 from manga_director.production.future_generation_admission_contract import (
-    SnapshotIdentityV1,
+    ProviderRequestBindingV1,
     content_digest,
 )
 from manga_director.production.future_provider_capability_profile import CAPABILITY_NAMES
@@ -69,38 +67,31 @@ def _profile() -> dict[str, object]:
 
 
 def _accepted_runtime(tmp_path: Path) -> tuple[LocalFileRepository, str]:
-    admitted = manifest().model_copy(update={"project_id": "project-i02", "attempt_id": "attempt-i02"})
     repository = LocalFileRepository(tmp_path / "repository")
-    repository.save(
-        Project(
-            id=admitted.project_id,
-            title="I02",
-            pages=[
-                Page(
-                    page_number=1,
-                    state=PageState.PROMPT_BUILT,
-                    page_design={},
-                    review={},
-                    storyboard=admitted.storyboard.model_dump(mode="json"),
-                    prompt=admitted.prompt.model_dump(mode="json"),
-                    metadata={
-                        "future_generation_target_reference": admitted.execution_target_reference,
-                        "future_generation_provider_binding": admitted.provider_request.model_dump(mode="json"),
-                    },
-                )
-            ],
-        )
+    dispatch = ProviderDispatchRequestV1(
+        attempt_id="attempt-i02",
+        project_id="project-i02",
+        page_id="1",
+        execution_target_reference="target-i02",
+        manifest_digest=_digest("manifest-i02"),
+        provider_binding_digest=_digest("provider-i02"),
+        attempt_binding_digest=_digest("attempt-i02"),
+        consumption_sequence=1,
+        dispatch_request_identity=_digest("dispatch-i02"),
+        idempotency_identity=_digest("dispatch-i02"),
+        provider_request=ProviderRequestBindingV1(provider_reference="fake:provider"),
     )
-    snapshot = repository._load_revisioned(admitted.project_id)
-    bound = admitted.model_copy(
-        update={"page_id": "1", "snapshot": SnapshotIdentityV1(revision=snapshot.revision, fingerprint=snapshot.fingerprint)}
+    receipts_root = (
+        repository._root.resolve() / "_durability" / "_future_durable_generation" / "provider_receipts"
     )
-    runtime = d09._LocalFileFakeProviderReceiptJournal(repository)
-    assert runtime._d05.reserve(bound).code == "RESERVATION_RESERVED"
-    permit = runtime._d05.prepare_provider_start(bound).permit
-    assert permit is not None
-    assert runtime.submit(manifest=bound, permit=permit, raw_provider_profile=_profile()).status == "ACCEPTED"
-    return repository, bound.attempt_id
+    harness = d09._D09TestOnlyHarness(receipts_root)
+    assert (
+        harness.submit_consumed_dispatch(
+            dispatch, _profile(), d09.FakeSubmissionPlanV1(outcome="ACCEPTED")
+        ).status
+        == "ACCEPTED"
+    )
+    return repository, dispatch.attempt_id
 
 
 def _observation(*, outputs: list[dict[str, object]] | None = None) -> dict[str, object]:

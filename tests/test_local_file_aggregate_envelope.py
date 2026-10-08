@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -64,6 +66,27 @@ def _write_revision_record(
     return path
 
 
+def _assert_no_revision_or_aggregate_mutation(root: Path) -> None:
+    """Permit only the POSIX private zero-byte project-fence artifact."""
+
+    durability = root / "projects" / "_durability"
+    if not durability.exists():
+        return
+    assert os.name == "posix"
+    artifacts = list(durability.iterdir())
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.is_file()
+    assert not artifact.is_symlink()
+    assert artifact.name.endswith(".project-commit.lock")
+    status = artifact.stat()
+    assert stat.S_ISREG(status.st_mode)
+    assert stat.S_IMODE(status.st_mode) & 0o077 == 0
+    assert status.st_nlink == 1
+    assert status.st_uid == os.getuid()
+    assert status.st_size == 0
+
+
 def test_normative_vector_has_exact_frame_f0_and_f1() -> None:
     aggregate = _aggregate()
     decoded = envelope._decode_r27_aggregate(aggregate)
@@ -100,7 +123,7 @@ def test_revisioned_r27_reopen_requires_existing_record_without_mutation(tmp_pat
         repository._load_revisioned("r27-vector")
 
     assert path.read_bytes() == aggregate
-    assert not (tmp_path / "projects" / "_durability").exists()
+    _assert_no_revision_or_aggregate_mutation(tmp_path)
 
 
 def test_revisioned_r27_reopen_validates_model_a_without_mutation(tmp_path: Path) -> None:
@@ -190,7 +213,7 @@ def test_revisioned_corrupt_r27_never_initializes_legacy_record(tmp_path: Path, 
         repository._load_revisioned("r27-vector")
 
     assert path.read_bytes() == aggregate
-    assert not (tmp_path / "projects" / "_durability").exists()
+    _assert_no_revision_or_aggregate_mutation(tmp_path)
 
 
 def test_legacy_bytes_are_read_without_rewrite(tmp_path: Path) -> None:
