@@ -10,6 +10,13 @@ compatibility, or maintainability without expanding the frozen platform scope.
 python -m pip install -e ".[dev]"
 ```
 
+The frontend uses npm, with `web/package-lock.json` as its canonical lockfile.
+
+```bash
+cd web
+npm ci
+```
+
 ## Contribution workflow
 
 1. Search existing issues and read [SUPPORT.md](SUPPORT.md) for the appropriate
