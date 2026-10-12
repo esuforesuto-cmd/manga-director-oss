@@ -433,10 +433,11 @@ rules. See [Security](docs/security.md).
 extensions, manifests, compatibility validation, and ZIP packaging. See
 [Extension SDK](docs/extension_sdk.md).
 
-## v2.1 Development
+## Historical v2.1 development
 
-v2.1 is an issue-driven stabilization cycle. See the [Roadmap](docs/ROADMAP_v2_1.md),
-[technical debt register](docs/TECH_DEBT.md), and [Contributor Guide](docs/CONTRIBUTOR_GUIDE.md).
+The v2.1 issue-driven stabilization cycle is retained as historical evidence.
+See the [Roadmap](docs/ROADMAP_v2_1.md), [technical debt register](docs/TECH_DEBT.md),
+and [Contributor Guide](docs/CONTRIBUTOR_GUIDE.md).
 
 ## Five-minute local start
 
@@ -701,8 +702,10 @@ additive pre-release maintenance evidence; it is not a released version or a
 new implementation authorization. See the [v6.0 release notes](RELEASE_V6_0.md),
 [LTS policy](LTS_POLICY.md), and [post-v6.1 roadmap](docs/roadmap/POST_V6_1_ROADMAP_PROPOSAL.md).
 
-The following v4.7 material is retained as historical reference only. It does
-not describe the current stable release or release procedure.
+The remaining roadmap and release summaries are retained as historical
+reference. Cycle-relative terms such as `next`, `current`, and `future` reflect
+their original release periods; they do not describe current v6.0.x LTS work or
+authorize implementation.
 The [v4.5 Vision](docs/VISION_V4_5.md),
 [Creative Intelligence Ecosystem Architecture](docs/ARCHITECTURE_V4_5.md), and
 [v4.5 roadmap](docs/ROADMAP_V4_5.md) record the now-shipped Creative
