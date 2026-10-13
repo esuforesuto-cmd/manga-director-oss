@@ -8,7 +8,7 @@ test("runs one persisted page through the real local delivery boundary", async (
   const created = await request.post(`${apiOrigin}/projects`, {
     data: { id: projectId, title: "V7-02 real delivery" }
   });
-  expect(created.status()).toBe(201);
+  expect(created.status(), await created.text()).toBe(201);
 
   await page.goto(`/projects/${projectId}/pages/1`);
   await expect(page.getByRole("heading", { name: "Page 1" })).toBeVisible();

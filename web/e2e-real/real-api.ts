@@ -1,10 +1,9 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const apiPort = "8000";
-const temporaryRoot = mkdtempSync(join(tmpdir(), "manga-director-real-e2e-"));
+const temporaryRoot = mkdtempSync(join(process.cwd(), ".manga-director-real-e2e-"));
 const configPath = join(temporaryRoot, "config.yaml");
 const executable = process.platform === "win32" ? "manga-director.exe" : "manga-director";
 const environment: NodeJS.ProcessEnv = { ...process.env };
@@ -12,6 +11,7 @@ for (const name of Object.keys(environment)) {
   if (name.startsWith("MANGA_DIRECTOR__")) delete environment[name];
 }
 environment.MANGA_DIRECTOR_PROFILE = "offline";
+environment.MANGA_DIRECTOR__REPOSITORY__ROOT = join(temporaryRoot, "repository");
 const child = spawn(
   executable,
   ["api", "serve", "--config", configPath, "--port", apiPort],
