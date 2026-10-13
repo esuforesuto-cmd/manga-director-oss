@@ -126,8 +126,9 @@ gate. The gate must add verification only, not new product behavior.
 - exercise one Page from Project creation through `QualityChecked` and
   explicit human approval, using only actions supplied by the real API;
 - verify the persisted approved result after a browser refresh or a fresh read;
-- run the real-delivery browser scenario as a required Linux CI gate while
-  retaining the existing mock-API browser test for fast presentation feedback;
+- run the real-delivery browser scenario as a required Windows CI gate,
+  matching the current durable LocalFile execution platform, while retaining
+  the existing mock-API browser test for fast presentation feedback;
 - document the local command, isolation behavior, and failure diagnostics.
 
 ### Inputs

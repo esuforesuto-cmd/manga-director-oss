@@ -243,6 +243,11 @@ or refresh failure from an HTTP or persisted-workflow failure. A local bind
 failure on port 3000 or 8000 must be resolved before retrying; it is not a
 workflow result.
 
+CI runs this gate on Windows because the current durable LocalFile page
+execution fence is Windows-only and fails closed on other platforms. Extending
+that production fence to another platform is outside V7-02 and requires a
+separately authorized production-code change.
+
 ## Security considerations
 
 - Bind only to the loopback interface; do not permit a host override that
