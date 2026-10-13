@@ -1,9 +1,10 @@
 # RFC-V7-001: Local Workflow HTTP Delivery
 
-- Status: Proposed
+- Status: Accepted; V7-01 implemented on `v7-dev`
 - Target line: v7.0 Discovery (Post-LTS)
-- Related roadmap item: V7-01 Workflow HTTP Adapter
-- Candidate implementation evidence: PR #17
+- Related roadmap items: V7-01 Workflow HTTP Adapter and V7-02 Real Local
+  Delivery End-to-End Gate
+- Implementation evidence: PR #17 merged into `v7-dev`
 
 ## Decision boundary
 
@@ -137,11 +138,9 @@ The implementation must preserve these observable invariants:
 7. CLI and MCP behavior remains compatible.
 8. Local-file project identifiers and paths cannot escape the configured root.
 
-PR #17 is a technically verified implementation candidate for V7-01. Its
-successful CI and focused implementation evidence may inform review, but the
-PR remains unmerged into `main` until v7 implementation authorization. This
-RFC does not modify, close, retarget, or merge PR #17 and does not treat that
-candidate as accepted merely because it exists.
+PR #17 is the technically verified V7-01 implementation and is merged only on
+the Post-LTS `v7-dev` line. It remains unmerged into `main`. This RFC does not
+authorize promotion to `main`, versioning, release, tag, or publication.
 
 ## Alternatives considered
 
@@ -210,6 +209,44 @@ A V7-01 implementation proposal must provide executed evidence for:
 
 PR #17 may be used as candidate evidence for these checks. Its evidence must be
 revalidated against the authorized v7 base and scope before any merge decision.
+
+## V7-02 verification continuation
+
+V7-02 adds a real local delivery end-to-end quality gate for the accepted
+V7-01 boundary. It starts the existing loopback-only API and Web UI with an
+isolated temporary `LocalFileRepository` and existing mock Providers, then
+verifies one Page through `QualityChecked` and explicit human approval. This is
+verification-only work: it adds no endpoint, DTO, workflow action, Provider,
+runtime dependency, remote exposure, automatic approval, Project DELETE, or
+I02 behavior.
+
+The existing mock-API browser scenario remains the fast Presentation test. The
+V7-02 scenario separately proves that the real HTTP adapter, Application
+service, `WorkflowEngine`, StateMachine, and persistence boundary compose
+without duplicating their decisions in test tooling.
+
+Run the real local gate from `web/` after installing the repository with the
+existing `api` extra and installing Playwright Chromium:
+
+```console
+npm run test:e2e:real
+```
+
+The test runner starts both services on `127.0.0.1`, creates a unique temporary
+configuration and repository root, and removes that state when the API helper
+exits. It uses the offline profile and existing mock Providers, so credentials
+and external model access are neither required nor permitted by this gate.
+
+On failure, Playwright retains a trace under `web/test-results/`. Review that
+trace together with the API server output to distinguish a browser readiness
+or refresh failure from an HTTP or persisted-workflow failure. A local bind
+failure on port 3000 or 8000 must be resolved before retrying; it is not a
+workflow result.
+
+CI runs this gate on Windows because the current durable LocalFile page
+execution fence is Windows-only and fails closed on other platforms. Extending
+that production fence to another platform is outside V7-02 and requires a
+separately authorized production-code change.
 
 ## Security considerations
 
