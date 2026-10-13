@@ -6,9 +6,14 @@ const apiUrl = `http://127.0.0.1:8000/projects/${projectId}/pages/1`;
 test("runs one persisted page through the real local delivery boundary", async ({ page, request }) => {
   await page.goto("/");
   await page.getByRole("link", { name: "Create project" }).first().click();
+  await page.waitForLoadState("networkidle");
   await page.getByLabel("Project ID").fill(projectId);
   await page.getByLabel("Title").fill("V7-02 real delivery");
+  const createResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/projects")
+  );
   await page.getByRole("button", { name: "Create project" }).click();
+  expect((await createResponsePromise).status()).toBe(201);
 
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
   await page.getByRole("link", { name: "Open current page" }).click();
