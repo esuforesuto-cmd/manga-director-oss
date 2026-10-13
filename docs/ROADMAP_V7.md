@@ -64,15 +64,17 @@ contracts.
 - [RFC-V7-001: Local Workflow HTTP Delivery](RFC_V7_001_LOCAL_WORKFLOW_HTTP_DELIVERY.md)
 - the existing Web UI client and presentation contracts;
 - current Workflow, StateMachine, Repository, CLI, and MCP contracts;
-- PR #17 as technically verified implementation candidate evidence.
+- merged PR #17 as the verified V7-01 implementation evidence.
 
-### Candidate evidence
+### Completion evidence
 
-PR #17, `feat(api): add local workflow HTTP adapter`, is the initial
-implementation candidate for V7-01. Its current implementation and successful
-CI may be reviewed and reused as evidence after v7 implementation authorization.
-It remains unmerged into `main`; this roadmap does not modify, close, retarget,
-or merge it and does not grant that authorization.
+PR #17, `feat(api): add local workflow HTTP adapter`, was merged into `v7-dev`
+on 2026-10-13 as merge commit `097a80d786f494063492eaa871deef6bbf5ab169`.
+The retargeted PR passed all required Python, Windows, Web, security, package,
+compatibility, and documentation checks, and its independent review found no
+P0 or P1 issues. `main` remained unchanged at
+`b0291437af05fe53454843ba95fdf88216700f7c`; no version, release, tag,
+publication, branch-setting, or I02 change was included.
 
 ### Acceptance criteria
 
@@ -103,7 +105,7 @@ separate gates. No roadmap entry authorizes I02.
 
 | Issue | State | Dependency | Completion evidence |
 | --- | --- | --- | --- |
-| V7-01 Workflow HTTP Adapter | Discovery | Accepted RFC-V7-001 and explicit v7 implementation authorization | Authorized implementation diff, compatibility review, executed quality/security gates, and merge decision |
+| V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 
 No later Epic 1 issue is authorized by this initial roadmap. Additional issues
 must be proposed with their own bounded scope, compatibility analysis,
