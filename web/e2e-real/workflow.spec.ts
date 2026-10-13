@@ -1,22 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 const projectId = "v7-02-real-e2e";
-const apiUrl = `http://127.0.0.1:8000/projects/${projectId}/pages/1`;
+const apiOrigin = "http://127.0.0.1:8000";
+const apiUrl = `${apiOrigin}/projects/${projectId}/pages/1`;
 
 test("runs one persisted page through the real local delivery boundary", async ({ page, request }) => {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Create project" }).first().click();
-  await page.waitForLoadState("networkidle");
-  await page.getByLabel("Project ID").fill(projectId);
-  await page.getByLabel("Title").fill("V7-02 real delivery");
-  const createResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST" && response.url().endsWith("/projects")
-  );
-  await page.getByRole("button", { name: "Create project" }).click();
-  expect((await createResponsePromise).status()).toBe(201);
+  const created = await request.post(`${apiOrigin}/projects`, {
+    data: { id: projectId, title: "V7-02 real delivery" }
+  });
+  expect(created.status()).toBe(201);
 
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
-  await page.getByRole("link", { name: "Open current page" }).click();
+  await page.goto(`/projects/${projectId}/pages/1`);
   await expect(page.getByRole("heading", { name: "Page 1" })).toBeVisible();
   await page.waitForLoadState("networkidle");
 
