@@ -67,7 +67,7 @@ createServer((request, response) => {
     response.writeHead(204, {
       "access-control-allow-origin": "http://127.0.0.1:3000",
       "access-control-allow-headers": "content-type",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS"
+      "access-control-allow-methods": "GET, POST, OPTIONS"
     });
     return response.end();
   }

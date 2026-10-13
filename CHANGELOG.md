@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+- Added the opt-in local Workflow HTTP adapter and shared transport-neutral
+  Application Service for the existing Web UI and MCP delivery paths. It keeps
+  StateMachine authority, explicit human approval, LocalFile safety, and the
+  frozen v6 contracts; this is a post-LTS candidate and does not change the
+  stable `6.0.0` release.
 - Added the verified POST-v6.1 I01–I06 read-only project-status readiness
   projections: per-page inspection, summary, outcome, and focus-page evidence.
   These are additive pre-release readiness changes; `6.0.0` remains the stable

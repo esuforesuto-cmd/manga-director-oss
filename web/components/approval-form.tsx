@@ -16,7 +16,7 @@ export function ApprovalForm({ projectId, pageNumber }: Readonly<{ projectId: st
     setError(null);
     startTransition(async () => {
       try {
-        await api.workflow.execute(projectId, pageNumber, "approve", { approved_by: approvedBy });
+        await api.workflow.approve(projectId, pageNumber, approvedBy);
         router.refresh();
       } catch (cause) {
         setError(cause instanceof ApiClientError ? cause.message : "Approval failed.");

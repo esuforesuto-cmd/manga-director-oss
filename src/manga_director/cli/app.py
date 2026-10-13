@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import typer
 
+from manga_director.api import build_workflow_app
 from manga_director.cli.config import (
     configuration_diagnostics,
     configuration_governance,
@@ -15,7 +16,7 @@ from manga_director.cli.config import (
     write_default_config,
 )
 from manga_director.cli.runtime import CliRuntime, build_runtime
-from manga_director.domain.exceptions import MangaDirectorError
+from manga_director.domain.exceptions import CLIError, MangaDirectorError
 from manga_director.mcp import McpServer, build_mcp_server
 from manga_director.observability import (
     HealthMonitor,
@@ -75,6 +76,7 @@ project_app = typer.Typer(help="Create, inspect, transfer, and delete persisted 
 chapter_app = typer.Typer(help="Run and inspect sequential page workflows within a chapter.")
 batch_app = typer.Typer(help="Plan and run persisted, sequential batches of page workflows.")
 mcp_app = typer.Typer(help="Run the local stdio MCP server and inspect its surface.")
+api_app = typer.Typer(help="Run the local-only workflow HTTP API.")
 plugin_app = typer.Typer(help="Discover and administer local, manifest-based plugins.")
 diagnostics_app = typer.Typer(help="Inspect runtime health and export safe diagnostic DTOs.")
 health_app = typer.Typer(help="Run transport-neutral runtime health checks.")
@@ -89,6 +91,7 @@ app.add_typer(project_app, name="project")
 app.add_typer(chapter_app, name="chapter")
 app.add_typer(batch_app, name="batch")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(api_app, name="api")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(diagnostics_app, name="diagnostics")
 app.add_typer(health_app, name="health")
@@ -100,6 +103,7 @@ app.add_typer(analytics_app, name="analytics")
 app.add_typer(assurance_app, name="assurance")
 app.add_typer(director_app, name="director")
 LOGGER = logging.getLogger(__name__)
+WORKFLOW_API_HOST = "127.0.0.1"
 
 
 def _runtime(config_path: Path, *, create_config: bool = False) -> CliRuntime:
@@ -566,6 +570,15 @@ def _mcp_server(runtime: CliRuntime, config_path: Path) -> McpServer:
         ).platform_governance_dashboard(
             "mcp-preview", WorkflowContext(page={"id": "mcp-v35-platform-governance"})
         ),
+    )
+
+
+def _workflow_api(runtime: CliRuntime) -> Any:
+    return build_workflow_app(
+        workflow_engine=runtime.engine,
+        workflow_coordinator=runtime.coordinator,
+        project_loader=runtime.loader,
+        repository=runtime.loader.repository,
     )
 
 
@@ -1231,6 +1244,23 @@ def mcp_serve(config: Path = typer.Option(Path("config.yaml"), "--config")) -> N
         LOGGER,
         lambda: _use_runtime(config, lambda runtime: _mcp_server(runtime, config).serve_stdio()),
     )
+
+
+@api_app.command("serve")
+def api_serve(
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    port: int = typer.Option(8000, "--port", min=1, max=65535),
+) -> None:
+    """Serve the workflow API on the loopback interface only."""
+
+    def action(runtime: CliRuntime) -> None:
+        try:
+            import uvicorn
+        except ImportError as exc:  # pragma: no cover - depends on optional extra.
+            raise CLIError("Install manga-director[api] to serve the workflow API.") from exc
+        uvicorn.run(_workflow_api(runtime), host=WORKFLOW_API_HOST, port=port)
+
+    _handle_error(LOGGER, lambda: _use_runtime(config, action))
 
 
 @mcp_app.command("tools")

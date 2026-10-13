@@ -7,10 +7,9 @@ components import typed API functions and never construct URLs, infer workflow
 states, or call MCP directly.
 
 Types in `web/lib/api/types.ts` represent the intended REST DTO contract. When
-a FastAPI/OpenAPI delivery adapter is separately introduced, they should be
-regenerated from its schema before a backend contract change is merged. They
-intentionally differ from Python Domain models: the UI only consumes
-presentation DTOs.
+the Workflow FastAPI contract changes, these explicit types and its contract
+tests must be updated together. They intentionally differ from Python Domain
+models: the UI only consumes presentation DTOs.
 
 ## State
 
@@ -29,3 +28,4 @@ and is displayed in the originating component.
 - Project and route identifiers are URL-encoded.
 - API text is rendered as React text, never injected HTML.
 - Prompt text and secrets are never written to browser logs by this UI.
+- Project deletion is not present in the initial HTTP or UI surface.

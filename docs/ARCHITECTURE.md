@@ -302,8 +302,8 @@ remain excluded.
 ## Phase 18 Web-UI architecture review
 
 `web/` is an independent Next.js + TypeScript Presentation Layer. Its only
-integration boundary is `web/lib/api/client.ts`, which calls a separately
-compatible HTTP API with typed DTOs. No frontend module imports Python Domain models,
+integration boundary is `web/lib/api/client.ts`, which calls the optional local
+Workflow HTTP adapter with typed DTOs. No frontend module imports Python Domain models,
 repositories, CLI code, MCP code, or Agents. Browser components render
 API-supplied workflow state and available actions; they do not duplicate the
 StateMachine or decide whether a transition is legal.
@@ -336,9 +336,9 @@ Presentation (CLI / local MCP / Web UI) -> Application (Director / Workflow) -> 
   composition roots and cannot change `PageState`, skip a transition, or call
   Agents from Agents.
 - The Web UI is an independent TypeScript presentation layer. The optional
-  FastAPI adapter exposes observability DTOs only; it is not a workflow REST
-  API or a Web UI backend. `manga_director.api` depends inward on DTO providers
-  and never exposes Domain models.
+  Workflow FastAPI adapter maps dedicated camelCase DTOs to the shared
+  transport-neutral Application Service. HTTP never imports `mcp.application`,
+  and neither delivery path exposes Domain models or owns transitions.
 
 No circular import failure or Core-to-Presentation dependency was found in the
 import, architecture, and package-install release checks. The one-page,

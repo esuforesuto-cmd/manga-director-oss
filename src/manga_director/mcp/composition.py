@@ -4,44 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
+from manga_director.application import build_workflow_application
 from manga_director.cli.config import AppConfig
-from manga_director.mcp.application import MangaApplicationService
 from manga_director.mcp.prompts import McpPromptLoader
 from manga_director.mcp.registry import default_tool_registry
 from manga_director.mcp.resources import McpResourceProvider
 from manga_director.mcp.server import McpServer
-from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.repositories.protocols import ProjectRepository
-from manga_director.workflow.contracts import WorkflowContext
 from manga_director.workflow.coordinator import WorkflowCoordinator
-from manga_director.workflow.durable_execution import LogicalOutputAssetQualityGatePort
 from manga_director.workflow.engine import WorkflowEngine
 from manga_director.workflow.localfile_external_generated_application import (
     build_localfile_quality_ledger_gate,
 )
-
-
-class _LazyLocalFileQualityGate:
-    """Build the LocalFile quality Ledger only when an execution invokes it."""
-
-    def __init__(self, repository: LocalFileRepository) -> None:
-        self._repository = repository
-        self._delegate: LogicalOutputAssetQualityGatePort | None = None
-        self._lock = Lock()
-
-    def require_applied(self, context: WorkflowContext) -> str | None:
-        return self._resolve().require_applied(context)
-
-    def _resolve(self) -> LogicalOutputAssetQualityGatePort:
-        if self._delegate is None:
-            with self._lock:
-                if self._delegate is None:
-                    self._delegate = build_localfile_quality_ledger_gate(self._repository)
-        return self._delegate
 
 
 def build_mcp_server(
@@ -159,17 +136,12 @@ def build_mcp_server(
     configured_prompt_directory = prompt_directory
     if configured_prompt_directory is None and configuration is not None:
         configured_prompt_directory = configuration.prompt_directory
-    localfile_quality_gate = (
-        _LazyLocalFileQualityGate(repository)
-        if isinstance(repository, LocalFileRepository)
-        else None
-    )
-    service = MangaApplicationService(
-        workflow_engine,
-        workflow_coordinator,
-        project_loader,
-        repository,
-        localfile_quality_gate=localfile_quality_gate,
+    service = build_workflow_application(
+        workflow_engine=workflow_engine,
+        workflow_coordinator=workflow_coordinator,
+        project_loader=project_loader,
+        repository=repository,
+        localfile_quality_gate_factory=build_localfile_quality_ledger_gate,
     )
     return McpServer(
         default_tool_registry(

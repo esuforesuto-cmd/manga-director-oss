@@ -1,10 +1,10 @@
 import type {
   ApiError,
   ChapterDetail,
+  PageAction,
   PageDetail,
   ProjectDetail,
   ProjectSummary,
-  WorkflowAction,
   WorkflowStatus
 } from "@/lib/api/types";
 
@@ -54,7 +54,6 @@ export const api = {
     get: (projectId: string) => request<ProjectDetail>(`/projects/${encoded(projectId)}`),
     create: (body: { id: string; title: string }) =>
       request<ProjectDetail>("/projects", { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } }),
-    remove: (projectId: string) => request<void>(`/projects/${encoded(projectId)}`, { method: "DELETE" }),
     run: (projectId: string) => request<ProjectDetail>(`/projects/${encoded(projectId)}/run`, { method: "POST" }),
     resume: (projectId: string) => request<ProjectDetail>(`/projects/${encoded(projectId)}/resume`, { method: "POST" })
   },
@@ -67,20 +66,32 @@ export const api = {
   pages: {
     get: (projectId: string, pageNumber: number) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`),
-    execute: (projectId: string, pageNumber: number, action: WorkflowAction, metadata: Record<string, unknown> = {}) =>
+    execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/${encoded(action)}`, {
         method: "POST",
         body: JSON.stringify({ metadata }),
+        headers: { "Content-Type": "application/json" }
+      }),
+    approve: (projectId: string, pageNumber: number, approvedBy: string, metadata: Record<string, unknown> = {}) =>
+      request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ approvedBy, metadata }),
         headers: { "Content-Type": "application/json" }
       })
   },
   workflow: {
     status: async (projectId: string, pageNumber: number): Promise<WorkflowStatus> =>
       (await request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`)).workflow,
-    execute: (projectId: string, pageNumber: number, action: WorkflowAction, metadata: Record<string, unknown> = {}) =>
+    execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/${encoded(action)}`, {
         method: "POST",
         body: JSON.stringify({ metadata }),
+        headers: { "Content-Type": "application/json" }
+      }),
+    approve: (projectId: string, pageNumber: number, approvedBy: string, metadata: Record<string, unknown> = {}) =>
+      request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ approvedBy, metadata }),
         headers: { "Content-Type": "application/json" }
       })
   }

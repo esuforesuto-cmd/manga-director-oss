@@ -13,7 +13,9 @@ license verification against the resolved lockfiles before publishing.
 | psycopg | `postgresql` extra | LGPL-3.0-or-later (or commercial terms) |
 | Alembic | `migrations` extra | MIT |
 | FastAPI | `api` extra | MIT |
+| Uvicorn | `api` extra | BSD-3-Clause |
 | Hatchling | Build | MIT |
+| HTTPX2 | Development / FastAPI contract tests | BSD-3-Clause |
 | Ruff, mypy, pytest, pytest-cov, pre-commit, build, twine | Development | Review through their resolved package metadata before publication |
 
 The project itself is distributed under the [MIT License](../LICENSE).

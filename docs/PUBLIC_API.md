@@ -91,12 +91,13 @@ The MCP `serverInfo.version` is aligned with the package version.
 
 ## FastAPI and Web API
 
-The optional `manga-director[api]` adapter exposes only health and diagnostics
-DTO routes: `/health`, `/health/providers`, `/health/backends`, `/diagnostics`,
-and `/repository/check`. Its OpenAPI version is derived from the package's
-single Python version source. It does not expose workflow operations or Domain
-models. The `web/` Next.js application remains an independent presentation
-scaffold and requires a separately compatible workflow HTTP service.
+The optional `manga-director[api]` package retains the existing observability
+app and adds a separate local Workflow app. Its initial surface is `/health`,
+GET/POST `/projects`, Project run/resume, Chapter get/run, Page get, and Page
+actions. DELETE is not exposed. HTTP response DTOs are camelCase presentation
+models rather than Domain models, while WorkflowEngine and StateMachine retain
+all transition authority. The CLI server binds to `127.0.0.1`; CORS permits
+only `http://127.0.0.1:3000` and `http://localhost:3000`.
 
 ## Compatibility rules
 
