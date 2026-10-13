@@ -352,10 +352,12 @@ available only from `QualityChecked`. See [MCP Server](docs/mcp_server.md),
 
 `web/` contains a minimal, independent Next.js + TypeScript App Router UI. It
 contains a typed REST client and never imports Core, CLI, MCP, or repository
-code. The optional `manga-director[api]` delivery adapter provides only the
-documented observability DTO routes; it is not a general Web UI workflow API.
+code. The optional `manga-director[api]` delivery adapter provides a local-only
+Workflow API with presentation-specific camelCase DTOs. It shares the neutral
+Application Service with MCP and delegates every transition to WorkflowEngine.
 
 ```bash
+manga-director api serve
 cd web
 npm install
 npm run dev
@@ -504,10 +506,10 @@ from manga_director import (
 
 `ImageResult` and documented error classes are also public for adapter authors and callers that need structured error handling. See [examples](examples/).
 
-The complete compatibility contract, including supported CLI and MCP surfaces,
-is in [Public API](docs/PUBLIC_API.md). FastAPI is an optional DTO-only
-observability adapter, not a general workflow REST API; see
-[Troubleshooting](docs/TROUBLESHOOTING.md) for the Web UI integration boundary.
+The complete compatibility contract, including supported CLI, MCP, and HTTP
+surfaces, is in [Public API](docs/PUBLIC_API.md). The Workflow API binds only to
+`127.0.0.1` and allows browser requests only from the documented local Web UI
+origins; see [Workflow HTTP API](docs/workflow_http_api.md).
 
 ## Examples
 
@@ -687,9 +689,9 @@ or authorize publication. See [Creative Reliability](docs/CREATIVE_RELIABILITY.m
 
 **Does this call OpenAI or ComfyUI today?** No. Those adapters intentionally return stubs until real integrations are introduced.
 
-**Can I use the Web UI against a bundled FastAPI workflow server?** No. The
-optional FastAPI adapter serves read-only health, diagnostics, repository, and
-v3 preview DTOs; the Web UI still requires a separately compatible workflow API.
+**Can I use the Web UI against the bundled FastAPI workflow server?** Yes. Run
+`manga-director api serve`; it binds to `127.0.0.1:8000`, permits only the local
+Web UI origins, and keeps approval as an explicit `QualityChecked` action.
 
 For installation, persistence, and provider troubleshooting, see
 [Troubleshooting](docs/TROUBLESHOOTING.md).

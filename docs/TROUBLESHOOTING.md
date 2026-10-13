@@ -26,9 +26,9 @@ package through SQLAlchemy.
 
 ## The Web UI has no backend response
 
-This repository does not currently ship a FastAPI server. The Web UI tests and
-build are supported, but its REST client requires a separately compatible API.
-Do not expose it as a production workflow controller without that API boundary.
+Install the `api` extra and run `manga-director api serve`. The server listens
+on `127.0.0.1:8000` only. Keep the Web UI on `http://127.0.0.1:3000` or
+`http://localhost:3000`; other browser origins are intentionally rejected.
 
 ## A provider appears to do nothing
 

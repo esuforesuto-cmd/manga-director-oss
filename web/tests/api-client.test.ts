@@ -18,4 +18,14 @@ describe("REST API client", () => {
 
     await expect(api.projects.run("demo")).rejects.toBeInstanceOf(ApiClientError);
   });
+
+  it("sends the explicit approver with the presentation DTO name", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pageNumber: 1 }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.pages.approve("demo", 1, "editor");
+
+    expect(fetchMock.mock.calls[0][1].body).toContain('"approvedBy":"editor"');
+    expect("remove" in api.projects).toBe(false);
+  });
 });

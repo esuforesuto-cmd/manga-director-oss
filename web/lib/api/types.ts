@@ -66,7 +66,7 @@ export interface PageDetail extends PageSummary {
   approvalRequired: boolean;
 }
 
-export type WorkflowAction =
+export type PageAction =
   | "design"
   | "review"
   | "storyboard"
@@ -75,7 +75,7 @@ export type WorkflowAction =
   | "generate"
   | "quality"
   | "continuity"
-  | "approve"
-  | "run"
-  | "resume"
-  | "retry";
+  | "approve";
+
+export type ProjectAction = "run" | "resume";
+export type WorkflowAction = PageAction | ProjectAction;
