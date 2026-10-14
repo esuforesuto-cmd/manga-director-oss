@@ -111,13 +111,15 @@ release or publication.
 
 ### Completion evidence
 
-PR #20 at commit `603d97e69d50881d5883ddf0496afd1f8b76abaf`
-passed all ten required jobs in CI run #67, including the real local delivery
-Playwright gate on Windows, both Windows full-regression jobs, Python and Web
-quality gates, security checks, and package verification. Independent review
-reported P0 = 0, P1 = 0, and P2 = 0. The implementation changed exactly the
-approved seven-file allowlist; `package-lock.json` and `src/` remained
-unchanged. `main` remained unchanged at
+PR #20, with final head `7d0034a2dad46c6ff982d03104d32d935d5db796`,
+was merged into `v7-dev` as merge commit
+`ad671b63a4135997ffc41e8ab95bb8a681668980`. CI run #69 passed all ten
+required jobs, including the real local delivery Playwright gate on Windows,
+both Windows full-regression jobs, Python and Web quality gates, security
+checks, and package verification. Independent review reported P0 = 0, P1 = 0,
+and P2 = 0. The implementation changed exactly the approved seven-file
+allowlist; `package-lock.json` and `src/` remained unchanged. `main` remained
+unchanged at
 `b0291437af05fe53454843ba95fdf88216700f7c`, and no version, release, tag,
 publication, Settings, branch deletion, force-push, or I02 change was included.
 
@@ -244,7 +246,7 @@ scope.
 | Issue | State | Dependency | Completion evidence |
 | --- | --- | --- | --- |
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
-| V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 at `603d97e`; required CI run #67 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
+| V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
