@@ -16,6 +16,7 @@ from manga_director.production.next_generation_normal_execution_attempt import (
     LocalNormalExecutionAttemptStore,
 )
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.workflow import localfile_real_image_generation as real_generation_module
 from manga_director.workflow.engine import WorkflowEngine
 from manga_director.workflow.localfile_real_image_generation import (
     execute_localfile_real_image_generation,
@@ -59,6 +60,23 @@ class _ClientFactory:
         assert max_retries == 0
         self.create_calls += 1
         return self.client
+
+
+class _Fence:
+    def __init__(self, project_id: str, page_id: str) -> None:
+        self._project_id = project_id
+        self._page_id = page_id
+        self._held = False
+
+    def acquire(self) -> None:
+        assert self._held is False
+        self._held = True
+
+    def release(self) -> None:
+        self._held = False
+
+    def _r26_is_held_for(self, project_id: str, page_id: str) -> bool:
+        return self._held and (project_id, page_id) == (self._project_id, self._page_id)
 
 
 def _repository(tmp_path: Path) -> LocalFileRepository:
@@ -110,10 +128,24 @@ def _execute(
     )
 
 
-def test_real_path_runs_one_prompt_only_png_and_registers_one_asset(tmp_path: Path) -> None:
+def test_real_path_runs_one_prompt_only_png_and_registers_one_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repository = _repository(tmp_path)
     client = _Client()
     factory = _ClientFactory(client)
+    composition_builder = real_generation_module._build_localfile_external_generation_composition_v1
+
+    def build_with_test_fence(*args: object, **kwargs: object):
+        composition = composition_builder(*args, **kwargs)
+        composition.external_application._fence_factory = _Fence
+        return composition
+
+    monkeypatch.setattr(
+        real_generation_module,
+        "_build_localfile_external_generation_composition_v1",
+        build_with_test_fence,
+    )
 
     report = _execute(repository, factory)
 
@@ -207,7 +239,7 @@ def test_missing_optional_package_fails_before_attempt_and_network(
         raise ImportError
 
     monkeypatch.setattr(
-        "manga_director.workflow.localfile_real_image_generation.importlib.import_module",
+        "manga_director.workflow.localfile_real_image_generation.import_module",
         missing,
     )
     with pytest.raises(ValueError, match="OpenAI support is unavailable"):

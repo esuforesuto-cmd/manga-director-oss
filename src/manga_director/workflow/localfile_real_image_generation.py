@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import import_module
 
 from manga_director.domain.state_machine import PageState
 from manga_director.production.future_real_delivery_i01 import StrictPngStructuralValidatorV1
@@ -470,7 +470,7 @@ def _require_openai_runtime(
 ) -> str:
     if client_factory is None:
         try:
-            importlib.import_module("openai")
+            import_module("openai")
         except ImportError:
             raise ValueError(
                 'OpenAI support is unavailable; install the existing ".[openai]" extra'

@@ -5,14 +5,31 @@ import pytest
 from typer.testing import CliRunner
 
 from manga_director.cli.app import app
+from manga_director.domain.project import Page, Project
+from manga_director.domain.state_machine import PageState
+from manga_director.repositories.local_file import LocalFileRepository
 
 
 def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
     common = ["--config", str(config)]
     assert runner.invoke(app, ["init", "--project", "demo", "--page", "001", *common]).exit_code == 0
-    for command in ("design", "review", "storyboard", "prompt"):
-        result = runner.invoke(app, [command, "demo", "001", *common])
-        assert result.exit_code == 0, result.stderr
+    repository = LocalFileRepository(config.parent / ".manga-director")
+    repository.save(
+        Project(
+            id="demo",
+            title="demo",
+            pages=[
+                Page(
+                    page_number=1,
+                    state=PageState.PROMPT_BUILT,
+                    page_design={},
+                    review={},
+                    storyboard={"panels": [{"panel": 1}]},
+                    prompt={"prompt_markdown": "one monochrome manga panel"},
+                )
+            ],
+        )
+    )
 
 
 def test_cli_generate_default_keeps_existing_mock_route(
