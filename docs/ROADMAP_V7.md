@@ -245,12 +245,31 @@ scope.
 
 ### Implementation status
 
-Design frozen by
-[RFC-V7-002: Provider-Neutral Real Image Delivery](RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md).
-The exact ten-file V7-03 implementation allowlist and its end-to-end delivery
-flow are separately approved on branch `feat/v7-03-real-image-delivery`.
-Implementation and review may proceed, but merge to `v7-dev` remains
-conditional on every validation and safety gate below passing.
+Complete and verified on PR #23. The design remains frozen by
+[RFC-V7-002: Provider-Neutral Real Image Delivery](RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md),
+and the implementation remains bounded by its approved ten-file allowlist.
+
+### Completion evidence
+
+PR #23 was merged into `v7-dev` as merge commit
+`b688abb88bf07e7508a806c48f86c27b6e41fa5b`. CI run #82 passed all ten
+required jobs. Independent review reported P0 = 0, P1 = 0, and P2 = 0. The
+feature branch `feat/v7-03-real-image-delivery` was retained. `main` remained
+unchanged at `b0291437af05fe53454843ba95fdf88216700f7c`.
+
+The completed implementation changed exactly this approved ten-file
+allowlist:
+
+1. `README.md`
+2. `docs/RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md`
+3. `docs/ROADMAP_V7.md`
+4. `docs/SECRETS_CREDENTIAL_MANAGEMENT.md`
+5. `src/manga_director/cli/app.py`
+6. `src/manga_director/production/next_generation_local_durable_asset_owner.py`
+7. `src/manga_director/workflow/localfile_real_image_generation.py`
+8. `tests/integration/test_cli.py`
+9. `tests/test_localfile_real_image_generation.py`
+10. `tests/test_next_generation_local_durable_asset_owner.py`
 
 ### Objective
 
@@ -325,11 +344,89 @@ independent review with P0 = 0 and P1 = 0 before merge to `v7-dev`.
 
 ### Approval state
 
-The V7-03 design and exact implementation scope are approved. This authorizes
-the bounded LocalFile CLI Provider execution, validation, commit, push, pull
-request, CI, review, in-scope P0/P1 remediation, and conditional merge to
-`v7-dev`. It does not authorize I02, `main`, versioning, release, tag,
-publication, Settings, force push, or branch deletion.
+V7-03 is complete. Its prior authorization is exhausted by PR #23 and does not
+authorize follow-up implementation. It does not authorize I02, `main`,
+versioning, release, tag, publication, Settings, force push, or branch
+deletion.
+
+## V7-04 — ComfyUI Local Provider
+
+### Planning status
+
+Design frozen by
+[RFC-V7-003: ComfyUI Local Provider Delivery](RFC_V7_003_COMFYUI_LOCAL_PROVIDER.md).
+This is a design-only planning entry. V7-04 implementation and live ComfyUI
+calls are not authorized.
+
+### Objective
+
+Define the smallest safe design for applying the Provider-neutral LocalFile
+durable real-generation boundary completed by V7-03 to a local ComfyUI server
+as a second reference Provider, without changing existing public, workflow,
+persistence, or approval contracts.
+
+### Frozen first-slice direction
+
+- keep the legacy public `ComfyUIImageGenerator` as a deterministic,
+  non-network stub and keep `mock` as the default;
+- make future activation CLI-only and explicit, equivalent to
+  `--real-provider comfyui`, with durable human authorization evidence;
+- default to `http://127.0.0.1:8188` and reject remote/LAN, DNS, cloud, proxy,
+  redirect, credential-bearing, wildcard, and unsupported endpoint forms;
+- use a Manga Director-owned, fixed, validated, core-node-only workflow graph;
+- exclude arbitrary workflow JSON, custom nodes, third-party node packages,
+  embedded scripts, node installation, and model download;
+- permit one Page, one admitted attempt, prompt-only input, and exactly one
+  PNG;
+- treat `POST /prompt` as Provider start, observe the same `prompt_id` through
+  bounded `/history/{prompt_id}` polling, and retrieve bytes through
+  same-origin `/view` without requiring WebSocket support;
+- never read or trust a ComfyUI output filesystem path directly;
+- validate strict PNG structure and the existing 25 MB byte limit before
+  `LocalDurableAssetOwner` registration;
+- use `RECOVERY_REQUIRED` for ambiguous submission or result outcomes and
+  prohibit automatic POST resubmission, replacement attempts, fallback, or
+  Provider switching;
+- keep ComfyUI, models, checkpoints, and custom nodes outside the Manga
+  Director repository and package; and
+- prefer the standard library or already-declared runtime dependencies; this
+  design authorizes no dependency or lockfile change.
+
+### Compatibility and exclusions
+
+V7-04 must preserve `StateMachine`, `WorkflowEngine`, one-Page execution,
+storyboard-before-generation, `QualityChecked` before explicit approval,
+Provider neutrality, existing LocalFile schema and security, mock defaults,
+OpenAI V7-03 behavior, HTTP, Web UI, MCP, SDK, Plugin, and v5/v6/public
+compatibility.
+
+I02 is completely independent and out of scope. No I02 authority, import,
+persistence, contract, or implementation may be used. If a future
+implementation proves I02 necessary, V7-04 becomes `BLOCKED` pending separate
+approval instead of expanding scope.
+
+Reference images, image-to-image input, batch, parallel, background,
+scheduler, automatic retry, fallback, auto-switch, remote exposure,
+authentication, public API changes, versioning, release, tag, publication,
+Settings, `main`, force push, and branch deletion are out of scope.
+
+### Validation
+
+The Design Freeze requires an exact two-file allowlist, available Markdown and
+link consistency checks, `git diff --check`, proof of no code/dependency/
+lockfile changes, and independent read-only review with P0 = 0 and P1 = 0.
+
+A later implementation requires a separately approved exact allowlist and
+must execute the RFC's loopback, preflight, fixed-graph, single-submission,
+ambiguous-outcome, PNG/25-MB, asset, workflow, compatibility, security, audit,
+regression, CI, and independent-review gates.
+
+### Authorization gate
+
+Acceptance and merge of the RFC authorize documentation only. They do not
+authorize implementation, live ComfyUI access, a dependency change, or any
+other excluded operation. A later implementation proposal requires separate
+explicit approval.
 
 ## Epic 1 sequencing
 
@@ -337,7 +434,8 @@ publication, Settings, force push, or branch deletion.
 | --- | --- | --- | --- |
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
-| V7-03 Provider-Neutral Real Image Delivery | Local implementation and review complete; PR/CI pending | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | Branch `feat/v7-03-real-image-delivery`; exact ten-file allowlist; local regression, static, Windows security, audit, and package gates passed; independent review P0/P1/P2 = 0; CI PASS remains required before merge to `v7-dev` |
+| V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
+| V7-04 ComfyUI Local Provider | Design frozen; implementation not authorized | Completed V7-03 and accepted RFC-V7-003 | RFC-V7-003 defines CLI-only explicit opt-in, loopback-only local ComfyUI, fixed core-node graph, one Page/attempt/prompt/PNG, no-retry recovery, byte-only asset handling, compatibility, and I02 exclusion; no implementation or live call authorized |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
