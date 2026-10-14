@@ -1,8 +1,130 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from manga_director.cli.app import app
+
+
+def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
+    common = ["--config", str(config)]
+    assert runner.invoke(app, ["init", "--project", "demo", "--page", "001", *common]).exit_code == 0
+    for command in ("design", "review", "storyboard", "prompt"):
+        result = runner.invoke(app, [command, "demo", "001", *common])
+        assert result.exit_code == 0, result.stderr
+
+
+def test_cli_generate_default_keeps_existing_mock_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    _advance_to_prompt_built(runner, config)
+
+    def unexpected_real_generation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("default generate must not enter the real-provider path")
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation",
+        unexpected_real_generation,
+    )
+    result = runner.invoke(
+        app, ["generate", "demo", "001", "--config", str(config)]
+    )
+
+    assert result.exit_code == 0
+    assert '"current_state": "Generated"' in result.stdout
+    assert '"provider": "mock"' in result.stdout
+
+
+def test_cli_generate_explicit_openai_opt_in_requires_and_forwards_human_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    _advance_to_prompt_built(runner, config)
+    calls: list[tuple[str, str, str]] = []
+
+    class _Report(SimpleNamespace):
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "status": self.status,
+                "completed": self.completed,
+                "provider_invocation_performed": True,
+                "external_application_delegated": self.external_application_delegated,
+            }
+
+    def execute_real(
+        _repository: object,
+        _engine: object,
+        project: str,
+        page: str,
+        authorized_by: str,
+    ) -> object:
+        calls.append((project, page, authorized_by))
+        return _Report(
+            status="completed",
+            completed=True,
+            external_application_delegated=True,
+            findings=(),
+        )
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation", execute_real
+    )
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "demo",
+            "001",
+            "--real-provider",
+            "openai",
+            "--authorized-by",
+            "human:editor",
+            "--config",
+            str(config),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("demo", "001", "human:editor")]
+    assert '"completed": true' in result.stdout
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        ["--real-provider", "other", "--authorized-by", "human:editor"],
+        ["--real-provider", "openai"],
+        ["--authorized-by", "human:editor"],
+    ),
+)
+def test_cli_generate_invalid_real_opt_in_never_enters_provider_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: list[str],
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    calls = 0
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation", unexpected
+    )
+    result = runner.invoke(
+        app, ["generate", "missing", "1", *extra, "--config", str(config)]
+    )
+
+    assert result.exit_code == 1
+    assert calls == 0
 
 
 def test_cli_run_status_and_explicit_approval(tmp_path: Path) -> None:

@@ -197,6 +197,27 @@ def test_real_delivery_registration_commitment_is_exact_owner_bound_and_one_shot
         owner._consume_real_delivery_registration_v1(replay)
 
 
+def test_v7_03_internal_opt_out_registers_without_i02_commitment(tmp_path: Path) -> None:
+    owner = LocalDurableAssetOwner(
+        tmp_path / "owner", _issue_i02_commitment=False
+    )
+
+    result = owner.register(_material())
+
+    assert result.outcome == "registered"
+    assert owner._live_registration_commitments_by_result_id == {}
+    assert owner._issued_registration_identities == set()
+    with pytest.raises(ValueError, match="asset registration authority is unavailable"):
+        owner._consume_real_delivery_registration_v1(result)
+
+
+def test_i02_commitment_opt_out_requires_an_explicit_boolean(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="commitment mode"):
+        LocalDurableAssetOwner(
+            tmp_path / "owner", _issue_i02_commitment="false"  # type: ignore[arg-type]
+        )
+
+
 def test_identical_replay_returns_the_owner_issued_asset_and_different_attempt_is_independent(
     tmp_path: Path,
 ) -> None:
