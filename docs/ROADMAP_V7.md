@@ -241,12 +241,104 @@ pull request, CI, read-only review, in-scope P0/P1 remediation, and merge to
 tag, publication, branch deletion, force-push, settings, and I02 remain out of
 scope.
 
+## V7-03 — Provider-Neutral Real Image Delivery
+
+### Planning status
+
+Design frozen by
+[RFC-V7-002: Provider-Neutral Real Image Delivery](RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md).
+This documentation state does not authorize implementation or a live Provider
+call. Implementation requires a separately approved exact allowlist and must
+pass the validation and merge gates defined below.
+
+### Objective
+
+Deliver one real, prompt-only PNG for one Page through the existing LocalFile
+durable generation chain without changing the default mock behavior or
+weakening workflow, persistence, security, compatibility, or human-approval
+authority. OpenAI is the first reference Provider; the boundary remains
+Provider-neutral.
+
+### Bounded scope
+
+- retain `mock` as the default and require explicit opt-in for every real
+  generation path;
+- require durable human authorization evidence for the specific generation
+  attempt before network use;
+- permit one eligible Page, one admitted attempt, prompt-only input, and one
+  validated PNG output;
+- invoke the OpenAI reference adapter only through the existing LocalFile
+  durable generation chain;
+- keep legacy `OpenAIImageGenerator` and `ComfyUIImageGenerator` behavior as
+  deterministic, non-network stubs;
+- resolve credentials only at execution time through the approved secret
+  boundary and never store them in Project, configuration, metadata,
+  persistence, evidence, logs, or diagnostics;
+- persist non-secret generation evidence and register the validated asset
+  through existing LocalFile containment and ownership boundaries;
+- fail closed without automatic regeneration when Provider start or result is
+  ambiguous;
+- preserve `StateMachine`, `WorkflowEngine`, storyboard-before-generation,
+  `QualityChecked`, and explicit approval authority.
+
+### Out of scope
+
+- reference images, image-to-image input, batch or parallel generation;
+- automatic retry, replacement attempts, Provider fallback or auto-switching;
+- background, scheduled, autonomous, or detached generation;
+- ComfyUI real connectivity or another real Provider;
+- public activation of private/future-only recovery components;
+- I02 or use of I02 authority, contracts, persistence, or implementation;
+- public API, StateMachine, existing LocalFile format, default Provider,
+  dependency, version, release, tag, publication, Settings, `main`, or branch
+  deletion changes without a separately approved scope.
+
+### Compatibility
+
+RFC acceptance changes no public contract. A later implementation must be
+additive and opt-in, must keep existing credential-free workflows offline, and
+must preserve Python, CLI, MCP, HTTP, Web UI, Repository, SDK, Plugin,
+StateMachine, `WorkflowEngine`, legacy adapter, and mock Provider behavior.
+Existing Projects require no migration. Any need to change a frozen contract,
+LocalFile schema, transition, default, or I02 component is a scope expansion
+and stops V7-03 implementation pending a new decision.
+
+### Validation
+
+- exact implementation allowlist and `git diff --check`;
+- default mock/no-credential/no-network regression;
+- explicit opt-in and human authorization admission and rejection cases;
+- one-Page/one-attempt/prompt-only/single-PNG enforcement;
+- at-most-once Provider start across restart, concurrency, timeout, and process
+  loss, with `RECOVERY_REQUIRED` and no automatic retry or Provider switch;
+- PNG, byte-limit, evidence, asset-registration, LocalFile containment, and
+  secret non-persistence security tests;
+- unchanged legacy OpenAI/ComfyUI stubs and public compatibility surfaces;
+- StateMachine, `WorkflowEngine`, quality, approval, focused, full regression,
+  lint, type-check, security/audit, package, and browser gates applicable to
+  the separately approved final diff.
+
+The current design-freeze change is docs-only and is limited to
+`docs/RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md` and
+`docs/ROADMAP_V7.md`. It requires available documentation validation, exact
+allowlist review, `git diff --check`, CI PASS, and independent review with
+P0 = 0 and P1 = 0 before merge to `v7-dev`.
+
+### Approval state
+
+The V7-03 design and this two-file documentation merge flow are approved.
+V7-03 implementation is not approved. RFC acceptance authorizes only a later
+implementation proposal; it does not authorize live Provider execution, I02,
+`main`, versioning, release, tag, publication, Settings, force push, or branch
+deletion.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
 | --- | --- | --- | --- |
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
+| V7-03 Provider-Neutral Real Image Delivery | Design frozen; implementation not authorized | Completed V7-02, accepted RFC-V7-002, and separate explicit approval of a bounded implementation allowlist | Docs-only design freeze defines OpenAI as the first reference Provider, mock-default and LocalFile durable boundaries, compatibility and security gates, and I02 independence; implementation evidence not yet available |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
