@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -8,6 +9,45 @@ from manga_director.cli.app import app
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.workflow.contracts import WorkflowResult
+from manga_director.workflow.durable_execution import (
+    DurableWorkflowExecutionCoordinator,
+    LocalFileDurablePageStore,
+    LogicalOutputAssetQualityGatePort,
+)
+from manga_director.workflow.engine import WorkflowEngine
+
+
+class _Fence:
+    def __init__(self, _project_id: str, _page_id: str) -> None:
+        self.held = False
+
+    def acquire(self) -> None:
+        assert self.held is False
+        self.held = True
+
+    def release(self) -> None:
+        self.held = False
+
+
+def _route_with_test_fence(
+    engine: WorkflowEngine,
+    repository: LocalFileRepository,
+    project_id: str,
+    page_id: str,
+    command: str,
+    execution_input: dict[str, Any],
+    *,
+    logical_output_asset_quality_gate: LogicalOutputAssetQualityGatePort | None = None,
+) -> WorkflowResult:
+    receipt = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=_Fence,
+        logical_output_asset_quality_gate=logical_output_asset_quality_gate,
+    )._execute_with_receipt(project_id, page_id, command, execution_input)
+    assert receipt.workflow_result is not None
+    return receipt.workflow_result
 
 
 def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
@@ -45,6 +85,9 @@ def test_cli_generate_default_keeps_existing_mock_route(
     monkeypatch.setattr(
         "manga_director.cli.app.execute_localfile_real_image_generation",
         unexpected_real_generation,
+    )
+    monkeypatch.setattr(
+        "manga_director.cli.app._route_localfile_primary", _route_with_test_fence
     )
     result = runner.invoke(
         app, ["generate", "demo", "001", "--config", str(config)]
