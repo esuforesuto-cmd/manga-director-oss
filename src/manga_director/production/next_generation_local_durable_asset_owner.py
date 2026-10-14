@@ -118,7 +118,9 @@ class _AssetVerificationLease:
 class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
     """Own private local byte persistence and logical asset registration."""
 
-    def __init__(self, owner_root: Path) -> None:
+    def __init__(self, owner_root: Path, *, _issue_i02_commitment: bool = True) -> None:
+        if not isinstance(_issue_i02_commitment, bool):
+            raise ValueError("asset owner commitment mode is unavailable")
         self._root = _prepare_owner_root(owner_root)
         self._registry_directory = _prepare_child_directory(self._root, "registry")
         self._staging_directory = _prepare_child_directory(self._root, "staging")
@@ -136,6 +138,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         self._issued_registration_identities: set[tuple[object, ...]] = set()
         self._consumed_registration_identities: set[tuple[object, ...]] = set()
         self._unissuable_registration_identities: set[tuple[object, ...]] = set()
+        self._issue_i02_commitment = _issue_i02_commitment
 
     def register(self, material: OwnerRegistrationMaterial) -> AssetRegistrationRuntimeResult:
         """Durably register valid material or return a redacted failed result."""
@@ -177,16 +180,17 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
             )
             durable_committed = True
             result = _registered_result(material, asset_id)
-            try:
-                self._issue_real_delivery_registration_commitment_v1(
-                    result=result,
-                    asset_id=asset_id,
-                    material=material,
-                    digest=digest,
-                    storage_name=storage_name,
-                )
-            except Exception:
-                return _failed_result(material)
+            if self._issue_i02_commitment:
+                try:
+                    self._issue_real_delivery_registration_commitment_v1(
+                        result=result,
+                        asset_id=asset_id,
+                        material=material,
+                        digest=digest,
+                        storage_name=storage_name,
+                    )
+                except Exception:
+                    return _failed_result(material)
             return result
         except Exception:
             if connection is not None:

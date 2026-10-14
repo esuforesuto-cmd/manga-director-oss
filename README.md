@@ -474,6 +474,23 @@ manga-director status demo 1
 manga-director approve demo 1 --approved-by editor
 ```
 
+`generate` keeps the existing offline `mock` path unless both real-generation
+options are supplied. For one explicitly authorized OpenAI image, first install
+the existing optional extra and make `OPENAI_API_KEY` available to the process
+through an approved secret store or environment-secret boundary. Do not put the
+key in `config.yaml`, project data, command arguments, or shell history.
+
+```bash
+python -m pip install -e ".[openai]"
+manga-director generate demo 1 --real-provider openai --authorized-by human:editor
+```
+
+The Page must already be `PromptBuilt`. This path admits one prompt-only
+attempt and one structurally validated PNG. It does not accept reference
+images, run in the background, retry an ambiguous Provider result, or switch
+Providers. If a Provider call may have started but no result is known, inspect
+the durable recovery evidence instead of running `generate` again.
+
 `config.yaml` is created by `init` or `project create` and supports:
 
 ```yaml
@@ -578,7 +595,11 @@ class StudioGenerator(ImageGenerator):
 ImageGeneratorFactory.register("studio", StudioGenerator)
 ```
 
-Do not add provider checks to `ImageAgent`, `WorkflowEngine`, or CLI commands. Built-in `mock` is functional; `openai` and `comfyui` are API-boundary stubs in this release.
+Do not add provider checks to `ImageAgent` or `WorkflowEngine`. Built-in `mock`
+is functional, and the public `OpenAIImageGenerator` and
+`ComfyUIImageGenerator` classes remain deterministic API-boundary stubs. The
+separate CLI opt-in documented above composes the private OpenAI transport only
+through the LocalFile durable execution boundary.
 
 ## Add an LLM provider
 
@@ -687,7 +708,10 @@ or authorize publication. See [Creative Reliability](docs/CREATIVE_RELIABILITY.m
 
 **Can I resume after closing the CLI?** Yes. Local projects persist state and artifacts in JSON or YAML.
 
-**Does this call OpenAI or ComfyUI today?** No. Those adapters intentionally return stubs until real integrations are introduced.
+**Does this call OpenAI or ComfyUI today?** Normal workflows and the legacy
+adapters do not. Only the explicit LocalFile CLI opt-in
+`generate ... --real-provider openai --authorized-by <human-id>` can call
+OpenAI. ComfyUI remains a non-network stub.
 
 **Can I use the Web UI against the bundled FastAPI workflow server?** Yes. Run
 `manga-director api serve`; it binds to `127.0.0.1:8000`, permits only the local

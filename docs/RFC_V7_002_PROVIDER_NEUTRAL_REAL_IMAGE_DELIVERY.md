@@ -1,22 +1,26 @@
 # RFC-V7-002: Provider-Neutral Real Image Delivery
 
-- Status: Accepted design; implementation requires separate explicit approval
+- Status: Accepted design; bounded V7-03 implementation explicitly approved
 - Target line: v7.0 Discovery (Post-LTS)
 - Related roadmap item: V7-03 Provider-Neutral Real Image Delivery
 - Reference Provider: OpenAI
+- Implementation branch: `feat/v7-03-real-image-delivery`
+- Local validation: PASS; pull-request CI and merge evidence pending
 
 ## Decision boundary
 
 The `6.0.x` line remains LTS, and `main` remains the LTS stability line. This
-RFC freezes the design for a future, explicitly authorized V7-03
-implementation on `v7-dev`. It does not enable a real Provider, change the
-installed version, authorize I02, or authorize a merge to `main`, release,
-tag, package publication, or other deployment or distribution action.
+RFC freezes the design for the explicitly authorized V7-03 implementation on
+`v7-dev`. The implementation is limited to the approved ten-file allowlist and
+the CLI opt-in described below. It does not change the installed version,
+authorize I02, or authorize a merge to `main`, release, tag, package
+publication, or other deployment or distribution action.
 
 The approved documentation change records the smallest safe path from the
-existing mock generation behavior to one real generated image. A later
-implementation must have its own exact allowlist, executed validation, review,
-and approval before any credentialed Provider call is reachable.
+existing mock generation behavior to one real generated image. That bounded
+implementation received separate approval for the branch
+`feat/v7-03-real-image-delivery`; merge remains conditional on the executed
+validation and review gates in this RFC.
 
 ## Problem
 
@@ -314,7 +318,7 @@ format is written.
 
 ## Validation plan
 
-A later implementation proposal must provide executed evidence for:
+The approved implementation must provide executed evidence for:
 
 - exact changed-file allowlist review and `git diff --check`;
 - default mock behavior with no credential and no external network;
@@ -344,19 +348,15 @@ A later implementation proposal must provide executed evidence for:
   dependency change;
 - package and public-contract verification if package contents are affected.
 
-This documentation-only design-freeze change requires Markdown/documentation
-validation when available, exact two-file allowlist review, link/whitespace
-checks, `git diff --check`, and independent read-only review with P0 = 0 and
-P1 = 0 before merge to `v7-dev`.
+The implementation must remain within its exact ten-file allowlist and pass
+the applicable local, CI, security, package, compatibility, and independent
+read-only review gates with P0 = 0 and P1 = 0 before merge to `v7-dev`.
 
 ## Documentation impact
 
-This design freeze changes only this RFC and `ROADMAP_V7.md`. A later
-implementation must synchronize only the directly affected architecture,
-installation, configuration, security, troubleshooting, API, Web UI, and
-public-contract documentation identified by its final diff. Release notes,
-migration guides, version metadata, and publication material remain outside
-this RFC.
+The bounded implementation synchronizes only this RFC, `ROADMAP_V7.md`, the
+README CLI guidance, and secret-management guidance. Release notes, migration
+guides, version metadata, and publication material remain outside this RFC.
 
 ## Acceptance criteria
 

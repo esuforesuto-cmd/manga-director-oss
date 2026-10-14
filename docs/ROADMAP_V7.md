@@ -243,13 +243,14 @@ scope.
 
 ## V7-03 — Provider-Neutral Real Image Delivery
 
-### Planning status
+### Implementation status
 
 Design frozen by
 [RFC-V7-002: Provider-Neutral Real Image Delivery](RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md).
-This documentation state does not authorize implementation or a live Provider
-call. Implementation requires a separately approved exact allowlist and must
-pass the validation and merge gates defined below.
+The exact ten-file V7-03 implementation allowlist and its end-to-end delivery
+flow are separately approved on branch `feat/v7-03-real-image-delivery`.
+Implementation and review may proceed, but merge to `v7-dev` remains
+conditional on every validation and safety gate below passing.
 
 ### Objective
 
@@ -295,8 +296,8 @@ Provider-neutral.
 
 ### Compatibility
 
-RFC acceptance changes no public contract. A later implementation must be
-additive and opt-in, must keep existing credential-free workflows offline, and
+The implementation is additive and opt-in, keeps existing credential-free
+workflows offline, and
 must preserve Python, CLI, MCP, HTTP, Web UI, Repository, SDK, Plugin,
 StateMachine, `WorkflowEngine`, legacy adapter, and mock Provider behavior.
 Existing Projects require no migration. Any need to change a frozen contract,
@@ -318,19 +319,17 @@ and stops V7-03 implementation pending a new decision.
   lint, type-check, security/audit, package, and browser gates applicable to
   the separately approved final diff.
 
-The current design-freeze change is docs-only and is limited to
-`docs/RFC_V7_002_PROVIDER_NEUTRAL_REAL_IMAGE_DELIVERY.md` and
-`docs/ROADMAP_V7.md`. It requires available documentation validation, exact
-allowlist review, `git diff --check`, CI PASS, and independent review with
-P0 = 0 and P1 = 0 before merge to `v7-dev`.
+The implementation is limited to its approved ten-file allowlist. It requires
+exact allowlist review, `git diff --check`, applicable local and CI gates, and
+independent review with P0 = 0 and P1 = 0 before merge to `v7-dev`.
 
 ### Approval state
 
-The V7-03 design and this two-file documentation merge flow are approved.
-V7-03 implementation is not approved. RFC acceptance authorizes only a later
-implementation proposal; it does not authorize live Provider execution, I02,
-`main`, versioning, release, tag, publication, Settings, force push, or branch
-deletion.
+The V7-03 design and exact implementation scope are approved. This authorizes
+the bounded LocalFile CLI Provider execution, validation, commit, push, pull
+request, CI, review, in-scope P0/P1 remediation, and conditional merge to
+`v7-dev`. It does not authorize I02, `main`, versioning, release, tag,
+publication, Settings, force push, or branch deletion.
 
 ## Epic 1 sequencing
 
@@ -338,7 +337,7 @@ deletion.
 | --- | --- | --- | --- |
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
-| V7-03 Provider-Neutral Real Image Delivery | Design frozen; implementation not authorized | Completed V7-02, accepted RFC-V7-002, and separate explicit approval of a bounded implementation allowlist | Docs-only design freeze defines OpenAI as the first reference Provider, mock-default and LocalFile durable boundaries, compatibility and security gates, and I02 independence; implementation evidence not yet available |
+| V7-03 Provider-Neutral Real Image Delivery | Local implementation and review complete; PR/CI pending | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | Branch `feat/v7-03-real-image-delivery`; exact ten-file allowlist; local regression, static, Windows security, audit, and package gates passed; independent review P0/P1/P2 = 0; CI PASS remains required before merge to `v7-dev` |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility

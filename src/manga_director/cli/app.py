@@ -70,6 +70,9 @@ from manga_director.repositories.protocols import ProjectRepository
 from manga_director.sdk import ExtensionValidator
 from manga_director.workflow import WorkflowContext
 from manga_director.workflow.durable_execution import _route_localfile_primary, _route_localfile_run
+from manga_director.workflow.localfile_real_image_generation import (
+    execute_localfile_real_image_generation,
+)
 
 app = typer.Typer(help="Headless, one-page-at-a-time manga production workflow engine.")
 project_app = typer.Typer(help="Create, inspect, transfer, and delete persisted projects.")
@@ -978,9 +981,49 @@ def prompt(
 
 @app.command()
 def generate(
-    project: str, page: str, config: Path = typer.Option(Path("config.yaml"), "--config")
+    project: str,
+    page: str,
+    config: Path = typer.Option(Path("config.yaml"), "--config"),
+    real_provider: str | None = typer.Option(None, "--real-provider"),
+    authorized_by: str | None = typer.Option(None, "--authorized-by"),
 ) -> None:
-    _execute_primary("generate", project, page, config)
+    if real_provider is None and authorized_by is None:
+        _execute_primary("generate", project, page, config)
+        return
+
+    logger = LOGGER
+
+    def action() -> None:
+        if real_provider != "openai":
+            raise ValueError("--real-provider must be exactly 'openai'")
+        if authorized_by is None:
+            raise ValueError("--authorized-by is required for real image generation")
+
+        def execute(runtime: CliRuntime) -> None:
+            repository = runtime.loader.repository
+            if not isinstance(repository, LocalFileRepository):
+                raise ValueError("real image generation requires the LocalFile repository")
+            logger.info("Authorized real image generation start: %s/%s", project, page)
+            report = execute_localfile_real_image_generation(
+                repository,
+                runtime.engine,
+                project,
+                page,
+                authorized_by,
+            )
+            if (
+                report.status != "completed"
+                or report.completed is not True
+                or report.external_application_delegated is not True
+            ):
+                code = report.findings[0].code if report.findings else "REAL_GENERATION_NOT_APPLIED"
+                raise ValueError(f"real image generation stopped: {code}")
+            logger.info("Authorized real image generation completed: %s/%s", project, page)
+            _emit(report)
+
+        _use_runtime(config, execute)
+
+    _handle_error(logger, action)
 
 
 @app.command()

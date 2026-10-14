@@ -1,8 +1,190 @@
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from manga_director.cli.app import app
+from manga_director.domain.project import Page, Project
+from manga_director.domain.state_machine import PageState
+from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.workflow.contracts import WorkflowResult
+from manga_director.workflow.durable_execution import (
+    DurableWorkflowExecutionCoordinator,
+    LocalFileDurablePageStore,
+    LogicalOutputAssetQualityGatePort,
+)
+from manga_director.workflow.engine import WorkflowEngine
+
+
+class _Fence:
+    def __init__(self, _project_id: str, _page_id: str) -> None:
+        self.held = False
+
+    def acquire(self) -> None:
+        assert self.held is False
+        self.held = True
+
+    def release(self) -> None:
+        self.held = False
+
+
+def _route_with_test_fence(
+    engine: WorkflowEngine,
+    repository: LocalFileRepository,
+    project_id: str,
+    page_id: str,
+    command: str,
+    execution_input: dict[str, Any],
+    *,
+    logical_output_asset_quality_gate: LogicalOutputAssetQualityGatePort | None = None,
+) -> WorkflowResult:
+    receipt = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=_Fence,
+        logical_output_asset_quality_gate=logical_output_asset_quality_gate,
+    )._execute_with_receipt(project_id, page_id, command, execution_input)
+    assert receipt.workflow_result is not None
+    return receipt.workflow_result
+
+
+def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
+    common = ["--config", str(config)]
+    assert runner.invoke(app, ["init", "--project", "demo", "--page", "001", *common]).exit_code == 0
+    repository = LocalFileRepository(config.parent / ".manga-director")
+    repository.save(
+        Project(
+            id="demo",
+            title="demo",
+            pages=[
+                Page(
+                    page_number=1,
+                    state=PageState.PROMPT_BUILT,
+                    page_design={},
+                    review={},
+                    storyboard={"panels": [{"panel": 1}]},
+                    prompt={"prompt_markdown": "one monochrome manga panel"},
+                )
+            ],
+        )
+    )
+
+
+def test_cli_generate_default_keeps_existing_mock_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    _advance_to_prompt_built(runner, config)
+
+    def unexpected_real_generation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("default generate must not enter the real-provider path")
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation",
+        unexpected_real_generation,
+    )
+    monkeypatch.setattr(
+        "manga_director.cli.app._route_localfile_primary", _route_with_test_fence
+    )
+    result = runner.invoke(
+        app, ["generate", "demo", "001", "--config", str(config)]
+    )
+
+    assert result.exit_code == 0
+    assert '"current_state": "Generated"' in result.stdout
+    assert '"provider": "mock"' in result.stdout
+
+
+def test_cli_generate_explicit_openai_opt_in_requires_and_forwards_human_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    _advance_to_prompt_built(runner, config)
+    calls: list[tuple[str, str, str]] = []
+
+    class _Report(SimpleNamespace):
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "status": self.status,
+                "completed": self.completed,
+                "provider_invocation_performed": True,
+                "external_application_delegated": self.external_application_delegated,
+            }
+
+    def execute_real(
+        _repository: object,
+        _engine: object,
+        project: str,
+        page: str,
+        authorized_by: str,
+    ) -> object:
+        calls.append((project, page, authorized_by))
+        return _Report(
+            status="completed",
+            completed=True,
+            external_application_delegated=True,
+            findings=(),
+        )
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation", execute_real
+    )
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "demo",
+            "001",
+            "--real-provider",
+            "openai",
+            "--authorized-by",
+            "human:editor",
+            "--config",
+            str(config),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("demo", "001", "human:editor")]
+    assert '"completed": true' in result.stdout
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        ["--real-provider", "other", "--authorized-by", "human:editor"],
+        ["--real-provider", "openai"],
+        ["--authorized-by", "human:editor"],
+    ),
+)
+def test_cli_generate_invalid_real_opt_in_never_enters_provider_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: list[str],
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    calls = 0
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation", unexpected
+    )
+    result = runner.invoke(
+        app, ["generate", "missing", "1", *extra, "--config", str(config)]
+    )
+
+    assert result.exit_code == 1
+    assert calls == 0
 
 
 def test_cli_run_status_and_explicit_approval(tmp_path: Path) -> None:
