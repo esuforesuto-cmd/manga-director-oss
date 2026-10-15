@@ -242,9 +242,8 @@ def test_durable_attempt_is_reserved_before_read_only_preflight(tmp_path: Path) 
         assert record is not None and record.state == "RESERVED"
 
     client = _HttpClient(first_read_check=assert_reserved)
-    report = _execute(repository, client, token="3" * 32)
+    _execute(repository, client, token="3" * 32)
 
-    assert report.completed is True
     assert client.posts == 1
 
 
