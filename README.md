@@ -491,6 +491,23 @@ images, run in the background, retry an ambiguous Provider result, or switch
 Providers. If a Provider call may have started but no result is known, inspect
 the durable recovery evidence instead of running `generate` again.
 
+The same durable boundary supports an explicitly selected local ComfyUI
+server. Set `MANGA_DIRECTOR_COMFYUI_CHECKPOINT` to the exact basename of one
+already installed `.safetensors` or `.ckpt` checkpoint, keep ComfyUI on its
+default `http://127.0.0.1:8188` endpoint, and run:
+
+```bash
+manga-director generate demo 1 --real-provider comfyui --authorized-by human:editor
+```
+
+This route uses a Manga Director-owned, fixed core-node graph and exactly one
+`POST /prompt`. It performs read-only server, node, and checkpoint preflight,
+polls only the returned prompt id, and fetches exactly one PNG through `/view`.
+DNS names, LAN or remote endpoints, proxies, redirects, credentials, arbitrary
+workflows, custom nodes, scripts, model downloads, direct ComfyUI output-path
+access, automatic retry, and Provider fallback are not supported. An ambiguous
+submission or result stops with `RECOVERY_REQUIRED`.
+
 `config.yaml` is created by `init` or `project create` and supports:
 
 ```yaml
@@ -599,7 +616,9 @@ Do not add provider checks to `ImageAgent` or `WorkflowEngine`. Built-in `mock`
 is functional, and the public `OpenAIImageGenerator` and
 `ComfyUIImageGenerator` classes remain deterministic API-boundary stubs. The
 separate CLI opt-in documented above composes the private OpenAI transport only
-through the LocalFile durable execution boundary.
+through the LocalFile durable execution boundary. The ComfyUI opt-in uses a
+separate private loopback transport behind that same boundary; it does not
+change the legacy public stub.
 
 ## Add an LLM provider
 
@@ -709,9 +728,11 @@ or authorize publication. See [Creative Reliability](docs/CREATIVE_RELIABILITY.m
 **Can I resume after closing the CLI?** Yes. Local projects persist state and artifacts in JSON or YAML.
 
 **Does this call OpenAI or ComfyUI today?** Normal workflows and the legacy
-adapters do not. Only the explicit LocalFile CLI opt-in
-`generate ... --real-provider openai --authorized-by <human-id>` can call
-OpenAI. ComfyUI remains a non-network stub.
+adapters do not. Only the explicit LocalFile CLI opt-ins
+`generate ... --real-provider openai --authorized-by <human-id>` and
+`generate ... --real-provider comfyui --authorized-by <human-id>` can call the
+selected Provider. The public `OpenAIImageGenerator` and
+`ComfyUIImageGenerator` remain non-network stubs.
 
 **Can I use the Web UI against the bundled FastAPI workflow server?** Yes. Run
 `manga-director api serve`; it binds to `127.0.0.1:8000`, permits only the local
