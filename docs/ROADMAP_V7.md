@@ -353,13 +353,34 @@ deletion.
 
 ### Implementation status
 
-Design frozen by
+Complete and verified on PR #26. The design remains frozen by
 [RFC-V7-003: ComfyUI Local Provider Delivery](RFC_V7_003_COMFYUI_LOCAL_PROVIDER.md).
-Local implementation was explicitly authorized for the approved twelve-file
-allowlist. The implementation is complete on
-`feat/v7-04-comfyui-local-provider` and is stopped before commit. Live ComfyUI
-access, dependency changes, commit, push, PR, merge, Settings, release, and
-publication remain unauthorized.
+The implementation remains bounded by its approved twelve-file allowlist.
+
+### Completion evidence
+
+PR #26 was merged into `v7-dev` as merge commit
+`abd5a21a2597cb51286b666b23298b5f47450094`. Post-merge CI run #95 passed all
+ten required jobs, and CodeQL run #19 passed all three jobs. Independent review
+reported P0 = 0, P1 = 0, and P2 = 0. The feature branch
+`feat/v7-04-comfyui-local-provider` was retained. `main` remained unchanged at
+`b0291437af05fe53454843ba95fdf88216700f7c`.
+
+The completed implementation changed exactly this approved twelve-file
+allowlist:
+
+1. `README.md`
+2. `docs/ROADMAP_V7.md`
+3. `src/manga_director/cli/app.py`
+4. `src/manga_director/production/next_generation_comfyui_fixed_workflow.py`
+5. `src/manga_director/production/next_generation_comfyui_output_asset_registration.py`
+6. `src/manga_director/production/next_generation_comfyui_provider_adapter.py`
+7. `src/manga_director/workflow/localfile_comfyui_real_image_generation.py`
+8. `tests/integration/test_cli.py`
+9. `tests/test_localfile_comfyui_real_image_generation.py`
+10. `tests/test_next_generation_comfyui_fixed_workflow.py`
+11. `tests/test_next_generation_comfyui_output_asset_registration.py`
+12. `tests/test_next_generation_comfyui_provider_adapter.py`
 
 ### Objective
 
@@ -415,7 +436,7 @@ Settings, `main`, force push, and branch deletion are out of scope.
 
 ### Validation
 
-Local implementation validation passed the 72-test V7-04 focused set, Ruff,
+Implementation validation passed the 72-test V7-04 focused set, Ruff,
 mypy across 302 source files, a 124-test OpenAI/public/v6/HTTP/MCP/SDK/Plugin
 compatibility set, and the 3,051-test full suite (3,037 passed, 14 skipped).
 The focused set covers loopback parsing, disabled proxies, redirect rejection,
@@ -428,10 +449,10 @@ I02 change was required.
 
 ### Authorization gate
 
-The approved implementation scope is exhausted by the local twelve-file
-change and its validation. It does not authorize a live ComfyUI call, a
-dependency change, commit, push, PR, merge, Settings, release, tag,
-publication, force push, branch deletion, or a change to `main`.
+V7-04 is complete. Its prior authorization is exhausted by PR #26 and does not
+authorize follow-up implementation or a live ComfyUI call. It does not
+authorize I02, `main`, dependency changes, versioning, release, tag,
+publication, Settings, force push, or branch deletion.
 
 ## Epic 1 sequencing
 
@@ -440,7 +461,7 @@ publication, force push, branch deletion, or a change to `main`.
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
-| V7-04 ComfyUI Local Provider | Local implementation complete; stopped before commit | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | Focused 72/72, compatibility 124/124, Ruff, mypy 302 source files, and full pytest 3,037 passed/14 skipped; no live ComfyUI call, dependency change, commit, push, or PR |
+| V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
