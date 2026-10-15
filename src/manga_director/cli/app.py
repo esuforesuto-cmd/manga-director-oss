@@ -70,6 +70,9 @@ from manga_director.repositories.protocols import ProjectRepository
 from manga_director.sdk import ExtensionValidator
 from manga_director.workflow import WorkflowContext
 from manga_director.workflow.durable_execution import _route_localfile_primary, _route_localfile_run
+from manga_director.workflow.localfile_comfyui_real_image_generation import (
+    execute_localfile_comfyui_real_image_generation,
+)
 from manga_director.workflow.localfile_real_image_generation import (
     execute_localfile_real_image_generation,
 )
@@ -994,8 +997,8 @@ def generate(
     logger = LOGGER
 
     def action() -> None:
-        if real_provider != "openai":
-            raise ValueError("--real-provider must be exactly 'openai'")
+        if real_provider not in {"openai", "comfyui"}:
+            raise ValueError("--real-provider must be exactly 'openai' or 'comfyui'")
         if authorized_by is None:
             raise ValueError("--authorized-by is required for real image generation")
 
@@ -1004,13 +1007,22 @@ def generate(
             if not isinstance(repository, LocalFileRepository):
                 raise ValueError("real image generation requires the LocalFile repository")
             logger.info("Authorized real image generation start: %s/%s", project, page)
-            report = execute_localfile_real_image_generation(
-                repository,
-                runtime.engine,
-                project,
-                page,
-                authorized_by,
-            )
+            if real_provider == "comfyui":
+                report = execute_localfile_comfyui_real_image_generation(
+                    repository,
+                    runtime.engine,
+                    project,
+                    page,
+                    authorized_by,
+                )
+            else:
+                report = execute_localfile_real_image_generation(
+                    repository,
+                    runtime.engine,
+                    project,
+                    page,
+                    authorized_by,
+                )
             if (
                 report.status != "completed"
                 or report.completed is not True

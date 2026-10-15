@@ -351,16 +351,19 @@ deletion.
 
 ## V7-04 — ComfyUI Local Provider
 
-### Planning status
+### Implementation status
 
 Design frozen by
 [RFC-V7-003: ComfyUI Local Provider Delivery](RFC_V7_003_COMFYUI_LOCAL_PROVIDER.md).
-This is a design-only planning entry. V7-04 implementation and live ComfyUI
-calls are not authorized.
+Local implementation was explicitly authorized for the approved twelve-file
+allowlist. The implementation is complete on
+`feat/v7-04-comfyui-local-provider` and is stopped before commit. Live ComfyUI
+access, dependency changes, commit, push, PR, merge, Settings, release, and
+publication remain unauthorized.
 
 ### Objective
 
-Define the smallest safe design for applying the Provider-neutral LocalFile
+Implement the smallest safe application of the Provider-neutral LocalFile
 durable real-generation boundary completed by V7-03 to a local ComfyUI server
 as a second reference Provider, without changing existing public, workflow,
 persistence, or approval contracts.
@@ -412,21 +415,23 @@ Settings, `main`, force push, and branch deletion are out of scope.
 
 ### Validation
 
-The Design Freeze requires an exact two-file allowlist, available Markdown and
-link consistency checks, `git diff --check`, proof of no code/dependency/
-lockfile changes, and independent read-only review with P0 = 0 and P1 = 0.
-
-A later implementation requires a separately approved exact allowlist and
-must execute the RFC's loopback, preflight, fixed-graph, single-submission,
-ambiguous-outcome, PNG/25-MB, asset, workflow, compatibility, security, audit,
-regression, CI, and independent-review gates.
+Local implementation validation passed the 72-test V7-04 focused set, Ruff,
+mypy across 302 source files, a 124-test OpenAI/public/v6/HTTP/MCP/SDK/Plugin
+compatibility set, and the 3,051-test full suite (3,037 passed, 14 skipped).
+The focused set covers loopback parsing, disabled proxies, redirect rejection,
+read-only preflight, exact checkpoint and core-node checks, fixed graph,
+single submission, bounded polling, recovery-required ambiguity, strict PNG,
+25 MB streaming limits, unsafe output metadata, asset ownership, durable
+attempt ordering, default mock, and OpenAI selection. No dependency, lockfile,
+public export, StateMachine, LocalFile schema, HTTP, Web, MCP, SDK, Plugin, or
+I02 change was required.
 
 ### Authorization gate
 
-Acceptance and merge of the RFC authorize documentation only. They do not
-authorize implementation, live ComfyUI access, a dependency change, or any
-other excluded operation. A later implementation proposal requires separate
-explicit approval.
+The approved implementation scope is exhausted by the local twelve-file
+change and its validation. It does not authorize a live ComfyUI call, a
+dependency change, commit, push, PR, merge, Settings, release, tag,
+publication, force push, branch deletion, or a change to `main`.
 
 ## Epic 1 sequencing
 
@@ -435,7 +440,7 @@ explicit approval.
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
-| V7-04 ComfyUI Local Provider | Design frozen; implementation not authorized | Completed V7-03 and accepted RFC-V7-003 | RFC-V7-003 defines CLI-only explicit opt-in, loopback-only local ComfyUI, fixed core-node graph, one Page/attempt/prompt/PNG, no-retry recovery, byte-only asset handling, compatibility, and I02 exclusion; no implementation or live call authorized |
+| V7-04 ComfyUI Local Provider | Local implementation complete; stopped before commit | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | Focused 72/72, compatibility 124/124, Ruff, mypy 302 source files, and full pytest 3,037 passed/14 skipped; no live ComfyUI call, dependency change, commit, push, or PR |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility

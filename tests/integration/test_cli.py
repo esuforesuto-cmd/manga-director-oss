@@ -154,6 +154,70 @@ def test_cli_generate_explicit_openai_opt_in_requires_and_forwards_human_authori
     assert '"completed": true' in result.stdout
 
 
+def test_cli_generate_explicit_comfyui_opt_in_is_separate_and_forwards_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    _advance_to_prompt_built(runner, config)
+    calls: list[tuple[str, str, str]] = []
+
+    class _Report(SimpleNamespace):
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "status": self.status,
+                "completed": self.completed,
+                "provider_invocation_performed": True,
+                "external_application_delegated": self.external_application_delegated,
+            }
+
+    def execute_comfyui(
+        _repository: object,
+        _engine: object,
+        project: str,
+        page: str,
+        authorized_by: str,
+    ) -> object:
+        calls.append((project, page, authorized_by))
+        return _Report(
+            status="completed",
+            completed=True,
+            external_application_delegated=True,
+            findings=(),
+        )
+
+    def unexpected_openai(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("ComfyUI selection must not switch to OpenAI")
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_comfyui_real_image_generation",
+        execute_comfyui,
+    )
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_real_image_generation",
+        unexpected_openai,
+    )
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "demo",
+            "001",
+            "--real-provider",
+            "comfyui",
+            "--authorized-by",
+            "human:editor",
+            "--config",
+            str(config),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("demo", "001", "human:editor")]
+    assert '"completed": true' in result.stdout
+
+
 @pytest.mark.parametrize(
     "extra",
     (
