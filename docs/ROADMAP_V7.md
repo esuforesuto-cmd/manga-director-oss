@@ -460,8 +460,9 @@ publication, Settings, force push, or branch deletion.
 
 Design approved and frozen by
 [RFC-V7-004: Human Visual QA and Approval Readiness](RFC_V7_004_HUMAN_VISUAL_QA_APPROVAL_READINESS.md).
-This entry authorizes the docs-only design record, not implementation,
-execution, or live generation.
+The exact three-file implementation is approved and delivered by the V7-06
+change. It remains an internal, read-only advisory contract and authorizes no
+execution or live generation.
 
 ### Objective
 
@@ -531,9 +532,9 @@ approval-readiness status, while preserving the existing
 - no public API, DTO, persistence schema, dependency, workflow, Provider,
   LocalFile, StateMachine, or compatibility contract changes;
 - I02 remains fully independent; and
-- the docs-only two-file allowlist, documentation validation, independent
-  review, required CI, CodeQL, and post-merge checks pass with no P0/P1
-  finding.
+- the exact three-file implementation allowlist, focused and full regression,
+  lint, type-check, security/audit, package, independent review, required CI,
+  CodeQL, and post-merge checks pass with no P0/P1 finding.
 
 ### Compatibility and exclusions
 
@@ -541,20 +542,26 @@ V7-06 preserves Python, CLI, HTTP, Web UI, MCP, SDK, Plugin, Repository,
 Provider, generation-evidence, LocalFile, `StateMachine`, `WorkflowEngine`,
 v5, v6, and public API compatibility. No migration is required.
 
-I02 remains completely independent and out of scope. This design does not
-authorize code, tests, public exports, persistence, image or asset access,
-live generation, Project or Page mutation, approval execution, dependencies,
-lockfiles, package metadata, versioning, `main`, release, tag, publication,
-Settings, force push, history rewriting, or branch deletion.
+I02 remains completely independent and out of scope. The V7-06 implementation
+adds one internal advisory module and its focused tests. It does not authorize
+public exports, persistence, image or asset access, live generation, Project
+or Page mutation, approval execution, dependencies, lockfiles, package
+metadata, versioning, `main`, release, tag, publication, Settings, force push,
+history rewriting, or branch deletion.
 
 ### Validation
 
 - exact allowlist:
-  `docs/RFC_V7_004_HUMAN_VISUAL_QA_APPROVAL_READINESS.md` and
+  `src/manga_director/production/next_generation_human_visual_qa_approval_readiness.py`,
+  `tests/test_next_generation_human_visual_qa_approval_readiness.py`, and
   `docs/ROADMAP_V7.md`;
-- local Markdown-link resolution and `git diff --check`;
-- zero source, test, dependency, lockfile, workflow, package, version, or
-  settings diff;
+- focused deterministic status, precedence, binding, security, and
+  non-mutation tests;
+- related generation-binding, Visual QA, human-decision, StateMachine,
+  workflow, and V6 LTS regressions;
+- lint, type-check, security/audit, package, and `git diff --check` gates;
+- zero dependency, lockfile, workflow, package-metadata, version, or settings
+  diff;
 - architecture, StateMachine, approval-boundary, LocalFile-security, and
   public-compatibility review;
 - independent review with P0 = 0 and P1 = 0; and
@@ -562,10 +569,10 @@ Settings, force push, history rewriting, or branch deletion.
 
 ### Authorization gate
 
-V7-06 design is approved only for this docs-only RFC and roadmap update. A
-future implementation requires a separately approved exact allowlist. Any need
-for a public API, StateMachine, persistence, dependency, live-operation, or
-I02 change is a scope expansion and must stop.
+V7-06 implementation is approved only for the exact three-file allowlist in
+this entry. Any need for a fourth file, public API, StateMachine,
+WorkflowEngine, persistence, dependency, Provider, delivery surface,
+live-operation, or I02 change is a scope expansion and must stop.
 
 ## Epic 1 sequencing
 
@@ -575,7 +582,7 @@ I02 change is a scope expansion and must stop.
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
-| V7-06 Human Visual QA and Approval Readiness | Design approved; implementation not authorized | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 | Docs-only two-file design; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
+| V7-06 Human Visual QA and Approval Readiness | Implementation approved and delivered; completion requires all listed gates | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | Internal read-only implementation; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
