@@ -454,6 +454,119 @@ authorize follow-up implementation or a live ComfyUI call. It does not
 authorize I02, `main`, dependency changes, versioning, release, tag,
 publication, Settings, force push, or branch deletion.
 
+## V7-06 — Human Visual QA and Approval Readiness
+
+### Planning status
+
+Design approved and frozen by
+[RFC-V7-004: Human Visual QA and Approval Readiness](RFC_V7_004_HUMAN_VISUAL_QA_APPROVAL_READINESS.md).
+This entry authorizes the docs-only design record, not implementation,
+execution, or live generation.
+
+### Objective
+
+Define the smallest deterministic, read-only evidence flow from one validated
+generation result through explicit human visual QA to an advisory
+approval-readiness status, while preserving the existing
+`QualityChecked`-to-explicit-approval boundary.
+
+### Inputs
+
+- the verified generation-evidence and registered-asset chain on `v7-dev`,
+  including the V7-05 hardening merged by PR #28;
+- one existing Project and Page, one exact generation attempt, one registered
+  PNG asset, and one provenance reference;
+- the existing read-only Visual Continuity QA report and checklist;
+- caller-supplied human visual judgment with reviewer identity and rationale;
+- the current persisted Page state; and
+- existing `StateMachine`, `WorkflowEngine`, LocalFile containment,
+  quality-review, and explicit-approval contracts.
+
+### Outputs
+
+- one advisory `ready`, `needs_review`, or `blocked` status;
+- deterministic ordered findings and missing prerequisites;
+- exact logical references for the Page, attempt, asset, provenance, and human
+  review evidence; and
+- a human approval hand-off that performs no state transition.
+
+### Frozen behavior
+
+- use one Page and one exact attempt/asset/provenance chain;
+- validate generation evidence and asset binding before visual-review
+  readiness;
+- retain existing automated Visual Continuity QA as advisory checklist input,
+  never as a substitute for human image inspection;
+- require a named human to record visual judgment and rationale for the exact
+  selected output;
+- derive statuses with `blocked` taking precedence over `needs_review`, and
+  `needs_review` taking precedence over `ready`;
+- use `blocked` for integrity, binding, safety, ambiguity, or explicit human
+  stop findings;
+- use `needs_review` for incomplete human inspection, unresolved
+  non-blocking evidence, revision requests, or a Page not yet persisted as
+  `QualityChecked`;
+- use `ready` only when the exact evidence chain is valid, human visual
+  review is complete and acceptable, the Page is persisted as
+  `QualityChecked`, and no finding remains;
+- leave a `ready` Page at `QualityChecked`; only the existing separate
+  explicit `approve` action with human identity may request `Approved`;
+- fail closed without regeneration, retry, fallback, asset mutation, approval,
+  or notification; and
+- preserve deterministic ordering and logical references without current-time,
+  filesystem-order, network, or Provider dependence.
+
+### Acceptance criteria
+
+- the documented sequence is generation evidence → Visual QA → human judgment
+  → approval readiness;
+- all three readiness statuses have deterministic, fail-closed definitions;
+- generation success, automated QA, and `ready` are explicitly not approval;
+- the existing Page state sequence is unchanged, with persisted
+  `QualityChecked` and separate explicit human approval required before
+  `Approved`;
+- one-Page scope and exact attempt/asset/provenance correlation are mandatory;
+- no reviewer identity, evidence version, attempt, asset, or policy is inferred
+  or auto-selected;
+- no public API, DTO, persistence schema, dependency, workflow, Provider,
+  LocalFile, StateMachine, or compatibility contract changes;
+- I02 remains fully independent; and
+- the docs-only two-file allowlist, documentation validation, independent
+  review, required CI, CodeQL, and post-merge checks pass with no P0/P1
+  finding.
+
+### Compatibility and exclusions
+
+V7-06 preserves Python, CLI, HTTP, Web UI, MCP, SDK, Plugin, Repository,
+Provider, generation-evidence, LocalFile, `StateMachine`, `WorkflowEngine`,
+v5, v6, and public API compatibility. No migration is required.
+
+I02 remains completely independent and out of scope. This design does not
+authorize code, tests, public exports, persistence, image or asset access,
+live generation, Project or Page mutation, approval execution, dependencies,
+lockfiles, package metadata, versioning, `main`, release, tag, publication,
+Settings, force push, history rewriting, or branch deletion.
+
+### Validation
+
+- exact allowlist:
+  `docs/RFC_V7_004_HUMAN_VISUAL_QA_APPROVAL_READINESS.md` and
+  `docs/ROADMAP_V7.md`;
+- local Markdown-link resolution and `git diff --check`;
+- zero source, test, dependency, lockfile, workflow, package, version, or
+  settings diff;
+- architecture, StateMachine, approval-boundary, LocalFile-security, and
+  public-compatibility review;
+- independent review with P0 = 0 and P1 = 0; and
+- required hosted CI, CodeQL, and post-merge verification.
+
+### Authorization gate
+
+V7-06 design is approved only for this docs-only RFC and roadmap update. A
+future implementation requires a separately approved exact allowlist. Any need
+for a public API, StateMachine, persistence, dependency, live-operation, or
+I02 change is a scope expansion and must stop.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -462,6 +575,7 @@ publication, Settings, force push, or branch deletion.
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
+| V7-06 Human Visual QA and Approval Readiness | Design approved; implementation not authorized | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 | Docs-only two-file design; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
