@@ -454,6 +454,103 @@ authorize follow-up implementation or a live ComfyUI call. It does not
 authorize I02, `main`, dependency changes, versioning, release, tag,
 publication, Settings, force push, or branch deletion.
 
+## V7-05 — Live ComfyUI Local Verification Gate
+
+### Design and completion status
+
+Complete and verified. The bounded live-verification contract is frozen by
+[RFC-V7-004: Live ComfyUI Local Verification Gate](RFC_V7_004_LIVE_COMFYUI_LOCAL_VERIFICATION.md).
+The RFC records the verified contract after the completed run and does not
+authorize another live request or new implementation.
+
+### Objective
+
+Prove exactly once that the V7-04 ComfyUI Local Provider can execute against a
+real loopback-only ComfyUI installation and carry one PromptBuilt Page through
+durable admission, fixed-graph preparation, one Provider start, bounded result
+observation, strict PNG validation, LocalFile asset registration, and the
+existing legal transition to Generated without weakening public, workflow,
+persistence, security, or compatibility boundaries.
+
+### Frozen live gate
+
+- one explicitly authorized, dedicated Project and one PromptBuilt Page;
+- exact repository commit, loopback endpoint, checkpoint, Provider, Page, and
+  human authorization evidence fixed before execution;
+- read-only repository, listener, health, core-node, checkpoint, Project, and
+  prior-attempt preflight before any external side effect;
+- six required core node types from `python_module = nodes` and no custom
+  nodes, installs, model downloads, arbitrary workflow JSON, or scripts;
+- persisted prompt normalization and relative LocalFile root resolution
+  without changing stored prompt or existing containment authority;
+- fixed graph construction and validation before the durable Provider-start
+  boundary is consumed;
+- exactly one `POST /prompt`, bounded polling of the same `prompt_id`, one
+  same-origin `/view` byte response, one strict PNG, and zero automatic retry;
+- ComfyUI 0.40.0 optional descriptor `metadata` and `id` are validated and
+  discarded, never used as path, lookup, identity, or asset authority;
+- any ambiguous post-start outcome becomes `RECOVERY_REQUIRED` with no
+  replacement attempt, fallback, or Provider switch; and
+- successful evidence requires attempt `COMPLETED`, generation evidence ready,
+  asset registration success, strict PNG PASS, Page `Generated`, and no source
+  or staged diff caused by the live run.
+
+### Verified baseline and remediation evidence
+
+The verified environment used ComfyUI 0.40.0 on
+`http://127.0.0.1:8188`, an NVIDIA RTX 4070 Ti, and the exact checkpoint
+`animagine-xl-4.0.safetensors`. All six required core nodes passed preflight.
+The final live E2E issued one `POST /prompt`, performed zero retries, completed
+one durable attempt, produced ready generation evidence, registered one asset,
+passed strict PNG validation, and moved the dedicated Page to `Generated`.
+The operation added no source diff.
+
+Live verification exposed five bounded gaps: relative LocalFile durability-root
+resolution, persisted prompt normalization, Provider-start ordering, the
+polling window, and ComfyUI 0.40.0 descriptor compatibility. PR #28 corrected
+only those gaps and changed exactly this eleven-file allowlist:
+
+1. `src/manga_director/production/next_generation_comfyui_provider_adapter.py`
+2. `src/manga_director/production/next_generation_normal_execution_composition.py`
+3. `src/manga_director/production/next_generation_provider_adapter_composition.py`
+4. `src/manga_director/production/next_generation_provider_invocation.py`
+5. `src/manga_director/repositories/project_loader.py`
+6. `src/manga_director/workflow/localfile_comfyui_real_image_generation.py`
+7. `tests/integration/test_cli.py`
+8. `tests/test_localfile_comfyui_real_image_generation.py`
+9. `tests/test_next_generation_comfyui_provider_adapter.py`
+10. `tests/test_next_generation_provider_adapter_composition.py`
+11. `tests/test_next_generation_provider_invocation.py`
+
+Checkpoint commit `e138cdf5b83f8da274051ae8c4028b42f4c60182` was merged
+into `v7-dev` by PR #28 as merge commit
+`fd58392d919311403a32111ea7a3d2d9628d6ba9`. The 24 required PR checks
+passed, and both post-merge workflows (`CI` and `Push on v7-dev`) passed.
+Independent final review reported P0 = 0, P1 = 0, and P2 = 0. The checkpoint
+branch was retained, and `main` remained unchanged.
+
+### Compatibility and exclusions
+
+V7-05 preserves the public API, DTOs, StateMachine, WorkflowEngine, LocalFile
+schema and containment, mock default, legacy deterministic ComfyUI stub,
+OpenAI V7-03 behavior, HTTP, Web UI, MCP, SDK, Plugin, dependencies, package
+metadata, and v5/v6 compatibility. Optional ComfyUI descriptor fields,
+environment facts, checkpoint names, generated PNGs, and live-run artifacts do
+not become public or persistent authority.
+
+I02 remains completely independent and out of scope. Another live generation,
+source change, dependency or lockfile update, remote endpoint, custom node,
+model download, retry, fallback, Provider switch, `main`, versioning, release,
+tag, publication, Settings, force push, history rewrite, and branch deletion
+require separate authorization.
+
+### Authorization gate
+
+V7-05 is complete. Its prior live-run, remediation, PR, and merge authority is
+exhausted. RFC-V7-004 authorizes no additional live call or implementation.
+Any future live verification requires a new exact one-attempt approval package
+and must stop if code changes or broader scope are required.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -462,6 +559,7 @@ publication, Settings, force push, or branch deletion.
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
+| V7-05 Live ComfyUI Local Verification Gate | Complete and verified | Completed V7-04 and explicit authorization for one dedicated live attempt; RFC-V7-004 subsequently freezes the verified boundary | Final live E2E used one POST and zero retries; PR #28 checkpoint `e138cdf5` merged into `v7-dev` at `fd58392d`; 24 required checks and both post-merge workflows passed; independent final review P0/P1/P2 = 0; exact eleven-file remediation allowlist; checkpoint branch retained; `main` unchanged |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
