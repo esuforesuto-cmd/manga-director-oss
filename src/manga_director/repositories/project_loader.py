@@ -42,7 +42,7 @@ class ProjectLoader:
             return cls(repository)
         if driver != "local_file":
             raise ValueError(f"Unsupported repository driver: {driver}")
-        resolved_root = root if root.is_absolute() else base_directory / root
+        resolved_root = root if root.is_absolute() else (base_directory / root).resolve()
         return cls(LocalFileRepository(resolved_root, format=format))
 
     def create(self, project_id: str, title: str, page_number: int = 1) -> Project:

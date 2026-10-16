@@ -90,6 +90,19 @@ class InMemoryPrivateTransport:
         return self.result  # type: ignore[return-value]
 
 
+class InMemoryPreparatoryPrivateTransport(InMemoryPrivateTransport):
+    def __init__(self, *, preparation_fails: bool = False) -> None:
+        super().__init__()
+        self.preparation_fails = preparation_fails
+        self.preparation_calls: list[ProviderPrivateTransportRequest] = []
+
+    def prepare(self, request: ProviderPrivateTransportRequest):
+        self.preparation_calls.append(request)
+        if self.preparation_fails:
+            return None
+        return lambda: self.invoke(request)
+
+
 def _chain():
     requirements = (
         GenerationCapabilityRequirementDTO(capability_id="text_prompt", requirement_level="required"),
@@ -262,6 +275,41 @@ def test_valid_invocation_calls_transport_once_and_returns_opaque_output() -> No
     )
     assert request.configuration_selection.requested_seed == _value(1234)
     assert not hasattr(request.configuration_selection, "effective_seed")
+
+
+def test_preparatory_transport_defers_private_invocation() -> None:
+    transport = InMemoryPreparatoryPrivateTransport()
+    adapter = _adapter(transport)
+    _, resolution = _chain()
+    assert resolution.materialized_input is not None
+    assert hasattr(adapter, "prepare_invocation")
+
+    prepared = adapter.prepare_invocation(resolution.materialized_input)
+
+    assert prepared is not None
+    assert len(transport.preparation_calls) == 1
+    assert transport.calls == []
+
+    result = prepared()
+
+    assert result.outcome == "succeeded"
+    assert len(transport.calls) == 1
+
+
+def test_preparatory_binding_mismatch_fails_before_transport_prepare() -> None:
+    transport = InMemoryPreparatoryPrivateTransport()
+    adapter = _adapter(transport)
+    _, resolution = _chain()
+    assert resolution.materialized_input is not None
+    assert hasattr(adapter, "prepare_invocation")
+
+    prepared = adapter.prepare_invocation(
+        replace(resolution.materialized_input, attempt_id="attempt:other")
+    )
+
+    assert prepared is None
+    assert transport.preparation_calls == []
+    assert transport.calls == []
 
 
 @pytest.mark.parametrize(

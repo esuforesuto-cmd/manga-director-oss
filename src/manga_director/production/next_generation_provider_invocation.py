@@ -6,9 +6,9 @@ neither the raw prompt nor provider/runtime details in durable reports.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import ConfigDict
 
@@ -102,6 +102,34 @@ class ProviderGenerationInvocationPort(Protocol):
     def invoke(self, materialized_input: MaterializedGenerationInput) -> ProviderInvocationRuntimeResult: ...
 
 
+@runtime_checkable
+class _PreparableProviderGenerationInvocationPort(Protocol):
+    """Private two-phase capability used only by durable provider-start composition."""
+
+    def prepare_invocation(
+        self, materialized_input: MaterializedGenerationInput
+    ) -> Callable[[], ProviderInvocationRuntimeResult] | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderInvocationPreparation:
+    """Runtime-only prepared call or a pre-provider failure outcome."""
+
+    resolution_report: SecureExecutionInputResolutionReport
+    attempt_id: str
+    provider_reference: str
+    invoke: Callable[[], ProviderInvocationOutcome] | None = field(
+        repr=False, compare=False, default=None
+    )
+    failure: ProviderInvocationOutcome | None = field(
+        repr=False, compare=False, default=None
+    )
+
+    @property
+    def ready(self) -> bool:
+        return self.invoke is not None and self.failure is None
+
+
 class ProviderInvocationService:
     """Perform at most one port invocation for one exact resolved attempt."""
 
@@ -131,8 +159,105 @@ class ProviderInvocationService:
                 invocation_performed=False,
             )
 
+        return self._invoke_runtime(
+            resolution_report,
+            attempt_id,
+            provider_reference,
+            lambda: provider_invocation_port.invoke(materialized),
+        )
+
+    def _prepare_for_provider_start(
+        self,
+        attempt_id: str,
+        resolution_outcome: SecureExecutionInputResolutionOutcome,
+        provider_invocation_port: ProviderGenerationInvocationPort,
+    ) -> _ProviderInvocationPreparation:
+        """Prepare supported private transports before durable provider-start."""
+
+        resolution_report = resolution_outcome.report
+        provider_reference = _expected_provider_reference(resolution_report, attempt_id)
+        if not isinstance(
+            provider_invocation_port, _PreparableProviderGenerationInvocationPort
+        ):
+            return _ProviderInvocationPreparation(
+                resolution_report,
+                attempt_id,
+                provider_reference,
+                invoke=lambda: self.invoke(
+                    attempt_id, resolution_outcome, provider_invocation_port
+                ),
+            )
+
+        findings = _precondition_findings(
+            attempt_id,
+            resolution_outcome,
+            provider_invocation_port.provider_reference,
+            provider_reference,
+        )
+        materialized = resolution_outcome.materialized_input
+        if findings or materialized is None:
+            return _failed_preparation(
+                resolution_report,
+                attempt_id,
+                provider_reference,
+                findings,
+            )
         try:
-            result = provider_invocation_port.invoke(materialized)
+            prepared_invocation = provider_invocation_port.prepare_invocation(materialized)
+        except Exception:
+            prepared_invocation = None
+        if prepared_invocation is None:
+            return _failed_preparation(
+                resolution_report,
+                attempt_id,
+                provider_reference,
+                [_finding("PROVIDER_RUNTIME_FAILURE", attempt_id, provider_reference)],
+            )
+        return _ProviderInvocationPreparation(
+            resolution_report,
+            attempt_id,
+            provider_reference,
+            invoke=lambda: self._invoke_runtime(
+                resolution_report,
+                attempt_id,
+                provider_reference,
+                prepared_invocation,
+            ),
+        )
+
+    @staticmethod
+    def _invoke_after_provider_start(
+        preparation: _ProviderInvocationPreparation,
+    ) -> ProviderInvocationOutcome:
+        """Invoke one prepared call after the durable provider-start transition."""
+
+        if preparation.invoke is None:
+            if preparation.failure is not None:
+                return preparation.failure
+            return _outcome(
+                preparation.resolution_report,
+                preparation.attempt_id,
+                preparation.provider_reference,
+                [
+                    _finding(
+                        "PROVIDER_RUNTIME_FAILURE",
+                        preparation.attempt_id,
+                        preparation.provider_reference,
+                    )
+                ],
+                invocation_performed=False,
+            )
+        return preparation.invoke()
+
+    @staticmethod
+    def _invoke_runtime(
+        resolution_report: SecureExecutionInputResolutionReport,
+        attempt_id: str,
+        provider_reference: str,
+        invocation: Callable[[], ProviderInvocationRuntimeResult],
+    ) -> ProviderInvocationOutcome:
+        try:
+            result = invocation()
         except Exception:
             return _outcome(
                 resolution_report,
@@ -184,6 +309,27 @@ def _precondition_findings(
             )
         ]
     return []
+
+
+def _failed_preparation(
+    resolution_report: SecureExecutionInputResolutionReport,
+    attempt_id: str,
+    provider_reference: str,
+    findings: Iterable[ProviderInvocationFindingDTO],
+) -> _ProviderInvocationPreparation:
+    failure = _outcome(
+        resolution_report,
+        attempt_id,
+        provider_reference,
+        findings,
+        invocation_performed=False,
+    )
+    return _ProviderInvocationPreparation(
+        resolution_report,
+        attempt_id,
+        provider_reference,
+        failure=failure,
+    )
 
 
 def _expected_provider_reference(

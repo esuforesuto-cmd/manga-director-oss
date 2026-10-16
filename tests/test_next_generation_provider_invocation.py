@@ -91,6 +91,19 @@ class InMemoryProviderPort:
         return self.result
 
 
+class InMemoryPreparableProviderPort(InMemoryProviderPort):
+    def __init__(self, *, preparation_fails: bool = False) -> None:
+        super().__init__("provider:local-a", _result())
+        self.preparation_fails = preparation_fails
+        self.preparation_calls: list[object] = []
+
+    def prepare_invocation(self, materialized_input: object):
+        self.preparation_calls.append(materialized_input)
+        if self.preparation_fails:
+            return None
+        return lambda: self.invoke(materialized_input)
+
+
 def _resolution_outcome() -> SecureExecutionInputResolutionOutcome:
     requirements = (
         GenerationCapabilityRequirementDTO(capability_id="text_prompt", requirement_level="required"),
@@ -212,6 +225,38 @@ def test_successful_exact_bound_invocation_calls_port_once_and_retains_no_prompt
     serialized = outcome.report.model_dump_json()
     assert "PRIVATE-PROMPT-MATERIAL" not in serialized
     assert "output_asset_id" not in serialized
+
+
+def test_private_preparation_failure_reports_no_invocation() -> None:
+    resolution = _resolution_outcome()
+    port = InMemoryPreparableProviderPort(preparation_fails=True)
+    service = ProviderInvocationService()
+
+    preparation = service._prepare_for_provider_start("attempt:001", resolution, port)
+
+    assert preparation.ready is False
+    assert preparation.failure is not None
+    assert preparation.failure.report.invocation_performed is False
+    assert len(port.preparation_calls) == 1
+    assert port.calls == []
+
+
+def test_private_preparation_defers_invocation_until_provider_start() -> None:
+    resolution = _resolution_outcome()
+    port = InMemoryPreparableProviderPort()
+    service = ProviderInvocationService()
+
+    preparation = service._prepare_for_provider_start("attempt:001", resolution, port)
+
+    assert preparation.ready is True
+    assert len(port.preparation_calls) == 1
+    assert port.calls == []
+
+    outcome = service._invoke_after_provider_start(preparation)
+
+    assert outcome.report.succeeded is True
+    assert outcome.report.invocation_performed is True
+    assert len(port.calls) == 1
 
 
 @pytest.mark.parametrize(

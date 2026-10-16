@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -13,8 +14,15 @@ import pytest
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
+from manga_director.production import next_generation_comfyui_provider_adapter as comfy_adapter
+from manga_director.production import (
+    next_generation_provider_adapter_composition as adapter_composition,
+)
 from manga_director.production.next_generation_normal_execution_attempt import (
     LocalNormalExecutionAttemptStore,
+)
+from manga_director.production.next_generation_secure_execution_input_resolution import (
+    OpaqueReferenceAssetHandle,
 )
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow import localfile_comfyui_real_image_generation as comfy_module
@@ -38,11 +46,13 @@ class _HttpClient:
         mode: Literal["success", "submission-ambiguous", "malformed-png"] = "success",
         *,
         first_read_check: Callable[[], None] | None = None,
+        post_check: Callable[[], None] | None = None,
     ) -> None:
         self.mode = mode
         self.posts = 0
         self.reads = 0
         self._first_read_check = first_read_check
+        self._post_check = post_check
 
     def get_json(self, path: str) -> object:
         if self.reads == 0 and self._first_read_check is not None:
@@ -78,6 +88,8 @@ class _HttpClient:
     def post_json(self, path: str, payload: object) -> object:
         assert path == "/prompt"
         assert isinstance(payload, dict) and set(payload) == {"prompt", "client_id"}
+        if self._post_check is not None:
+            self._post_check()
         self.posts += 1
         if self.mode == "submission-ambiguous":
             raise TimeoutError("outcome unknown")
@@ -121,7 +133,7 @@ def _repository(tmp_path: Path) -> LocalFileRepository:
                     page_design={},
                     review={},
                     storyboard={"panels": [{"panel": 1}]},
-                    prompt={"prompt_markdown": "one monochrome manga panel"},
+                    prompt={"prompt_markdown": "one monochrome manga panel\n"},
                 )
             ],
         )
@@ -245,6 +257,86 @@ def test_durable_attempt_is_reserved_before_read_only_preflight(tmp_path: Path) 
     _execute(repository, client, token="3" * 32)
 
     assert client.posts == 1
+
+
+def test_provider_started_is_durable_at_post_boundary(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    attempt_id = "attempt:v7-04:human:editor:" + "4" * 32
+
+    def assert_provider_started() -> None:
+        store = LocalNormalExecutionAttemptStore(
+            repository._next_generation_normal_execution_owner_root() / "attempts"
+        )
+        record = store.lookup(attempt_id)
+        assert record is not None and record.state == "PROVIDER_STARTED"
+
+    client = _HttpClient(post_check=assert_provider_started)
+    report = _execute(repository, client, token="4" * 32)
+
+    assert report.provider_invocation_performed is True
+    assert client.posts == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ("graph-build", "graph-validation", "binding", "reference-asset"),
+)
+def test_prepare_failure_preserves_reserved_attempt_without_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    repository = _repository(tmp_path)
+    client = _HttpClient()
+    token = {
+        "graph-build": "a",
+        "graph-validation": "b",
+        "binding": "c",
+        "reference-asset": "d",
+    }[failure] * 32
+
+    def fail(*_args: object, **_kwargs: object):
+        raise ValueError(f"{failure} failed")
+
+    if failure == "graph-build":
+        monkeypatch.setattr(comfy_adapter, "build_comfyui_fixed_workflow", fail)
+    elif failure == "graph-validation":
+        monkeypatch.setattr(comfy_adapter, "validate_comfyui_fixed_workflow", fail)
+    elif failure == "binding":
+        monkeypatch.setattr(adapter_composition, "_matches_selection", lambda *_: False)
+    else:
+        original_prepare = comfy_adapter.ComfyUIImagePrivateTransport.prepare
+
+        def prepare_with_reference_asset(self, request):
+            return original_prepare(
+                self,
+                replace(
+                    request,
+                    reference_asset_handles=(
+                        OpaqueReferenceAssetHandle("asset:unexpected", object()),
+                    ),
+                ),
+            )
+
+        monkeypatch.setattr(
+            comfy_adapter.ComfyUIImagePrivateTransport,
+            "prepare",
+            prepare_with_reference_asset,
+        )
+
+    report = _execute(repository, client, token=token)
+
+    assert report.status == "blocked"
+    assert tuple(item.code for item in report.findings) == (
+        "PROVIDER_PREPARATION_BLOCKED",
+    )
+    assert report.provider_invocation_performed is False
+    assert client.posts == 0
+    store = LocalNormalExecutionAttemptStore(
+        repository._next_generation_normal_execution_owner_root() / "attempts"
+    )
+    record = store.lookup(f"attempt:v7-04:human:editor:{token}")
+    assert record is not None and record.state == "RESERVED"
 
 
 @pytest.mark.parametrize("mode", ("submission-ambiguous", "malformed-png"))

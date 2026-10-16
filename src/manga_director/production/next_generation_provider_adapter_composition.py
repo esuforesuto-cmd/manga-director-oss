@@ -7,8 +7,9 @@ opaque backing material remain runtime-only and never enter durable reports.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from manga_director.production.next_generation_provider_configuration import (
     ProviderConfigurationNormalizationReport,
@@ -60,6 +61,15 @@ class ProviderPrivateTransportPort(Protocol):
     ) -> ProviderPrivateTransportResult: ...
 
 
+@runtime_checkable
+class _PreparatoryProviderPrivateTransportPort(ProviderPrivateTransportPort, Protocol):
+    """Private transport capable of completing fallible work before submission."""
+
+    def prepare(
+        self, request: ProviderPrivateTransportRequest
+    ) -> Callable[[], ProviderPrivateTransportResult] | None: ...
+
+
 class BoundProviderGenerationInvocationAdapter(ProviderGenerationInvocationPort):
     """Short-lived port implementation bound to one immutable selection."""
 
@@ -81,20 +91,54 @@ class BoundProviderGenerationInvocationAdapter(ProviderGenerationInvocationPort)
         if not _matches_selection(materialized_input, self._selection):
             return _runtime_failure(materialized_input.attempt_id, self.provider_reference)
 
-        request = ProviderPrivateTransportRequest(
-            attempt_id=materialized_input.attempt_id,
-            provider_reference=materialized_input.provider_reference,
-            profile_id=materialized_input.profile_id,
-            profile_version=materialized_input.profile_version,
-            configuration_selection=self._selection,
-            raw_prompt=materialized_input.raw_prompt,
-            reference_asset_handles=materialized_input.reference_asset_handles,
-        )
+        request = _private_request(materialized_input, self._selection)
         try:
             result = self._private_transport.invoke(request)
         except Exception:
             return _runtime_failure(materialized_input.attempt_id, self.provider_reference)
         return _normalize_private_result(result, materialized_input.attempt_id, self.provider_reference)
+
+
+class _PreparedBoundProviderGenerationInvocationAdapter(
+    BoundProviderGenerationInvocationAdapter
+):
+    """Bound adapter exposing a private prepare-then-submit capability."""
+
+    def __init__(
+        self,
+        selection: ProviderConfigurationSelectionDTO,
+        private_transport: _PreparatoryProviderPrivateTransportPort,
+    ) -> None:
+        super().__init__(selection, private_transport)
+        self._preparatory_transport = private_transport
+
+    def prepare_invocation(
+        self, materialized_input: MaterializedGenerationInput
+    ) -> Callable[[], ProviderInvocationRuntimeResult] | None:
+        if not _matches_selection(materialized_input, self._selection):
+            return None
+        request = _private_request(materialized_input, self._selection)
+        try:
+            prepared = self._preparatory_transport.prepare(request)
+        except Exception:
+            return None
+        if prepared is None:
+            return None
+
+        def invoke_prepared() -> ProviderInvocationRuntimeResult:
+            try:
+                result = prepared()
+            except Exception:
+                return _runtime_failure(
+                    materialized_input.attempt_id, self.provider_reference
+                )
+            return _normalize_private_result(
+                result,
+                materialized_input.attempt_id,
+                self.provider_reference,
+            )
+
+        return invoke_prepared
 
 
 class ProviderAdapterCompositionService:
@@ -113,10 +157,28 @@ class ProviderAdapterCompositionService:
             or configuration_normalization_report.selection is None
         ):
             return None
-        return BoundProviderGenerationInvocationAdapter(
-            configuration_normalization_report.selection,
-            private_transport,
-        )
+        selection = configuration_normalization_report.selection
+        if isinstance(private_transport, _PreparatoryProviderPrivateTransportPort):
+            return _PreparedBoundProviderGenerationInvocationAdapter(
+                selection,
+                private_transport,
+            )
+        return BoundProviderGenerationInvocationAdapter(selection, private_transport)
+
+
+def _private_request(
+    materialized_input: MaterializedGenerationInput,
+    selection: ProviderConfigurationSelectionDTO,
+) -> ProviderPrivateTransportRequest:
+    return ProviderPrivateTransportRequest(
+        attempt_id=materialized_input.attempt_id,
+        provider_reference=materialized_input.provider_reference,
+        profile_id=materialized_input.profile_id,
+        profile_version=materialized_input.profile_version,
+        configuration_selection=selection,
+        raw_prompt=materialized_input.raw_prompt,
+        reference_asset_handles=materialized_input.reference_asset_handles,
+    )
 
 
 def _matches_selection(

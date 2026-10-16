@@ -42,7 +42,7 @@ _COMFYUI_PROVIDER_ID = "comfyui"
 _JSON_LIMIT_BYTES = 2 * 1024 * 1024
 _PNG_LIMIT_BYTES = 25 * 1024 * 1024
 _TIMEOUT_SECONDS = 5.0
-_POLL_LIMIT = 20
+_POLL_LIMIT = 120
 _POLL_INTERVAL_SECONDS = 0.25
 _PROMPT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _OUTPUT_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.png$")
@@ -223,6 +223,16 @@ class ComfyUIImagePrivateTransport:
     def invoke(self, request: ProviderPrivateTransportRequest) -> ProviderPrivateTransportResult:
         """Submit once, poll one prompt id, fetch one PNG, or fail ambiguously."""
 
+        prepared = self.prepare(request)
+        if prepared is None:
+            return _runtime_failure()
+        return prepared()
+
+    def prepare(
+        self, request: ProviderPrivateTransportRequest
+    ) -> Callable[[], ProviderPrivateTransportResult] | None:
+        """Validate and materialize all fallible input before durable provider-start."""
+
         output_configuration = self._output_configuration
         if (
             not self._preflight_ready
@@ -231,7 +241,7 @@ class ComfyUIImagePrivateTransport:
             )
             or request.reference_asset_handles
         ):
-            return _runtime_failure()
+            return None
         seed = int(hashlib.sha256(request.attempt_id.encode()).hexdigest()[:16], 16) % (2**63)
         try:
             graph = build_comfyui_fixed_workflow(
@@ -246,7 +256,18 @@ class ComfyUIImagePrivateTransport:
                 seed=seed,
             )
         except (TypeError, ValueError):
-            return _runtime_failure()
+            return None
+        client_id = (
+            f"manga-director-{hashlib.sha256(request.attempt_id.encode()).hexdigest()[:24]}"
+        )
+        return lambda: self._submit_prepared(graph, client_id)
+
+    def _submit_prepared(
+        self,
+        graph: Mapping[str, object],
+        client_id: str,
+    ) -> ProviderPrivateTransportResult:
+        """Consume one opportunity and immediately issue the prepared POST."""
 
         # Consume the one in-memory submission opportunity immediately before POST.
         with self._invocation_lock:
@@ -260,7 +281,7 @@ class ComfyUIImagePrivateTransport:
                 "/prompt",
                 {
                     "prompt": graph,
-                    "client_id": f"manga-director-{hashlib.sha256(request.attempt_id.encode()).hexdigest()[:24]}",
+                    "client_id": client_id,
                 },
             )
             prompt_id = _submitted_prompt_id(response)
@@ -408,7 +429,22 @@ def _history_descriptor(history: object, prompt_id: str) -> dict[str, str] | Non
 
 
 def _validated_output_descriptor(value: object) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != {"filename", "subfolder", "type"}:
+    if not isinstance(value, dict):
+        raise ValueError("ComfyUI output descriptor is unavailable")
+    required_keys = {"filename", "subfolder", "type"}
+    optional_keys = {"metadata", "id"}
+    keys = set(value)
+    if not required_keys.issubset(keys) or not keys.issubset(required_keys | optional_keys):
+        raise ValueError("ComfyUI output descriptor is unavailable")
+    if (
+        "metadata" in value
+        and not isinstance(value.get("metadata"), dict)
+        or "id" in value
+        and (
+            not isinstance(value.get("id"), str)
+            or not _PROMPT_ID.fullmatch(value["id"])
+        )
+    ):
         raise ValueError("ComfyUI output descriptor is unavailable")
     filename = value.get("filename")
     subfolder = value.get("subfolder")

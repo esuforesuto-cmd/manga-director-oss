@@ -218,6 +218,66 @@ def test_cli_generate_explicit_comfyui_opt_in_is_separate_and_forwards_authoriza
     assert '"completed": true' in result.stdout
 
 
+def test_cli_generate_explicit_comfyui_resolves_relative_repository_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    config = Path("config.yaml")
+    _advance_to_prompt_built(runner, config)
+    observed_roots: list[Path] = []
+
+    class _Report(SimpleNamespace):
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "status": self.status,
+                "completed": self.completed,
+                "provider_invocation_performed": True,
+                "external_application_delegated": self.external_application_delegated,
+            }
+
+    def execute_comfyui(
+        repository: object,
+        _engine: object,
+        project: str,
+        page: str,
+        authorized_by: str,
+    ) -> object:
+        assert isinstance(repository, LocalFileRepository)
+        observed_roots.append(repository._root)
+        assert (project, page, authorized_by) == ("demo", "001", "human:editor")
+        return _Report(
+            status="completed",
+            completed=True,
+            external_application_delegated=True,
+            findings=(),
+        )
+
+    monkeypatch.setattr(
+        "manga_director.cli.app.execute_localfile_comfyui_real_image_generation",
+        execute_comfyui,
+    )
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "demo",
+            "001",
+            "--real-provider",
+            "comfyui",
+            "--authorized-by",
+            "human:editor",
+            "--config",
+            "config.yaml",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert observed_roots == [(tmp_path / ".manga-director" / "projects").resolve()]
+    assert observed_roots[0].is_absolute()
+
+
 @pytest.mark.parametrize(
     "extra",
     (
