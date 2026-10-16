@@ -170,10 +170,21 @@ class NormalExecutionCompositionService:
         if getattr(resolution.report, "ready", False) is not True:
             return _result(request.reservation.attempt_id, "blocked", [_finding("SECURE_RESOLUTION_BLOCKED", "blocked", request)])
 
+        preparation = self._invocation._prepare_for_provider_start(
+            request.reservation.attempt_id,
+            resolution,
+            request.provider_invocation_port,
+        )
+        if preparation.ready is not True:
+            return _result(
+                request.reservation.attempt_id,
+                "blocked",
+                [_finding("PROVIDER_PREPARATION_BLOCKED", "blocked", request)],
+            )
         started = self._attempts.begin_provider(reservation, attempt_store)
         if started.provider_invocation_permitted is not True:
             return _result(request.reservation.attempt_id, "partial", [_finding("PROVIDER_CALL_ALREADY_CONSUMED", "partial", request)])
-        invocation = self._invocation.invoke(request.reservation.attempt_id, resolution, request.provider_invocation_port)
+        invocation = self._invocation._invoke_after_provider_start(preparation)
         if invocation.report.succeeded is not True:
             if _provider_declared_failure(invocation.report) and invocation.report.invocation_performed:
                 self._attempts.record_provider_declared_failure(reservation, attempt_store)

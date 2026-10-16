@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from manga_director.production import next_generation_comfyui_provider_adapter as comfy_adapter
 from manga_director.production.next_generation_comfyui_provider_adapter import (
     ComfyUIImagePrivateTransport,
     ComfyUIInMemoryGeneratedImageMaterial,
@@ -37,17 +38,33 @@ _NODE_TYPES = (
     "VAEDecode",
     "SaveImage",
 )
+_DESCRIPTOR_EXTRAS: dict[str, dict[str, object]] = {
+    "comfyui-0.40-descriptor": {
+        "metadata": {"kind": "image", "width": 1024, "height": 1024},
+        "id": "75c88892-bdf7-4d2e-b886-92d0017b9af9",
+    },
+    "unexpected-descriptor-field": {"path": "ignored.png"},
+    "invalid-descriptor-metadata": {"metadata": "image"},
+    "invalid-descriptor-id": {"id": "../unsafe"},
+}
 
 
 class _ServerState(SimpleNamespace):
     mode: str
     post_count: int
     history_count: int
+    elapsed_seconds: float
     paths: list[str]
 
 
 def _state(mode: str = "success") -> _ServerState:
-    return _ServerState(mode=mode, post_count=0, history_count=0, paths=[])
+    return _ServerState(
+        mode=mode,
+        post_count=0,
+        history_count=0,
+        elapsed_seconds=0.0,
+        paths=[],
+    )
 
 
 @contextmanager
@@ -93,14 +110,17 @@ def _server(state: _ServerState) -> Iterator[str]:  # noqa: C901
                 state.history_count += 1
                 if state.mode == "never-completes" or (
                     state.mode == "pending-then-success" and state.history_count == 1
+                ) or (
+                    state.mode == "ten-second-generation" and state.elapsed_seconds < 10.5
                 ):
                     self._json({})
                     return
                 filename = "../result.png" if state.mode == "unsafe-metadata" else "result.png"
                 subfolder = "nested" if state.mode == "unsafe-subfolder" else ""
-                images = [
+                images: list[dict[str, object]] = [
                     {"filename": filename, "subfolder": subfolder, "type": "output"}
                 ]
+                images[0].update(_DESCRIPTOR_EXTRAS.get(state.mode, {}))
                 if state.mode == "multiple-outputs":
                     images.append(
                         {"filename": "result-2.png", "subfolder": "", "type": "output"}
@@ -252,6 +272,90 @@ def test_fixed_graph_submits_once_polls_same_id_and_returns_one_png(
     assert sum(path.startswith("/view?") for path in state.paths) == 1
 
 
+def test_default_polling_window_observes_ten_second_generation() -> None:
+    state = _state("ten-second-generation")
+
+    def advance_clock(seconds: float) -> None:
+        state.elapsed_seconds += seconds
+
+    with _server(state) as endpoint:
+        request, output = _request_and_output()
+        transport = ComfyUIImagePrivateTransport(
+            _CHECKPOINT,
+            output,  # type: ignore[arg-type]
+            http_client=StandardLibraryComfyUIHttpClient(endpoint),
+            sleeper=advance_clock,
+        )
+        transport.preflight()
+
+        result = transport.invoke(request)
+
+    assert result.outcome == "succeeded"
+    assert state.elapsed_seconds == 10.5
+    assert state.history_count == 43
+    assert state.post_count == 1
+    assert state.paths.count("/prompt") == 1
+
+
+def test_comfyui_040_descriptor_metadata_is_accepted_without_weakening_lookup() -> None:
+    state = _state("comfyui-0.40-descriptor")
+    with _server(state) as endpoint:
+        transport, request = _transport(endpoint)
+        transport.preflight()
+
+        result = transport.invoke(request)
+
+    assert result.outcome == "succeeded"
+    assert isinstance(result.output_material, ComfyUIInMemoryGeneratedImageMaterial)
+    assert result.output_material.image_bytes == _PNG_BYTES
+    assert state.post_count == 1
+    assert sum(path.startswith("/view?") for path in state.paths) == 1
+
+
+def test_prepare_completes_graph_work_without_posting() -> None:
+    state = _state()
+    with _server(state) as endpoint:
+        transport, request = _transport(endpoint)
+        transport.preflight()
+
+        prepared = transport.prepare(request)
+
+        assert prepared is not None
+        assert state.post_count == 0
+
+        result = prepared()
+
+    assert result.outcome == "succeeded"
+    assert state.post_count == 1
+
+
+@pytest.mark.parametrize("stage", ("build", "validation"))
+def test_graph_prepare_failure_never_posts(
+    stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state()
+
+    def fail(*_args: object, **_kwargs: object):
+        raise ValueError(f"{stage} failed")
+
+    monkeypatch.setattr(
+        comfy_adapter,
+        "build_comfyui_fixed_workflow"
+        if stage == "build"
+        else "validate_comfyui_fixed_workflow",
+        fail,
+    )
+    with _server(state) as endpoint:
+        transport, request = _transport(endpoint)
+        transport.preflight()
+
+        result = transport.invoke(request)
+
+    assert result.outcome == "runtime_failed"
+    assert state.post_count == 0
+
+
 @pytest.mark.parametrize(
     "mode",
     (
@@ -262,6 +366,9 @@ def test_fixed_graph_submits_once_polls_same_id_and_returns_one_png(
         "oversize-stream",
         "unsafe-metadata",
         "unsafe-subfolder",
+        "unexpected-descriptor-field",
+        "invalid-descriptor-metadata",
+        "invalid-descriptor-id",
         "wrong-content-type",
         "never-completes",
     ),

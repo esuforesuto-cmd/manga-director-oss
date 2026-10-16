@@ -468,7 +468,7 @@ def _prompt_from_context(context: object) -> str:
     prompt = prompt_artifact.get("prompt_markdown") if isinstance(prompt_artifact, dict) else None
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("real image generation requires a persisted prompt")
-    return prompt
+    return prompt.strip()
 
 
 def _require_checkpoint(
