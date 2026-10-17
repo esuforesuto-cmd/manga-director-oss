@@ -6,6 +6,11 @@ from typing import Any
 
 from manga_director.api.workflow import create_workflow_app
 from manga_director.application import build_workflow_application
+from manga_director.application.generated_asset_presentation import (
+    attach_generated_asset_presentation,
+    build_generated_asset_presentation,
+)
+from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.workflow.coordinator import WorkflowCoordinator
@@ -27,4 +32,9 @@ def build_workflow_app(
         project_loader=project_loader,
         repository=repository,
     )
+    if isinstance(repository, LocalFileRepository):
+        attach_generated_asset_presentation(
+            application,
+            build_generated_asset_presentation(repository),
+        )
     return create_workflow_app(application)

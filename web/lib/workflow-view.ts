@@ -11,3 +11,21 @@ export function availableWorkflowActions(page: Pick<PageDetail, "workflow">): Pa
     (action): action is PageAction => action !== "run" && action !== "resume" && action !== "approve"
   );
 }
+
+/** Image display is derived only from the selected Page and its exact logical descriptor. */
+export function canShowGeneratedAsset(
+  page: Pick<PageDetail, "artifacts" | "state">
+): boolean {
+  if (!["Generated", "QualityChecked", "Approved"].includes(page.state)) {
+    return false;
+  }
+  const image = page.artifacts.image;
+  return Boolean(
+    image
+    && typeof image === "object"
+    && !Array.isArray(image)
+    && Object.keys(image).sort().join(",") === "artifact_kind,output_asset_id"
+    && (image as Record<string, unknown>).artifact_kind === "logical_output_asset"
+    && typeof (image as Record<string, unknown>).output_asset_id === "string"
+  );
+}

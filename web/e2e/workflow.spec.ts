@@ -11,5 +11,11 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   }
 
   await page.goto("/projects/demo/pages/1");
+  const generated = page.getByRole("img", { name: "Generated asset for page 1" });
+  await expect(generated).toBeVisible();
+  await expect(generated).toHaveAttribute(
+    "src",
+    "http://127.0.0.1:4010/projects/demo/pages/1/generated-asset"
+  );
   await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
 });

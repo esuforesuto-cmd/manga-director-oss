@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from manga_director.api import workflow as workflow_api
+from manga_director.api.composition import build_workflow_app as build_http_workflow_app
 from manga_director.api.workflow import LOCAL_WEB_ORIGINS, create_workflow_app
 from manga_director.application import WorkflowApplicationService, build_workflow_application
+from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
 from manga_director.repositories import InMemoryRepository, ProjectLoader
+from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow import (
     ChapterWorkflowEngine,
     PageNumberWorkflowScheduler,
@@ -187,3 +193,96 @@ def test_unexpected_failures_return_no_internal_detail() -> None:
         "message": "An internal error occurred.",
     }
     assert "secret" not in response.text
+
+
+def test_generated_asset_route_has_fixed_binary_contract_and_rejects_extra_input(
+    monkeypatch,
+) -> None:
+    application, agents = _application()
+    png = b"\x89PNG\r\n\x1a\nverified"
+    calls: list[tuple[str, int]] = []
+
+    def get(project_id: str, page_number: int) -> SimpleNamespace:
+        calls.append((project_id, page_number))
+        return SimpleNamespace(image_bytes=png, release=lambda: None)
+
+    monkeypatch.setattr(
+        workflow_api,
+        "generated_asset_presentation_for",
+        lambda _application: SimpleNamespace(get=get),
+    )
+    client = TestClient(create_workflow_app(application))
+
+    response = client.get("/projects/demo/pages/1/generated-asset")
+    query = client.get("/projects/demo/pages/1/generated-asset?asset_id=other")
+    body = client.request(
+        "GET",
+        "/projects/demo/pages/1/generated-asset",
+        content=b'{"path":"C:/private/image.png"}',
+    )
+    ranged = client.get(
+        "/projects/demo/pages/1/generated-asset",
+        headers={"Range": "bytes=0-1"},
+    )
+
+    assert response.status_code == 200 and response.content == png
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert {"etag", "last-modified", "location", "content-disposition"}.isdisjoint(
+        response.headers
+    )
+    assert calls == [("demo", 1)]
+    assert {query.status_code, body.status_code, ranged.status_code} == {422}
+    assert all(
+        item.headers["cache-control"] == "no-store" for item in (query, body, ranged)
+    )
+    assert sum(agent.calls for agent in agents) == 0
+
+
+def test_localfile_http_composition_missing_sidecars_creates_nothing(tmp_path: Path) -> None:
+    repository = LocalFileRepository(tmp_path / "repository")
+    repository.save(
+        Project(
+            id="demo",
+            title="Demo",
+            pages=[
+                Page(
+                    page_number=1,
+                    state=PageState.GENERATED,
+                    page_design={},
+                    review={},
+                    storyboard={},
+                    prompt={},
+                    image={
+                        "artifact_kind": "logical_output_asset",
+                        "output_asset_id": "asset:missing",
+                    },
+                )
+            ],
+        )
+    )
+    loader = ProjectLoader(repository)
+    events = MemoryEventBus()
+    engine = WorkflowEngine(state_machine=StateMachine(), event_bus=events, agents={})
+    coordinator = WorkflowCoordinator(
+        ProjectWorkflowEngine(repository, events),
+        ChapterWorkflowEngine(repository, events, PageNumberWorkflowScheduler()),
+        engine,
+        loader,
+    )
+    app = build_http_workflow_app(
+        workflow_engine=engine,
+        workflow_coordinator=coordinator,
+        project_loader=loader,
+        repository=repository,
+    )
+    before = tuple(sorted(path.relative_to(repository._root) for path in repository._root.rglob("*")))
+
+    response = TestClient(app).get("/projects/demo/pages/1/generated-asset")
+
+    after = tuple(sorted(path.relative_to(repository._root) for path in repository._root.rglob("*")))
+    assert response.status_code == 404
+    assert response.json() == {"code": "not_found", "message": "Not found."}
+    assert response.headers["cache-control"] == "no-store"
+    assert after == before
