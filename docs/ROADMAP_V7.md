@@ -574,6 +574,132 @@ this entry. Any need for a fourth file, public API, StateMachine,
 WorkflowEngine, persistence, dependency, Provider, delivery surface,
 live-operation, or I02 change is a scope expansion and must stop.
 
+## V7-07 — Safe Local Generated Asset Presentation
+
+### Planning status
+
+Design approved and frozen by
+[RFC-V7-005: Safe Local Generated Asset Presentation](RFC_V7_005_SAFE_LOCAL_GENERATED_ASSET_PRESENTATION.md).
+This entry authorizes docs-only design. It does not authorize implementation,
+asset access, Web rendering, live generation, or approval behavior.
+
+### Objective
+
+Define the smallest fail-closed, read-only presentation path that lets the
+existing loopback Web UI display the exact registered PNG already bound to one
+existing Page, without accepting filesystem authority from the caller or
+changing workflow, Provider, review, or approval behavior.
+
+### Inputs
+
+- one existing Project and Page identified only by the local route;
+- the Page's persisted `Generated` logical `output_asset_id`;
+- the existing durable generation/application binding for the same Page,
+  attempt, asset, provenance, media type, digest, and byte length where
+  recorded;
+- the matching `LocalDurableAssetOwner` registry row and contained private
+  asset; and
+- the existing loopback-only workflow HTTP and Web delivery boundary.
+
+### Outputs
+
+- one complete, revalidated PNG response for the exact Page-bound registered
+  asset;
+- fixed `Content-Type: image/png`, `Cache-Control: no-store`, and
+  `X-Content-Type-Options: nosniff` headers; or
+- a redacted fail-closed error with no image bytes, path, storage name, digest,
+  or Provider metadata disclosure.
+
+### Frozen behavior
+
+- use one additive loopback-only `GET` equivalent to
+  `/projects/{project_id}/pages/{page_number}/generated-asset`;
+- accept only validated Project identity and positive Page number, with no
+  request body, query-selected output, caller asset ID, attempt, Provider,
+  digest, path, storage name, root, URI, or URL;
+- resolve exactly Page → persisted logical generated asset → durable generation
+  binding → one exact owner-registry row → one exact contained file;
+- keep the HTTP adapter presentation-only and delegate coordination to a
+  transport-neutral private Application read service;
+- keep `LocalDurableAssetOwner` authoritative for registry, private storage
+  naming, configured-root containment, file identity, byte limit, and digest;
+- open existing registry and asset state read-only, without create-on-read,
+  repair, registration, or migration;
+- revalidate media type, the existing 25 MB limit, SHA-256 digest, and strict
+  PNG structure on the same opened bytes returned to the browser;
+- return `image/png` with `Cache-Control: no-store`, disclose no filesystem
+  path or storage name, and emit no redirect or cache validator;
+- reject ambiguity, duplicates, legacy path artifacts, unsafe file identity,
+  binding mismatch, corruption, malformed PNG, and partial reads without
+  falling back to another asset;
+- perform no outbound request and prohibit remote, LAN, wildcard, DNS, proxy,
+  redirect, Provider, and arbitrary-file behavior;
+- perform no mutation, workflow execution, state transition, quality action,
+  review persistence, readiness calculation, or approval; and
+- remain completely independent of I02.
+
+### Acceptance criteria
+
+- only the exact Page-bound registered PNG can produce a successful response;
+- the caller cannot select or disclose a path, storage name, asset, attempt,
+  Provider, digest, root, or URL;
+- Page, durable binding, owner registry, media type, digest, and opened bytes
+  must agree exactly;
+- the exact returned bytes pass containment, ordinary-file, byte-limit,
+  SHA-256, and strict PNG revalidation;
+- the response is loopback-only `GET`, `image/png`, and
+  `Cache-Control: no-store`, with no redirect or storage disclosure;
+- no Project, Page, registry, asset, evidence, review, readiness, or approval
+  mutation occurs;
+- no Provider, generation, retry, fallback, remote fetch, DNS, proxy,
+  StateMachine, `WorkflowEngine`, or I02 operation occurs;
+- current Python, CLI, HTTP JSON DTO, Web workflow, MCP, SDK, Plugin,
+  Repository, LocalFile, Provider, V7-06, v5/v6, and public compatibility is
+  preserved;
+- no dependency, lockfile, persistence schema, package metadata, version,
+  release, Settings, or `main` change is authorized; and
+- the exact two-file docs allowlist, Markdown links, `git diff --check`,
+  independent review, required CI, CodeQL, and post-merge checks pass with no
+  P0 or P1 finding.
+
+### Compatibility and exclusions
+
+This docs-only design changes no current contract. A separately approved
+implementation may add only the bounded loopback binary presentation route and
+private composition described by RFC-V7-005. Existing routes and DTOs, public
+Python imports, CLI, MCP, SDK, Plugin, Repository and LocalFile formats,
+Providers, `StateMachine`, `WorkflowEngine`, Page states, generation,
+`QualityChecked`, V7-06 readiness, and explicit approval remain unchanged.
+
+No migration is required. Arbitrary file or URL access, remote exposure,
+authentication, thumbnails, conversion, mutation, generation, review
+persistence, approval, I02, dependencies, versioning, release, tag,
+publication, Settings, `main`, force push, history rewriting, and branch
+deletion are out of scope.
+
+### Validation
+
+- exact docs-only allowlist:
+  `docs/RFC_V7_005_SAFE_LOCAL_GENERATED_ASSET_PRESENTATION.md` and
+  `docs/ROADMAP_V7.md`;
+- local Markdown-link resolution and `git diff --check`;
+- zero source, test, dependency, lockfile, workflow, package-metadata, version,
+  Settings, or `main` diff;
+- architecture, authority, security, LocalFile, workflow, approval, I02, and
+  public-compatibility review;
+- independent read-only review with P0 = 0 and P1 = 0; and
+- required hosted CI, CodeQL, and post-merge verification.
+
+### Authorization gate
+
+RFC-V7-005 approval authorizes only the exact two-file docs-only design change,
+commit, push, pull request, required CI and CodeQL, in-scope P0/P1 design
+remediation, and merge to `v7-dev` when all gates pass. It does not authorize
+implementation, a third file, asset access, Web rendering, live generation,
+Provider calls, review persistence, approval, public-contract changes,
+StateMachine, `WorkflowEngine`, dependencies, I02, `main`, versioning, release,
+tag, publication, Settings, branch deletion, force push, or history rewriting.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -583,6 +709,7 @@ live-operation, or I02 change is a scope expansion and must stop.
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-06 Human Visual QA and Approval Readiness | Implementation approved and delivered; completion requires all listed gates | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | Internal read-only implementation; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
+| V7-07 Safe Local Generated Asset Presentation | Design approved; implementation not authorized | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact two-file docs allowlist | Docs-only freeze of Page-bound, owner-verified, loopback-only PNG presentation; no implementation, mutation, Provider, approval, I02, dependency, or public-contract change |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
