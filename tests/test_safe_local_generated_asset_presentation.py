@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import struct
 import zlib
@@ -167,6 +168,10 @@ def _manifest(root: Path) -> tuple[tuple[str, str, int, str], ...]:
     "state",
     (PageState.GENERATED, PageState.QUALITY_CHECKED, PageState.APPROVED),
 )
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="safe exact-file presentation lease is available only on Windows",
+)
 def test_exact_page_binding_returns_same_png_without_mutation(
     tmp_path: Path, state: PageState
 ) -> None:
@@ -176,6 +181,22 @@ def test_exact_page_binding_returns_same_png_without_mutation(
     presentation = service.get(_PROJECT, 1)
     assert presentation.image_bytes == png
     presentation.release()
+    assert _manifest(repository._root) == before
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="non-Windows fail-closed behavior is not applicable on Windows",
+)
+def test_non_windows_without_safe_exact_file_lease_fails_closed(
+    tmp_path: Path,
+) -> None:
+    repository, service, _png_bytes, _binding = _seed(tmp_path)
+    before = _manifest(repository._root)
+
+    with pytest.raises(GeneratedAssetPresentationUnavailable):
+        service.get(_PROJECT, 1)
+
     assert _manifest(repository._root) == before
 
 
