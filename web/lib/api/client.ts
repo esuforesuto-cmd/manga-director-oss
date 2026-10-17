@@ -30,6 +30,29 @@ function apiBaseUrl(): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
+function generatedAssetBaseUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_MANGA_DIRECTOR_API_URL
+    ?? process.env.MANGA_DIRECTOR_API_URL
+    ?? "http://127.0.0.1:8000";
+  const parsed = new URL(configured);
+  const port = Number(parsed.port);
+  if (
+    parsed.protocol !== "http:"
+    || parsed.hostname !== "127.0.0.1"
+    || !Number.isInteger(port)
+    || port < 1
+    || port > 65535
+    || parsed.username !== ""
+    || parsed.password !== ""
+    || parsed.pathname !== "/"
+    || parsed.search !== ""
+    || parsed.hash !== ""
+  ) {
+    throw new ApiClientError("Generated asset URL must use the local API.", 0);
+  }
+  return `http://127.0.0.1:${parsed.port}`;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
@@ -66,6 +89,8 @@ export const api = {
   pages: {
     get: (projectId: string, pageNumber: number) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`),
+    generatedAssetUrl: (projectId: string, pageNumber: number) =>
+      `${generatedAssetBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/generated-asset`,
     execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/${encoded(action)}`, {
         method: "POST",

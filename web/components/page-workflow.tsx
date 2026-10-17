@@ -1,9 +1,10 @@
 import type { PageDetail } from "@/lib/api/types";
 
+import { api } from "@/lib/api/client";
 import { ApprovalForm } from "./approval-form";
 import { PageActions } from "./page-actions";
 import styles from "./page-workflow.module.css";
-import { availableWorkflowActions, canShowApproval } from "@/lib/workflow-view";
+import { availableWorkflowActions, canShowApproval, canShowGeneratedAsset } from "@/lib/workflow-view";
 
 const stages = ["Page Design", "Review", "Storyboard", "Dialogue", "Prompt", "Generated Image", "Quality", "Continuity", "Approval"];
 
@@ -22,6 +23,17 @@ export function PageWorkflowView({
         <h2 id="actions-heading">Workflow actions</h2>
         <PageActions projectId={projectId} pageNumber={page.pageNumber} actions={availableWorkflowActions(page)} />
       </section>
+      {canShowGeneratedAsset(page) ? (
+        <section className={styles.panel} aria-labelledby="generated-asset-heading">
+          <h2 id="generated-asset-heading">Generated image</h2>
+          {/* The local API performs the authoritative Page-to-bytes validation. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt={`Generated asset for page ${page.pageNumber}`}
+            src={api.pages.generatedAssetUrl(projectId, page.pageNumber)}
+          />
+        </section>
+      ) : null}
       {canShowApproval(page) ? <ApprovalForm projectId={projectId} pageNumber={page.pageNumber} /> : null}
       <section className={styles.panel} aria-labelledby="input-heading">
         <h2 id="input-heading">Input</h2>

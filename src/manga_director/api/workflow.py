@@ -10,6 +10,10 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from manga_director._version import __version__
+from manga_director.application.generated_asset_presentation import (
+    GeneratedAssetPresentationUnavailable,
+    generated_asset_presentation_for,
+)
 from manga_director.application.workflow import WorkflowApplicationService
 from manga_director.domain.exceptions import (
     ProjectAlreadyExistsError,
@@ -24,6 +28,10 @@ from manga_director.workflow.hierarchy_contracts import ChapterContext, ProjectC
 
 LOGGER = logging.getLogger(__name__)
 LOCAL_WEB_ORIGINS = ("http://127.0.0.1:3000", "http://localhost:3000")
+_GENERATED_ASSET_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 class _HttpModel(BaseModel):
@@ -127,8 +135,10 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
         from fastapi import FastAPI
         from fastapi.exceptions import RequestValidationError
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import JSONResponse
+        from fastapi.responses import JSONResponse, Response
+        from starlette.background import BackgroundTask
         from starlette.exceptions import HTTPException as StarletteHTTPException
+        from starlette.requests import Request
     except ImportError as exc:  # pragma: no cover - depends on optional extra.
         raise RuntimeError("Install manga-director[api] to enable workflow HTTP routes.") from exc
 
@@ -145,7 +155,14 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
         http_exception_type=StarletteHTTPException,
         json_response=JSONResponse,
     )
-    _register_routes(app, application)
+    _register_routes(
+        app,
+        application,
+        request_type=Request,
+        response_type=Response,
+        json_response=JSONResponse,
+        background_task_type=BackgroundTask,
+    )
     return app
 
 
@@ -223,7 +240,15 @@ def _http_error_content(status_code: int) -> tuple[str, str]:
     return "http_error", "HTTP request failed."
 
 
-def _register_routes(app: Any, application: WorkflowApplicationService) -> None:
+def _register_routes(
+    app: Any,
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    response_type: Any,
+    json_response: Any,
+    background_task_type: Any,
+) -> None:
 
     def health() -> HealthDTO:
         return HealthDTO()
@@ -265,6 +290,14 @@ def _register_routes(app: Any, application: WorkflowApplicationService) -> None:
             _validated_page_number(page_number),
         )
 
+    get_generated_asset = _generated_asset_route(
+        application,
+        request_type=request_type,
+        response_type=response_type,
+        json_response=json_response,
+        background_task_type=background_task_type,
+    )
+
     def execute_page(
         project_id: str,
         page_number: int,
@@ -291,9 +324,69 @@ def _register_routes(app: Any, application: WorkflowApplicationService) -> None:
     app.get(
         "/projects/{project_id}/pages/{page_number}", response_model=PageDetailDTO
     )(get_page)
+    app.get("/projects/{project_id}/pages/{page_number}/generated-asset")(
+        get_generated_asset
+    )
     app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
+
+
+def _generated_asset_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    response_type: Any,
+    json_response: Any,
+    background_task_type: Any,
+) -> Any:
+    def get_generated_asset(
+        project_id: str,
+        page_number: int,
+        request: Any,
+    ) -> Any:
+        content_length = request.headers.get("content-length")
+        if (
+            request.query_params
+            or (content_length is not None and content_length != "0")
+            or "transfer-encoding" in request.headers
+            or any(
+                name in request.headers
+                for name in ("range", "if-none-match", "if-modified-since")
+            )
+        ):
+            return _generated_asset_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            page_number = _validated_page_number(page_number)
+        except ValidationError:
+            return _generated_asset_error(json_response, 422, "invalid_input")
+        presentation = generated_asset_presentation_for(application)
+        if presentation is None:
+            return _generated_asset_error(json_response, 404, "not_found")
+        try:
+            result = presentation.get(project_id, page_number)
+        except GeneratedAssetPresentationUnavailable:
+            return _generated_asset_error(json_response, 404, "not_found")
+        return response_type(
+            content=result.image_bytes,
+            status_code=200,
+            media_type="image/png",
+            headers=_GENERATED_ASSET_HEADERS,
+            background=background_task_type(result.release),
+        )
+
+    get_generated_asset.__annotations__["request"] = request_type
+    return get_generated_asset
+
+
+def _generated_asset_error(json_response: Any, status_code: int, code: str) -> Any:
+    message = "Not found." if status_code == 404 else "Request validation failed."
+    return json_response(
+        status_code=status_code,
+        content={"code": code, "message": message},
+        headers=_GENERATED_ASSET_HEADERS,
+    )
 
 
 def _execute_action(

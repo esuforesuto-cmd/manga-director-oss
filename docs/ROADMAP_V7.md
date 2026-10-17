@@ -580,8 +580,9 @@ live-operation, or I02 change is a scope expansion and must stop.
 
 Design approved and frozen by
 [RFC-V7-005: Safe Local Generated Asset Presentation](RFC_V7_005_SAFE_LOCAL_GENERATED_ASSET_PRESENTATION.md).
-This entry authorizes docs-only design. It does not authorize implementation,
-asset access, Web rendering, live generation, or approval behavior.
+The exact fifteen-file V7-07 implementation package is explicitly approved and
+implemented locally. Completion remains gated on independent review, required
+hosted CI and CodeQL, merge to `v7-dev`, and post-merge verification.
 
 ### Objective
 
@@ -679,12 +680,16 @@ deletion are out of scope.
 
 ### Validation
 
-- exact docs-only allowlist:
-  `docs/RFC_V7_005_SAFE_LOCAL_GENERATED_ASSET_PRESENTATION.md` and
-  `docs/ROADMAP_V7.md`;
-- local Markdown-link resolution and `git diff --check`;
-- zero source, test, dependency, lockfile, workflow, package-metadata, version,
-  Settings, or `main` diff;
+- exact approved fifteen-file implementation allowlist, including the private
+  production/Application read path, existing HTTP/Web composition, focused
+  Python/Web tests, browser E2E, and this roadmap entry;
+- focused Page-to-ledger-to-evidence-to-owner byte-correlation, fail-closed
+  rejection, create-on-read manifest, exact-header, and no-disclosure tests;
+- Ruff, mypy, full pytest, Web lint/typecheck/unit/build/E2E,
+  security/audit/package, Markdown-link, and `git diff --check` gates;
+- zero dependency, lockfile, persistence-schema, existing DTO, public-export,
+  StateMachine, WorkflowEngine, Provider, I02, Settings, version, or `main`
+  change;
 - architecture, authority, security, LocalFile, workflow, approval, I02, and
   public-compatibility review;
 - independent read-only review with P0 = 0 and P1 = 0; and
@@ -692,13 +697,15 @@ deletion are out of scope.
 
 ### Authorization gate
 
-RFC-V7-005 approval authorizes only the exact two-file docs-only design change,
-commit, push, pull request, required CI and CodeQL, in-scope P0/P1 design
-remediation, and merge to `v7-dev` when all gates pass. It does not authorize
-implementation, a third file, asset access, Web rendering, live generation,
+The explicit V7-07 implementation approval authorizes only the exact
+fifteen-file implementation allowlist, required validation and independent
+review, in-scope P0/P1 remediation, commit, push, pull request, required CI and
+CodeQL, merge to `v7-dev` after every required gate passes, and post-merge
+verification. It does not authorize a sixteenth file, live generation,
 Provider calls, review persistence, approval, public-contract changes,
-StateMachine, `WorkflowEngine`, dependencies, I02, `main`, versioning, release,
-tag, publication, Settings, branch deletion, force push, or history rewriting.
+StateMachine, `WorkflowEngine`, persistence-schema or dependency changes, I02,
+`main`, versioning, release, tag, publication, Settings, branch deletion,
+force push, or history rewriting.
 
 ## Epic 1 sequencing
 
@@ -709,7 +716,7 @@ tag, publication, Settings, branch deletion, force push, or history rewriting.
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-06 Human Visual QA and Approval Readiness | Implementation approved and delivered; completion requires all listed gates | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | Internal read-only implementation; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
-| V7-07 Safe Local Generated Asset Presentation | Design approved; implementation not authorized | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact two-file docs allowlist | Docs-only freeze of Page-bound, owner-verified, loopback-only PNG presentation; no implementation, mutation, Provider, approval, I02, dependency, or public-contract change |
+| V7-07 Safe Local Generated Asset Presentation | Implementation complete locally; hosted verification pending | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | Page-bound, owner-verified, loopback-only PNG presentation implemented read-only; independent review, hosted CI/CodeQL, merge, and post-merge verification remain required |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility

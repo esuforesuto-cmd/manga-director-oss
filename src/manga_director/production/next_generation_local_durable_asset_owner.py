@@ -31,6 +31,18 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MEDIA_TYPE = "image/png"
 _SCHEMA_VERSION = 1
 _REGISTRY_FILENAME = "asset-owner.sqlite3"
+_SQLITE_HEADER = b"SQLite format 3\x00"
+_SQLITE_ROLLBACK_JOURNAL_VERSIONS = b"\x01\x01"
+_REGISTRY_DDL = (
+    "CREATE TABLE asset_registry ("
+    "asset_id TEXT PRIMARY KEY, "
+    "attempt_id TEXT NOT NULL UNIQUE, "
+    "provider_reference TEXT NOT NULL, "
+    "media_type TEXT NOT NULL, "
+    "digest TEXT NOT NULL, "
+    "storage_name TEXT NOT NULL UNIQUE"
+    ")"
+)
 _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _FILE_TYPE_DISK = 0x0001
@@ -115,6 +127,17 @@ class _AssetVerificationLease:
         self._stream.close()
 
 
+@dataclass(slots=True)
+class _AssetPresentationBytesLease:
+    """Validated bytes retaining the exact-file lease until delivery completes."""
+
+    image_bytes: bytes = field(repr=False)
+    _lease: _AssetVerificationLease
+
+    def release(self) -> None:
+        self._lease.release()
+
+
 class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
     """Own private local byte persistence and logical asset registration."""
 
@@ -139,6 +162,94 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         self._consumed_registration_identities: set[tuple[object, ...]] = set()
         self._unissuable_registration_identities: set[tuple[object, ...]] = set()
         self._issue_i02_commitment = _issue_i02_commitment
+
+    @classmethod
+    def _open_existing_for_presentation(cls, owner_root: Path) -> LocalDurableAssetOwner:
+        """Open only an existing owner layout without creating or repairing it."""
+
+        root = _existing_owner_root(owner_root)
+        registry_directory = _existing_child_directory(root, "registry")
+        assets_directory = _existing_child_directory(root, "assets")
+        registry_path = _existing_regular_file(
+            registry_directory / _REGISTRY_FILENAME, registry_directory
+        )
+        owner = object.__new__(cls)
+        owner._root = root
+        owner._registry_directory = registry_directory
+        owner._assets_directory = assets_directory
+        owner._registry_path = registry_path
+        owner._assets_root_identity = (
+            _capture_windows_owner_root_identity(assets_directory) if os.name == "nt" else None
+        )
+        return owner
+
+    def _read_verified_presentation_bytes(
+        self,
+        *,
+        attempt_id: str,
+        provider_reference: str,
+        output_asset_id: str,
+        expected_sha256: str,
+        expected_media_type: str,
+    ) -> _AssetPresentationBytesLease:
+        """Return bytes from the exact read-only registry-selected Windows lease."""
+
+        if (
+            not _is_logical_reference(attempt_id)
+            or not _is_logical_reference(provider_reference)
+            or not _is_logical_reference(output_asset_id)
+            or not _is_sha256(expected_sha256)
+            or expected_media_type != _MEDIA_TYPE
+        ):
+            raise ValueError("asset presentation input is unavailable")
+        connection: sqlite3.Connection | None = None
+        lease: _AssetVerificationLease | None = None
+        try:
+            connection = _open_readonly_registry(self._registry_path)
+            rows = connection.execute(
+                "SELECT attempt_id, provider_reference, media_type, digest, storage_name "
+                "FROM asset_registry WHERE asset_id = ?",
+                (output_asset_id,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise ValueError("asset presentation record is unavailable")
+            row = rows[0]
+            if (
+                not isinstance(row, tuple)
+                or len(row) != 5
+                or row[0] != attempt_id
+                or row[1] != provider_reference
+                or row[2] != expected_media_type
+                or row[3] != expected_sha256
+                or not _is_storage_name(row[4])
+            ):
+                raise _AssetVerificationIntegrityFailure(
+                    "asset presentation binding is invalid"
+                )
+            lease = _open_verified_windows_lease(
+                self._final_path(row[4]),
+                self._assets_directory,
+                self._assets_root_identity,
+                expected_sha256,
+            )
+            image_bytes = lease._stream.read(_MAX_REGISTERED_BYTES + 1)
+            if (
+                type(image_bytes) is not bytes
+                or len(image_bytes) != lease._identity.size
+                or not 1 <= len(image_bytes) <= _MAX_REGISTERED_BYTES
+                or hashlib.sha256(image_bytes).hexdigest() != expected_sha256
+            ):
+                raise _AssetVerificationIntegrityFailure("asset presentation read is invalid")
+            presentation = _AssetPresentationBytesLease(image_bytes, lease)
+            lease = None
+            return presentation
+        except (OSError, sqlite3.Error, TypeError) as error:
+            raise ValueError("asset presentation is unavailable") from error
+        finally:
+            if lease is not None:
+                lease.release()
+            if connection is not None:
+                connection.close()
 
     def register(self, material: OwnerRegistrationMaterial) -> AssetRegistrationRuntimeResult:
         """Durably register valid material or return a redacted failed result."""
@@ -389,16 +500,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 if version != 0 or _has_user_tables(connection):
                     raise ValueError("asset owner registry is unavailable")
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "CREATE TABLE asset_registry ("
-                    "asset_id TEXT PRIMARY KEY, "
-                    "attempt_id TEXT NOT NULL UNIQUE, "
-                    "provider_reference TEXT NOT NULL, "
-                    "media_type TEXT NOT NULL, "
-                    "digest TEXT NOT NULL, "
-                    "storage_name TEXT NOT NULL UNIQUE"
-                    ")"
-                )
+                connection.execute(_REGISTRY_DDL)
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 connection.commit()
                 return
@@ -513,6 +615,89 @@ def _prepare_owner_root(owner_root: Path) -> Path:
     return root
 
 
+def _existing_owner_root(owner_root: Path) -> Path:
+    if not isinstance(owner_root, Path) or not owner_root.is_absolute() or ".." in owner_root.parts:
+        raise ValueError("asset presentation owner is unavailable")
+    try:
+        if _is_link_or_reparse_point(owner_root) or not owner_root.is_dir():
+            raise ValueError("asset presentation owner is unavailable")
+        root = owner_root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("asset presentation owner is unavailable") from error
+    if _is_link_or_reparse_point(root) or not root.is_dir():
+        raise ValueError("asset presentation owner is unavailable")
+    return root
+
+
+def _existing_child_directory(root: Path, name: str) -> Path:
+    path = _private_child(root, name)
+    if _is_link_or_reparse_point(path) or not path.is_dir():
+        raise ValueError("asset presentation owner is unavailable")
+    return path
+
+
+def _existing_regular_file(path: Path, parent: Path) -> Path:
+    _assert_private_path(path, parent)
+    if _is_link_or_reparse_point(path) or not path.is_file():
+        raise ValueError("asset presentation registry is unavailable")
+    return path
+
+
+def _open_readonly_registry(registry_path: Path) -> sqlite3.Connection:
+    _existing_regular_file(registry_path, registry_path.parent)
+    _require_rollback_journal_database(registry_path)
+    connection = sqlite3.connect(
+        f"{registry_path.resolve(strict=True).as_uri()}?mode=ro",
+        uri=True,
+        timeout=0.0,
+        isolation_level=None,
+    )
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        if connection.execute("PRAGMA query_only").fetchall() != [(1,)]:
+            raise ValueError("asset presentation registry is unavailable")
+        connection.execute("BEGIN")
+        version = connection.execute("PRAGMA user_version").fetchall()
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchall()
+        objects = connection.execute(
+            "SELECT type, name FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asset_registry'"
+        ).fetchall()
+        if (
+            version != [(_SCHEMA_VERSION,)]
+            or journal_mode != [("delete",)]
+            or objects != [("table", "asset_registry")]
+            or len(ddl) != 1
+            or not isinstance(ddl[0][0], str)
+            or _without_ascii_whitespace(ddl[0][0])
+            != _without_ascii_whitespace(_REGISTRY_DDL)
+            or not _registry_schema_is_valid(connection)
+        ):
+            raise ValueError("asset presentation registry is unavailable")
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def _require_rollback_journal_database(path: Path) -> None:
+    """Reject WAL before sqlite3 can create read-side WAL support files."""
+
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(20)
+    except OSError as error:
+        raise ValueError("asset presentation database is unavailable") from error
+    if (
+        header[: len(_SQLITE_HEADER)] != _SQLITE_HEADER
+        or header[18:20] != _SQLITE_ROLLBACK_JOURNAL_VERSIONS
+    ):
+        raise ValueError("asset presentation database is unavailable")
+
+
 def _prepare_child_directory(root: Path, name: str) -> Path:
     try:
         path = _private_child(root, name)
@@ -565,20 +750,36 @@ def _has_user_tables(connection: sqlite3.Connection) -> bool:
 
 
 def _registry_schema_is_valid(connection: sqlite3.Connection) -> bool:
-    expected = {
-        "asset_id",
-        "attempt_id",
-        "provider_reference",
-        "media_type",
-        "digest",
-        "storage_name",
+    expected_columns = (
+        ("asset_id", "TEXT", 0, None, 1),
+        ("attempt_id", "TEXT", 1, None, 0),
+        ("provider_reference", "TEXT", 1, None, 0),
+        ("media_type", "TEXT", 1, None, 0),
+        ("digest", "TEXT", 1, None, 0),
+        ("storage_name", "TEXT", 1, None, 0),
+    )
+    rows = connection.execute("PRAGMA table_info(asset_registry)").fetchall()
+    columns = tuple((row[1], row[2], row[3], row[4], row[5]) for row in rows)
+    if columns != expected_columns:
+        return False
+    indexes = connection.execute("PRAGMA index_list(asset_registry)").fetchall()
+    unique_columns: set[tuple[str, str]] = set()
+    for index in indexes:
+        if len(index) != 5 or index[2] != 1 or not isinstance(index[1], str):
+            return False
+        index_columns = connection.execute(f"PRAGMA index_info({index[1]})").fetchall()
+        if len(index_columns) != 1 or index_columns[0][0] != 0:
+            return False
+        unique_columns.add((str(index_columns[0][2]), str(index[3])))
+    return unique_columns == {
+        ("asset_id", "pk"),
+        ("attempt_id", "u"),
+        ("storage_name", "u"),
     }
-    columns = {
-        str(row[1])
-        for row in connection.execute("PRAGMA table_info(asset_registry)").fetchall()
-        if len(row) > 1
-    }
-    return columns == expected
+
+
+def _without_ascii_whitespace(value: str) -> str:
+    return "".join(character for character in value if character not in " \t\r\n\f\v")
 
 
 def _is_valid_material(material: object) -> bool:

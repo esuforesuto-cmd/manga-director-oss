@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiClientError, api } from "@/lib/api/client";
 
 describe("REST API client", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("encodes project IDs and sends action metadata through the API client", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pageNumber: 1 }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -27,5 +31,26 @@ describe("REST API client", () => {
 
     expect(fetchMock.mock.calls[0][1].body).toContain('"approvedBy":"editor"');
     expect("remove" in api.projects).toBe(false);
+  });
+
+  it("derives the generated image route from only project and page identity", () => {
+    expect(api.pages.generatedAssetUrl("my project", 7)).toBe(
+      "http://127.0.0.1:8000/projects/my%20project/pages/7/generated-asset"
+    );
+  });
+
+  it.each([
+    "https://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://remote.example:8000",
+    "http://127.0.0.1",
+    "http://user@127.0.0.1:8000",
+    "http://127.0.0.1:8000/proxy",
+    "http://127.0.0.1:8000?asset=other",
+    "http://127.0.0.1:8000#asset"
+  ])("fails closed for a non-canonical generated image base: %s", (configured) => {
+    vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", configured);
+
+    expect(() => api.pages.generatedAssetUrl("demo", 1)).toThrow(ApiClientError);
   });
 });

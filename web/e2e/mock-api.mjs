@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
+import { Buffer } from "node:buffer";
 
 let projectCreated = false;
 let pageState = "Draft";
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 const nextState = {
   Draft: { design: "Designed" },
@@ -31,7 +33,12 @@ function page() {
       history: []
     },
     input: { page_number: 1 },
-    artifacts: { storyboard: pageState === "Draft" ? null : { persisted: true } },
+    artifacts: {
+      storyboard: pageState === "Draft" ? null : { persisted: true },
+      ...(pageState === "Generated" || pageState === "QualityChecked" || pageState === "Approved"
+        ? { image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:demo:001" } }
+        : {})
+    },
     messages: [],
     errors: [],
     executionTimeMs: 1,
@@ -82,6 +89,15 @@ createServer((request, response) => {
   }
   if (request.method === "GET" && pathname === "/projects/demo") return json(response, 200, project());
   if (request.method === "GET" && pathname === "/projects/demo/pages/1") return json(response, 200, page());
+  if (request.method === "GET" && pathname === "/projects/demo/pages/1/generated-asset") {
+    response.writeHead(200, {
+      "access-control-allow-origin": "http://127.0.0.1:3000",
+      "cache-control": "no-store",
+      "content-type": "image/png",
+      "x-content-type-options": "nosniff"
+    });
+    return response.end(png);
+  }
 
   const action = pathname.match(/^\/projects\/demo\/pages\/1\/([a-z_]+)$/)?.[1];
   if (request.method === "POST" && action) {
