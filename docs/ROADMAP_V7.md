@@ -460,9 +460,10 @@ publication, Settings, force push, or branch deletion.
 
 Design approved and frozen by
 [RFC-V7-004: Human Visual QA and Approval Readiness](RFC_V7_004_HUMAN_VISUAL_QA_APPROVAL_READINESS.md).
-The exact three-file implementation is approved and delivered by the V7-06
-change. It remains an internal, read-only advisory contract and authorizes no
-execution or live generation.
+The exact three-file V7-06 implementation is complete and verified. PR #31 was
+merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42` after
+independent review and all required gates passed. It remains an internal,
+read-only advisory contract and authorizes no execution or live generation.
 
 ### Objective
 
@@ -569,10 +570,11 @@ history rewriting, or branch deletion.
 
 ### Authorization gate
 
-V7-06 implementation is approved only for the exact three-file allowlist in
-this entry. Any need for a fourth file, public API, StateMachine,
-WorkflowEngine, persistence, dependency, Provider, delivery surface,
-live-operation, or I02 change is a scope expansion and must stop.
+V7-06 is complete. Its implementation authorization was exhausted by PR #31
+and does not authorize follow-up changes, a fourth file, public API,
+StateMachine, WorkflowEngine, persistence, dependency, Provider, delivery
+surface, live operation, I02, `main`, release, tag, Settings, force push,
+history rewriting, or branch deletion.
 
 ## V7-07 — Safe Local Generated Asset Presentation
 
@@ -580,9 +582,10 @@ live-operation, or I02 change is a scope expansion and must stop.
 
 Design approved and frozen by
 [RFC-V7-005: Safe Local Generated Asset Presentation](RFC_V7_005_SAFE_LOCAL_GENERATED_ASSET_PRESENTATION.md).
-The exact fifteen-file V7-07 implementation package is explicitly approved and
-implemented locally. Completion remains gated on independent review, required
-hosted CI and CodeQL, merge to `v7-dev`, and post-merge verification.
+The exact fifteen-file V7-07 implementation is complete and verified. PR #33
+was merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`
+after independent review and all required gates passed, including the final
+post-merge Windows 3.11 rerun.
 
 ### Objective
 
@@ -697,15 +700,12 @@ deletion are out of scope.
 
 ### Authorization gate
 
-The explicit V7-07 implementation approval authorizes only the exact
-fifteen-file implementation allowlist, required validation and independent
-review, in-scope P0/P1 remediation, commit, push, pull request, required CI and
-CodeQL, merge to `v7-dev` after every required gate passes, and post-merge
-verification. It does not authorize a sixteenth file, live generation,
-Provider calls, review persistence, approval, public-contract changes,
-StateMachine, `WorkflowEngine`, persistence-schema or dependency changes, I02,
-`main`, versioning, release, tag, publication, Settings, branch deletion,
-force push, or history rewriting.
+V7-07 is complete. Its implementation authorization was exhausted by PR #33
+and does not authorize a sixteenth file, live generation, Provider calls,
+review persistence, approval, public-contract changes, StateMachine,
+`WorkflowEngine`, persistence-schema or dependency changes, I02, `main`,
+versioning, release, tag, publication, Settings, branch deletion, force push,
+or history rewriting.
 
 ## Epic 1 sequencing
 
@@ -715,8 +715,8 @@ force push, or history rewriting.
 | V7-02 Real Local Delivery End-to-End Gate | Complete | Completed V7-01 and explicit approval of the bounded V7-02 Planning Draft | PR #20 merged into `v7-dev`; final head `7d0034a2dad46c6ff982d03104d32d935d5db796`; merge commit `ad671b63a4135997ffc41e8ab95bb8a681668980`; required CI run #69 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact seven-file allowlist; `main` unchanged |
 | V7-03 Provider-Neutral Real Image Delivery | Complete and verified | Completed V7-02, accepted RFC-V7-002, and explicit approval of the exact ten-file implementation allowlist | PR #23 merged into `v7-dev` at `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 jobs; independent review P0/P1/P2 = 0; exact ten-file allowlist; feature branch retained; `main` unchanged |
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
-| V7-06 Human Visual QA and Approval Readiness | Implementation approved and delivered; completion requires all listed gates | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | Internal read-only implementation; generation evidence → Visual QA → human judgment → advisory readiness; `QualityChecked` and separate explicit approval preserved |
-| V7-07 Safe Local Generated Asset Presentation | Implementation complete locally; hosted verification pending | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | Page-bound, owner-verified, loopback-only PNG presentation implemented read-only; independent review, hosted CI/CodeQL, merge, and post-merge verification remain required |
+| V7-06 Human Visual QA and Approval Readiness | Complete and verified | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | PR #31 merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact three-file allowlist; feature branch retained; `main` unchanged |
+| V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
