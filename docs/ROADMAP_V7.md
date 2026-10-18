@@ -707,6 +707,135 @@ review persistence, approval, public-contract changes, StateMachine,
 versioning, release, tag, publication, Settings, branch deletion, force push,
 or history rewriting.
 
+## V7-08 — Safe Local Human Visual Review and Approval Readiness
+
+### Planning status
+
+Design approved and frozen by
+[RFC-V7-006: Safe Local Human Visual Review and Approval Readiness](RFC_V7_006_SAFE_LOCAL_HUMAN_VISUAL_REVIEW_READINESS.md).
+Implementation is not authorized.
+
+### Objective
+
+Define the smallest loopback-only, non-persistent bridge that lets a local
+human submit an explicit visual checklist for the exact V7-07 Page image and
+receive the advisory V7-06 readiness result without granting the browser
+evidence-selection, quality, workflow, persistence, or approval authority.
+
+### Inputs
+
+- one existing Project and positive Page number from the local route;
+- one bounded reviewer identity and timezone-aware review timestamp;
+- exactly one closed outcome and rationale for every V7-06 human visual
+  criterion; and
+- one closed overall judgment and bounded rationale.
+
+Attempt, asset, provenance, QA, Provider, digest, path, storage, root, URI,
+URL, workflow, and approval identity are not caller inputs. The server derives
+them, where applicable, from existing authoritative state.
+
+### Outputs
+
+- one transient, redacted `ready`, `needs_review`, or `blocked` assessment;
+- deterministic ordered findings and missing-prerequisite codes;
+- the persisted Page state used for assessment and `analysisOnly: true`; or
+- a redacted fail-closed response with no reviewer text or internal evidence,
+  storage, Provider, or approval metadata disclosure.
+
+### Frozen behavior
+
+- use one separately approvable additive loopback-only operation equivalent to
+  `POST /projects/{project_id}/pages/{page_number}/visual-review-readiness`;
+- reject query parameters and all caller-selected evidence, filesystem,
+  Provider, workflow, and approval authority;
+- resolve exactly Page → persisted generated artifact → applied workflow
+  ledger proof → generation evidence and provenance → owner registry and safe
+  PNG → canonical advisory Visual QA → server-bound transient judgment → the
+  existing V7-06 readiness evaluator;
+- independently revalidate that the Page still resolves to the exact safe
+  V7-07 image before assessment;
+- permit `Generated` only to produce `needs_review`, permit exact
+  `QualityChecked` evidence to produce advisory `ready`, and never reopen an
+  `Approved` Page;
+- keep the submitted judgment and result transient, non-cacheable, visibly
+  advisory, and absent after refresh, navigation, or replacement submission;
+- keep the existing approval form independent: readiness does not fill,
+  enable, disable, hide, replace, gate, or invoke approval, and reviewer
+  identity never becomes `approvedBy`;
+- open repository, ledger, evidence, registry, and asset state read-only and
+  create, repair, migrate, checkpoint, or clean up nothing;
+- perform no quality action, Page mutation, review persistence, readiness
+  persistence, StateMachine transition, WorkflowEngine execution, Provider
+  call, generation, retry, fallback, DNS, proxy, or outbound request;
+- preserve current exact-origin CORS and expose no remote, LAN, wildcard,
+  CLI, MCP, SDK, Plugin, or public Python surface; and
+- remain completely independent of I02.
+
+### Acceptance criteria
+
+- the route and body together identify only one Project, Page, and complete
+  bounded human judgment; every authoritative evidence identity is
+  server-resolved;
+- missing, duplicate, ambiguous, stale, corrupt, mismatched, unsafe, or
+  incomplete authoritative state fails closed without fallback or repair;
+- the exact V7-07 image and V7-06 readiness precedence remain authoritative;
+- no request, refresh, repeat submission, error, or recovery path writes or
+  repairs repository, sidecar, filesystem, browser, quality, review,
+  readiness, workflow, or approval state;
+- success and failure responses are redacted and non-cacheable, with no
+  reviewer text, internal identifier, path, digest, Provider, redirect, or
+  cache-validator disclosure;
+- existing approval, Python, CLI, HTTP, Web, MCP, SDK, Plugin, Repository,
+  LocalFile, Provider, generation, quality, V7-06, V7-07, v5/v6, and public
+  compatibility is preserved;
+- no existing DTO, public export, StateMachine, WorkflowEngine, schema,
+  dependency, lockfile, package metadata, version, Settings, release, or
+  `main` change is authorized; and
+- this design stays within the exact two-file docs allowlist and passes link,
+  whitespace, architecture, compatibility, independent-review, CI, CodeQL,
+  and post-merge gates with no P0 or P1 finding.
+
+### Compatibility and exclusions
+
+This docs-only design changes no current contract. A separately approved
+implementation may add only the bounded loopback request/response and
+transient Web form described by RFC-V7-006. Existing routes and DTOs, public
+Python imports, CLI, MCP, SDK, Plugin, Repository and LocalFile formats,
+Providers, StateMachine, WorkflowEngine, quality, Page states, and explicit
+approval remain unchanged.
+
+No migration is required. Durable review records, approval coupling,
+authentication, arbitrary asset or URL selection, remote exposure, live
+generation, Provider execution, I02, dependencies, versioning, release, tag,
+publication, Settings, `main`, force push, history rewriting, and branch
+deletion are out of scope.
+
+### Validation
+
+- exact two-file docs allowlist: RFC-V7-006 and this roadmap entry;
+- local Markdown-link resolution and `git diff --check`;
+- zero source, test, dependency, lockfile, workflow, package-metadata,
+  version, Settings, or `main` diff;
+- architecture, authority, privacy, approval-boundary, LocalFile-security,
+  public-contract, and compatibility review;
+- independent read-only review with P0 = 0 and P1 = 0; and
+- required hosted CI, CodeQL, and post-merge verification.
+
+### Authorization gate
+
+RFC-V7-006 and this V7-08 entry authorize only the two-file docs-only design
+record. They do not authorize implementation, HTTP or Web changes, a third
+file, asset access beyond existing behavior, review persistence, quality
+execution, approval, Page mutation, Provider calls, live generation, public
+contract changes, StateMachine, WorkflowEngine, persistence schema,
+dependencies, I02, `main`, versioning, release, tag, publication, Settings,
+branch deletion, force push, or history rewriting.
+
+A future implementation requires its own exact allowlist and explicit
+approval. Any need for a current DTO or public API change, persistence,
+approval coupling, remote surface, dependency, or I02 authority is a scope
+expansion and must stop.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -717,6 +846,7 @@ or history rewriting.
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-06 Human Visual QA and Approval Readiness | Complete and verified | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | PR #31 merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact three-file allowlist; feature branch retained; `main` unchanged |
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
+| V7-08 Safe Local Human Visual Review and Approval Readiness | Design approved; implementation not authorized | Completed V7-06 and V7-07 plus accepted RFC-V7-006 docs design | RFC-V7-006 and the matching roadmap entry accepted within the exact two-file docs allowlist; no implementation, runtime, public-contract, persistence, dependency, or approval behavior change |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
