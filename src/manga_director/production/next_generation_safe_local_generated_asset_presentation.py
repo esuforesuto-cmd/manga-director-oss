@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import stat
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -61,6 +62,18 @@ class SafeLocalGeneratedAssetPresentationError(ValueError):
     """Redacted fail-closed presentation boundary."""
 
 
+@dataclass(frozen=True, slots=True)
+class _SafeLocalGeneratedAssetProof:
+    """Verified private evidence retained under the exact-file lease."""
+
+    binding: WorkflowApplicationLedgerBindingDTO
+    evidence: GenerationEvidenceEnvelopeDTO
+    _lease: _AssetPresentationBytesLease = field(repr=False, compare=False)
+
+    def release(self) -> None:
+        self._lease.release()
+
+
 class SafeLocalGeneratedAssetPresenter:
     """Resolve immutable local authorities and return one fully verified PNG."""
 
@@ -72,6 +85,14 @@ class SafeLocalGeneratedAssetPresenter:
     def present(
         self, project_id: str, page_id: str, output_asset_id: str
     ) -> _AssetPresentationBytesLease:
+        proof = self._prove(project_id, page_id, output_asset_id)
+        return proof._lease
+
+    def _prove(
+        self, project_id: str, page_id: str, output_asset_id: str
+    ) -> _SafeLocalGeneratedAssetProof:
+        """Return verified private binding/evidence while retaining the exact lease."""
+
         try:
             binding = self._read_applied_binding(project_id, page_id, output_asset_id)
             evidence, provider_reference, digest = self._read_generation_evidence(
@@ -99,7 +120,11 @@ class SafeLocalGeneratedAssetPresenter:
             except Exception:
                 presentation.release()
                 raise
-            return presentation
+            return _SafeLocalGeneratedAssetProof(
+                binding=binding,
+                evidence=evidence,
+                _lease=presentation,
+            )
         except SafeLocalGeneratedAssetPresentationError:
             raise
         except Exception as error:

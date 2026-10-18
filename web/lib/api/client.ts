@@ -5,6 +5,8 @@ import type {
   PageDetail,
   ProjectDetail,
   ProjectSummary,
+  VisualReviewReadinessRequest,
+  VisualReviewReadinessResponse,
   WorkflowStatus
 } from "@/lib/api/types";
 
@@ -30,7 +32,7 @@ function apiBaseUrl(): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function generatedAssetBaseUrl(): string {
+function loopbackApiBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_MANGA_DIRECTOR_API_URL
     ?? process.env.MANGA_DIRECTOR_API_URL
     ?? "http://127.0.0.1:8000";
@@ -48,13 +50,17 @@ function generatedAssetBaseUrl(): string {
     || parsed.search !== ""
     || parsed.hash !== ""
   ) {
-    throw new ApiClientError("Generated asset URL must use the local API.", 0);
+    throw new ApiClientError("This operation must use the local API.", 0);
   }
   return `http://127.0.0.1:${parsed.port}`;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  baseUrl: string = apiBaseUrl()
+): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: { Accept: "application/json", ...init.headers },
     cache: "no-store"
@@ -90,7 +96,21 @@ export const api = {
     get: (projectId: string, pageNumber: number) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`),
     generatedAssetUrl: (projectId: string, pageNumber: number) =>
-      `${generatedAssetBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/generated-asset`,
+      `${loopbackApiBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/generated-asset`,
+    assessVisualReview: (
+      projectId: string,
+      pageNumber: number,
+      body: VisualReviewReadinessRequest
+    ) =>
+      request<VisualReviewReadinessResponse>(
+        `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/visual-review-readiness`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+          headers: { "Content-Type": "application/json" }
+        },
+        loopbackApiBaseUrl()
+      ),
     execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/${encoded(action)}`, {
         method: "POST",

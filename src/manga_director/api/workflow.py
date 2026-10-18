@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
+from datetime import datetime
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from manga_director._version import __version__
 from manga_director.application.generated_asset_presentation import (
     GeneratedAssetPresentationUnavailable,
     generated_asset_presentation_for,
+)
+from manga_director.application.human_visual_review_readiness import (
+    HumanVisualReviewReadinessUnavailable,
+    ReviewChecklistDecision,
+    ReviewCriterion,
+    ReviewOutcome,
+    ReviewOverallJudgment,
+    human_visual_review_readiness_for,
 )
 from manga_director.application.workflow import WorkflowApplicationService
 from manga_director.domain.exceptions import (
@@ -32,10 +42,55 @@ _GENERATED_ASSET_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
 }
+_VISUAL_REVIEW_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+}
+_VISUAL_REVIEW_SUFFIX = "/visual-review-readiness"
+_VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
+_VISUAL_REVIEW_REQUIRED_CRITERIA = {
+    "character_identity",
+    "face",
+    "costume",
+    "props",
+    "pose",
+    "gaze",
+    "emotion",
+    "screen_direction",
+    "location",
+    "time",
+    "composition",
+    "panel_intent",
+    "visible_corruption",
+    "truncation",
+    "watermark",
+    "unsafe_content",
+    "unintended_text",
+    "continuity_comparison",
+}
+_VISUAL_REVIEW_OPTIONAL_CRITERIA = {"props", "continuity_comparison"}
+_VISUAL_REVIEW_SECRET_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "endpoint",
+    "password",
+    "secret",
+    "token",
+)
 
 
 class _HttpModel(BaseModel):
     model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+
+class _ClosedHttpModel(BaseModel):
+    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="forbid")
+
+
+class _ClosedHttpRequestModel(BaseModel):
+    model_config = ConfigDict(frozen=True, populate_by_name=False, extra="forbid")
 
 
 class WorkflowAction(StrEnum):
@@ -128,6 +183,78 @@ class PageActionRequest(_HttpModel):
     approved_by: str | None = Field(default=None, min_length=1, alias="approvedBy")
 
 
+class VisualReviewChecklistItemRequest(_ClosedHttpRequestModel):
+    criterion: ReviewCriterion
+    outcome: ReviewOutcome
+    rationale: str = Field(min_length=1, max_length=500)
+
+    @field_validator("rationale")
+    @classmethod
+    def _validate_rationale(cls, value: str) -> str:
+        return _safe_visual_review_text(value, "rationale")
+
+
+class VisualReviewReadinessRequest(_ClosedHttpRequestModel):
+    reviewer_id: str = Field(min_length=1, max_length=200, alias="reviewerId")
+    reviewed_at: datetime = Field(alias="reviewedAt")
+    checklist: tuple[VisualReviewChecklistItemRequest, ...] = Field(
+        min_length=18,
+        max_length=18,
+    )
+    overall_judgment: ReviewOverallJudgment = Field(alias="overallJudgment")
+    rationale: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reviewer_id")
+    @classmethod
+    def _validate_reviewer_id(cls, value: str) -> str:
+        if any(character.isspace() or ord(character) < 32 for character in value):
+            raise ValueError("reviewerId must be a logical reference")
+        return _safe_visual_review_text(value, "reviewerId")
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def _require_timezone_aware_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("reviewedAt must be timezone-aware")
+        return value
+
+    @field_validator("rationale")
+    @classmethod
+    def _validate_rationale(cls, value: str) -> str:
+        return _safe_visual_review_text(value, "rationale")
+
+    @model_validator(mode="after")
+    def _validate_complete_checklist(self) -> VisualReviewReadinessRequest:
+        criteria = [item.criterion for item in self.checklist]
+        if set(criteria) != _VISUAL_REVIEW_REQUIRED_CRITERIA or len(set(criteria)) != len(
+            criteria
+        ):
+            raise ValueError("checklist must contain every criterion exactly once")
+        if any(
+            item.outcome == "not_applicable"
+            and item.criterion not in _VISUAL_REVIEW_OPTIONAL_CRITERIA
+            for item in self.checklist
+        ):
+            raise ValueError("not_applicable is not permitted for this criterion")
+        return self
+
+
+class VisualReviewFindingDTO(_ClosedHttpModel):
+    code: str
+    status: Literal["needs_review", "blocked"]
+    message: str
+    criterion: str = ""
+
+
+class VisualReviewReadinessResponse(_ClosedHttpModel):
+    status: Literal["ready", "needs_review", "blocked"]
+    ready: bool
+    page_state: PageState = Field(alias="pageState")
+    findings: tuple[VisualReviewFindingDTO, ...]
+    missing_prerequisites: tuple[str, ...] = Field(alias="missingPrerequisites")
+    analysis_only: Literal[True] = Field(alias="analysisOnly")
+
+
 def create_workflow_app(application: WorkflowApplicationService) -> Any:
     """Create a localhost CORS-scoped workflow API without importing MCP."""
 
@@ -143,6 +270,7 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
         raise RuntimeError("Install manga-director[api] to enable workflow HTTP routes.") from exc
 
     app = FastAPI(title="manga-director workflow", version=__version__)
+    _register_visual_review_request_guard(app, json_response=JSONResponse)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(LOCAL_WEB_ORIGINS),
@@ -166,6 +294,23 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
     return app
 
 
+def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> None:
+    async def reject_unbounded_visual_review_request(request: Any, call_next: Any) -> Any:
+        if (
+            request.method == "POST"
+            and request.url.path.endswith(_VISUAL_REVIEW_SUFFIX)
+            and (
+                request.query_params
+                or "transfer-encoding" in request.headers
+                or not _bounded_content_length(request.headers.get("content-length"))
+            )
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        return await call_next(request)
+
+    app.middleware("http")(reject_unbounded_visual_review_request)
+
+
 def _register_error_handlers(
     app: Any,
     *,
@@ -178,14 +323,16 @@ def _register_error_handlers(
         code: str,
         message: str,
         details: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> Any:
         payload = ApiErrorDTO(code=code, message=message, details=details)
         return json_response(
             status_code=status_code,
             content=payload.model_dump(mode="json", by_alias=True, exclude_none=True),
+            headers=headers,
         )
 
-    async def request_validation_error(_request: Any, error: Any) -> Any:
+    async def request_validation_error(request: Any, error: Any) -> Any:
         issues = [
             {
                 "location": [str(part) for part in item.get("loc", ())],
@@ -198,6 +345,7 @@ def _register_error_handlers(
             "invalid_input",
             "Request validation failed.",
             {"issues": issues},
+            headers=_visual_review_headers_for(request),
         )
 
     async def project_not_found(_request: Any, error: ProjectNotFoundError) -> Any:
@@ -212,16 +360,26 @@ def _register_error_handlers(
     async def invalid_domain_input(_request: Any, error: ValidationError) -> Any:
         return error_response(422, "invalid_input", str(error))
 
-    async def http_error(_request: Any, error: Any) -> Any:
+    async def http_error(request: Any, error: Any) -> Any:
         code, message = _http_error_content(error.status_code)
-        return error_response(error.status_code, code, message)
+        return error_response(
+            error.status_code,
+            code,
+            message,
+            headers=_visual_review_headers_for(request),
+        )
 
-    async def unexpected_error(_request: Any, error: Exception) -> Any:
+    async def unexpected_error(request: Any, error: Exception) -> Any:
         LOGGER.error(
             "Unhandled workflow HTTP error",
             exc_info=(type(error), error, error.__traceback__),
         )
-        return error_response(500, "internal_error", "An internal error occurred.")
+        return error_response(
+            500,
+            "internal_error",
+            "An internal error occurred.",
+            headers=_visual_review_headers_for(request),
+        )
 
     app.add_exception_handler(request_validation_error_type, request_validation_error)
     app.add_exception_handler(ProjectNotFoundError, project_not_found)
@@ -238,6 +396,11 @@ def _http_error_content(status_code: int) -> tuple[str, str]:
     if status_code == 405:
         return "method_not_allowed", "Method not allowed."
     return "http_error", "HTTP request failed."
+
+
+def _visual_review_headers_for(request: Any) -> dict[str, str] | None:
+    path = getattr(getattr(request, "url", None), "path", "")
+    return _VISUAL_REVIEW_HEADERS if path.endswith(_VISUAL_REVIEW_SUFFIX) else None
 
 
 def _register_routes(
@@ -297,6 +460,11 @@ def _register_routes(
         json_response=json_response,
         background_task_type=background_task_type,
     )
+    assess_visual_review = _visual_review_readiness_route(
+        application,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -328,8 +496,120 @@ def _register_routes(
         get_generated_asset
     )
     app.post(
+        "/projects/{project_id}/pages/{page_number}/visual-review-readiness",
+        response_model=VisualReviewReadinessResponse,
+    )(assess_visual_review)
+    app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
+
+
+def _visual_review_readiness_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def assess_visual_review(
+        project_id: str,
+        page_number: int,
+        body: VisualReviewReadinessRequest,
+        request: Any,
+    ) -> Any:
+        content_length = request.headers.get("content-length")
+        if (
+            request.query_params
+            or "transfer-encoding" in request.headers
+            or not _bounded_content_length(content_length)
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            page_number = _validated_page_number(page_number)
+        except ValidationError:
+            return _visual_review_error(json_response, 422, "invalid_input")
+        service = human_visual_review_readiness_for(application)
+        if service is None:
+            return _visual_review_error(json_response, 404, "not_found")
+        try:
+            result = service.assess(
+                project_id,
+                page_number,
+                reviewer_id=body.reviewer_id,
+                reviewed_at=body.reviewed_at,
+                checklist=tuple(
+                    ReviewChecklistDecision(
+                        criterion=item.criterion,
+                        outcome=item.outcome,
+                        rationale=item.rationale,
+                    )
+                    for item in body.checklist
+                ),
+                overall_judgment=body.overall_judgment,
+                rationale=body.rationale,
+            )
+        except HumanVisualReviewReadinessUnavailable:
+            return _visual_review_error(json_response, 404, "not_found")
+        response = VisualReviewReadinessResponse(
+            status=result.status,
+            ready=result.ready,
+            pageState=PageState(result.page_state),
+            findings=tuple(
+                VisualReviewFindingDTO(
+                    code=item.code,
+                    status=cast(Literal["needs_review", "blocked"], item.status),
+                    message=item.message,
+                    criterion=item.criterion,
+                )
+                for item in result.findings
+            ),
+            missingPrerequisites=result.missing_prerequisites,
+            analysisOnly=True,
+        )
+        return json_response(
+            status_code=200,
+            content=response.model_dump(mode="json", by_alias=True),
+            headers=_VISUAL_REVIEW_HEADERS,
+        )
+
+    assess_visual_review.__annotations__["request"] = request_type
+    return assess_visual_review
+
+
+def _bounded_content_length(value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        length = int(value)
+    except ValueError:
+        return False
+    return 0 < length <= _VISUAL_REVIEW_MAX_CONTENT_LENGTH
+
+
+def _safe_visual_review_text(value: str, label: str) -> str:
+    lowered = value.lower()
+    if (
+        value != value.strip()
+        or not value
+        or any(unicodedata.category(character) == "Cc" for character in value)
+        or "/" in value
+        or "\\" in value
+        or re.match(r"^[A-Za-z]:", value)
+        or "://" in value
+        or "@" in value
+        or any(part in lowered for part in _VISUAL_REVIEW_SECRET_PARTS)
+    ):
+        raise ValueError(f"{label} must be bounded local text")
+    return value
+
+
+def _visual_review_error(json_response: Any, status_code: int, code: str) -> Any:
+    message = "Not found." if status_code == 404 else "Request validation failed."
+    return json_response(
+        status_code=status_code,
+        content={"code": code, "message": message},
+        headers=_VISUAL_REVIEW_HEADERS,
+    )
 
 
 def _generated_asset_route(

@@ -713,7 +713,9 @@ or history rewriting.
 
 Design approved and frozen by
 [RFC-V7-006: Safe Local Human Visual Review and Approval Readiness](RFC_V7_006_SAFE_LOCAL_HUMAN_VISUAL_REVIEW_READINESS.md).
-Implementation is not authorized.
+Implementation is authorized only through the exact sixteen-file V7-08
+package. Completion requires its feature PR to pass all required local,
+independent-review, hosted CI, CodeQL, merge, and post-merge gates.
 
 ### Objective
 
@@ -791,14 +793,15 @@ them, where applicable, from existing authoritative state.
 - no existing DTO, public export, StateMachine, WorkflowEngine, schema,
   dependency, lockfile, package metadata, version, Settings, release, or
   `main` change is authorized; and
-- this design stays within the exact two-file docs allowlist and passes link,
-  whitespace, architecture, compatibility, independent-review, CI, CodeQL,
-  and post-merge gates with no P0 or P1 finding.
+- the implementation stays within its exact sixteen-file allowlist and passes
+  whitespace, architecture, compatibility, focused/full regression, Web,
+  security, package, independent-review, CI, CodeQL, and post-merge gates with
+  no P0 or P1 finding.
 
 ### Compatibility and exclusions
 
-This docs-only design changes no current contract. A separately approved
-implementation may add only the bounded loopback request/response and
+The approved implementation adds only the bounded loopback request/response,
+private server-resolved evidence adapter, V7-07 private proof capability, and
 transient Web form described by RFC-V7-006. Existing routes and DTOs, public
 Python imports, CLI, MCP, SDK, Plugin, Repository and LocalFile formats,
 Providers, StateMachine, WorkflowEngine, quality, Page states, and explicit
@@ -812,10 +815,14 @@ deletion are out of scope.
 
 ### Validation
 
-- exact two-file docs allowlist: RFC-V7-006 and this roadmap entry;
-- local Markdown-link resolution and `git diff --check`;
-- zero source, test, dependency, lockfile, workflow, package-metadata,
-  version, Settings, or `main` diff;
+- exact approved sixteen-file implementation allowlist, including the V7-07
+  private proof capability, V7-06 private server-resolved evidence adapter,
+  Application/HTTP/Web delivery, focused tests, browser E2E, and this roadmap;
+- focused and full Python regression, Ruff, mypy, Web lint/typecheck/unit/
+  build/E2E, security/audit/package, Markdown-link, and `git diff --check`;
+- zero dependency, lockfile, persistence-schema, existing DTO, public-export,
+  StateMachine, WorkflowEngine, Provider, I02, version, Settings, or `main`
+  diff;
 - architecture, authority, privacy, approval-boundary, LocalFile-security,
   public-contract, and compatibility review;
 - independent read-only review with P0 = 0 and P1 = 0; and
@@ -823,18 +830,14 @@ deletion are out of scope.
 
 ### Authorization gate
 
-RFC-V7-006 and this V7-08 entry authorize only the two-file docs-only design
-record. They do not authorize implementation, HTTP or Web changes, a third
-file, asset access beyond existing behavior, review persistence, quality
-execution, approval, Page mutation, Provider calls, live generation, public
-contract changes, StateMachine, WorkflowEngine, persistence schema,
-dependencies, I02, `main`, versioning, release, tag, publication, Settings,
-branch deletion, force push, or history rewriting.
-
-A future implementation requires its own exact allowlist and explicit
-approval. Any need for a current DTO or public API change, persistence,
-approval coupling, remote surface, dependency, or I02 authority is a scope
-expansion and must stop.
+The V7-08 implementation authorization is limited to its exact sixteen files
+and the normal verified path through merge and post-merge checks. It does not
+authorize a seventeenth file, review persistence, quality execution, approval,
+Page mutation, Provider calls, live generation, existing DTO or public-contract
+changes, StateMachine, WorkflowEngine, persistence schema, dependencies, I02,
+`main`, versioning, release, tag, publication, Settings, branch deletion,
+force push, or history rewriting. Any such need is a scope expansion and must
+stop.
 
 ## Epic 1 sequencing
 
@@ -846,7 +849,7 @@ expansion and must stop.
 | V7-04 ComfyUI Local Provider | Complete and verified | Completed V7-03, accepted RFC-V7-003, and explicit approval of the exact twelve-file implementation allowlist | PR #26 merged into `v7-dev` at `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed 10/10 jobs; CodeQL run #19 passed 3/3 jobs; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-06 Human Visual QA and Approval Readiness | Complete and verified | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | PR #31 merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact three-file allowlist; feature branch retained; `main` unchanged |
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
-| V7-08 Safe Local Human Visual Review and Approval Readiness | Design approved; implementation not authorized | Completed V7-06 and V7-07 plus accepted RFC-V7-006 docs design | RFC-V7-006 and the matching roadmap entry accepted within the exact two-file docs allowlist; no implementation, runtime, public-contract, persistence, dependency, or approval behavior change |
+| V7-08 Safe Local Human Visual Review and Approval Readiness | Implementation authorized; completion requires verified feature-PR merge | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | One additive loopback-only transient assessment, private server-resolved evidence composition, no persistence or approval coupling, P0/P1 = 0, and all required local/hosted/post-merge gates |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility

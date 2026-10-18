@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PageState } from "@/lib/api/types";
-import { canShowApproval, canShowGeneratedAsset } from "@/lib/workflow-view";
+import { canShowApproval, canShowGeneratedAsset, canShowVisualReview } from "@/lib/workflow-view";
 
 describe("UI workflow contract", () => {
   it("exposes approval only through the API-provided approval flag", () => {
@@ -53,4 +53,28 @@ describe("UI workflow contract", () => {
       }
     })).toBe(false);
   });
+
+  it.each(["Generated", "QualityChecked"] as PageState[])(
+    "shows transient visual review only for an assessable exact artifact in %s",
+    (state) => {
+      expect(canShowVisualReview({
+        state,
+        artifacts: {
+          image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:001" }
+        }
+      })).toBe(true);
+    }
+  );
+
+  it.each(["PromptBuilt", "Approved"] as PageState[])(
+    "does not open the visual review boundary in %s",
+    (state) => {
+      expect(canShowVisualReview({
+        state,
+        artifacts: {
+          image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:001" }
+        }
+      })).toBe(false);
+    }
+  );
 });

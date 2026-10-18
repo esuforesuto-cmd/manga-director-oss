@@ -79,3 +79,64 @@ export type PageAction =
 
 export type ProjectAction = "run" | "resume";
 export type WorkflowAction = PageAction | ProjectAction;
+
+export type HumanVisualCriterion =
+  | "character_identity"
+  | "face"
+  | "costume"
+  | "props"
+  | "pose"
+  | "gaze"
+  | "emotion"
+  | "screen_direction"
+  | "location"
+  | "time"
+  | "composition"
+  | "panel_intent"
+  | "visible_corruption"
+  | "truncation"
+  | "watermark"
+  | "unsafe_content"
+  | "unintended_text"
+  | "continuity_comparison";
+
+export type HumanVisualOutcome =
+  | "acceptable"
+  | "needs_review"
+  | "blocked"
+  | "not_applicable";
+
+export type OverallHumanJudgment =
+  | "acceptable_for_approval_consideration"
+  | "further_review_required"
+  | "blocked";
+
+export interface HumanVisualChecklistDecision {
+  criterion: HumanVisualCriterion;
+  outcome: HumanVisualOutcome;
+  rationale: string;
+}
+
+export interface VisualReviewReadinessRequest {
+  reviewerId: string;
+  reviewedAt: string;
+  checklist: HumanVisualChecklistDecision[];
+  overallJudgment: OverallHumanJudgment;
+  rationale: string;
+}
+
+export interface VisualReviewFinding {
+  code: string;
+  status: "needs_review" | "blocked";
+  message: string;
+  criterion: string;
+}
+
+export interface VisualReviewReadinessResponse {
+  status: "ready" | "needs_review" | "blocked";
+  ready: boolean;
+  pageState: PageState;
+  findings: VisualReviewFinding[];
+  missingPrerequisites: string[];
+  analysisOnly: true;
+}

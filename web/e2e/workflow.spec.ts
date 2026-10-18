@@ -18,4 +18,21 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
     "http://127.0.0.1:4010/projects/demo/pages/1/generated-asset"
   );
   await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
+  const review = page.getByRole("region", { name: "Human visual review readiness" });
+  await expect(review).toBeVisible();
+  await review.getByLabel("Reviewer reference").fill("reviewer:local");
+  await review.getByLabel("Reviewed at").fill("2026-10-18T12:00");
+  for (const fieldset of await review.locator("fieldset").all()) {
+    await fieldset.locator("select").selectOption("acceptable");
+    await fieldset.locator("input").fill("Reviewed directly");
+  }
+  await review.getByLabel("Overall judgment").selectOption("acceptable_for_approval_consideration");
+  await review.getByLabel("Overall rationale").fill("Complete local visual review");
+  await review.getByRole("button", { name: "Assess readiness" }).click();
+  await expect(review.getByText("Advisory result: ready")).toBeVisible();
+  await expect(page.getByLabel("Approved by")).toHaveValue("");
+
+  await page.reload();
+  await expect(page.getByText("Advisory result: ready")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
 });

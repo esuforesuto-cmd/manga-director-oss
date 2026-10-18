@@ -10,6 +10,10 @@ from manga_director.application.generated_asset_presentation import (
     attach_generated_asset_presentation,
     build_generated_asset_presentation,
 )
+from manga_director.application.human_visual_review_readiness import (
+    attach_human_visual_review_readiness,
+    build_human_visual_review_readiness,
+)
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.repositories.protocols import ProjectRepository
@@ -36,5 +40,9 @@ def build_workflow_app(
         attach_generated_asset_presentation(
             application,
             build_generated_asset_presentation(repository),
+        )
+        attach_human_visual_review_readiness(
+            application,
+            build_human_visual_review_readiness(repository),
         )
     return create_workflow_app(application)
