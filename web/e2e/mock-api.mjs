@@ -60,15 +60,22 @@ function project() {
   };
 }
 
-function json(response, status, body) {
+function json(response, status, body, headers = {}) {
   response.writeHead(status, {
     "access-control-allow-origin": "http://127.0.0.1:3000",
-    "content-type": "application/json"
+    "content-type": "application/json",
+    ...headers
   });
   response.end(JSON.stringify(body));
 }
 
-createServer((request, response) => {
+async function requestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+createServer(async (request, response) => {
   const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -97,6 +104,28 @@ createServer((request, response) => {
       "x-content-type-options": "nosniff"
     });
     return response.end(png);
+  }
+  if (request.method === "POST" && pathname === "/projects/demo/pages/1/visual-review-readiness") {
+    const body = await requestBody(request);
+    const complete = body.reviewerId
+      && body.reviewedAt
+      && body.overallJudgment
+      && body.rationale
+      && Array.isArray(body.checklist)
+      && body.checklist.length === 18;
+    if (!complete) return json(response, 422, { code: "invalid_input", message: "Request validation failed." });
+    const ready = pageState === "QualityChecked";
+    return json(response, 200, {
+      status: ready ? "ready" : "needs_review",
+      ready,
+      pageState,
+      findings: ready ? [] : [{ code: "QUALITY_CHECK_REQUIRED", status: "needs_review", message: "Quality review required.", criterion: "" }],
+      missingPrerequisites: ready ? [] : ["QUALITY_CHECK_REQUIRED"],
+      analysisOnly: true
+    }, {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
   }
 
   const action = pathname.match(/^\/projects\/demo\/pages\/1\/([a-z_]+)$/)?.[1];

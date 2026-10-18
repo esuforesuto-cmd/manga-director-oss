@@ -29,3 +29,10 @@ export function canShowGeneratedAsset(
     && typeof (image as Record<string, unknown>).output_asset_id === "string"
   );
 }
+
+/** Human readiness is advisory and never reopens an Approved Page. */
+export function canShowVisualReview(
+  page: Pick<PageDetail, "artifacts" | "state">
+): boolean {
+  return ["Generated", "QualityChecked"].includes(page.state) && canShowGeneratedAsset(page);
+}

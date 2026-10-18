@@ -8,6 +8,7 @@ approval.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -23,6 +24,9 @@ from manga_director.production.next_generation_character_identity import (
 )
 from manga_director.production.next_generation_durable_evidence_workflow_binding import (
     DurableEvidenceWorkflowBindingReport,
+)
+from manga_director.production.next_generation_generation_evidence import (
+    GenerationEvidenceValidationReport,
 )
 from manga_director.production.next_generation_visual_continuity_qa import (
     VisualContinuityQAReport,
@@ -209,6 +213,21 @@ class HumanVisualQAApprovalReadinessReport(_ApprovalReadinessModel):
     analysis_only: Literal[True] = True
 
 
+@dataclass(frozen=True, slots=True)
+class _ServerResolvedAttemptBinding:
+    """Exact local proof adapted without reconstructing historical registration reports."""
+
+    generation_evidence_validation_report: GenerationEvidenceValidationReport
+    attempt_id: str
+    status: Literal["ready"] = "ready"
+    findings: tuple[()] = ()
+    bound: Literal[True] = True
+    ready: Literal[True] = True
+
+
+_AttemptBinding = AttemptToEvidenceBindingReport | _ServerResolvedAttemptBinding
+
+
 class HumanVisualQAApprovalReadinessService:
     """Derive advisory readiness from supplied immutable evidence."""
 
@@ -223,6 +242,67 @@ class HumanVisualQAApprovalReadinessService:
         human_judgment: HumanVisualJudgmentDTO | None = None,
     ) -> HumanVisualQAApprovalReadinessReport:
         """Return a deterministic fail-closed result without side effects."""
+
+        return self._assess(
+            scope,
+            attempt_binding_report,
+            workflow_page_binding_report,
+            workflow_consistency_report,
+            visual_qa_report,
+            identity_validation_report,
+            human_judgment,
+        )
+
+    def _assess_server_resolved(
+        self,
+        scope: ApprovalReadinessScopeDTO,
+        generation_evidence_validation_report: GenerationEvidenceValidationReport,
+        workflow_page_binding_report: DurableEvidenceWorkflowBindingReport,
+        workflow_consistency_report: WorkflowConsistencyReport,
+        visual_qa_report: VisualContinuityQAReport,
+        identity_validation_report: IdentityValidationReport | None = None,
+        human_judgment: HumanVisualJudgmentDTO | None = None,
+    ) -> HumanVisualQAApprovalReadinessReport:
+        """Adapt one already verified local evidence chain to the canonical evaluator."""
+
+        matching = tuple(
+            envelope
+            for envelope in generation_evidence_validation_report.envelopes
+            if envelope.attempt_id == scope.attempt_id
+        )
+        if (
+            generation_evidence_validation_report.status != "ready"
+            or not generation_evidence_validation_report.ready
+            or generation_evidence_validation_report.findings
+            or len(matching) != 1
+        ):
+            raise ValueError("server-resolved generation evidence is not ready")
+        return self._assess(
+            scope,
+            _ServerResolvedAttemptBinding(
+                generation_evidence_validation_report=(
+                    generation_evidence_validation_report
+                ),
+                attempt_id=scope.attempt_id,
+            ),
+            workflow_page_binding_report,
+            workflow_consistency_report,
+            visual_qa_report,
+            identity_validation_report,
+            human_judgment,
+        )
+
+    def _assess(
+        self,
+        scope: ApprovalReadinessScopeDTO,
+        attempt_binding_report: _AttemptBinding,
+        workflow_page_binding_report: DurableEvidenceWorkflowBindingReport,
+        workflow_consistency_report: WorkflowConsistencyReport,
+        visual_qa_report: VisualContinuityQAReport,
+        identity_validation_report: IdentityValidationReport | None,
+        human_judgment: HumanVisualJudgmentDTO | None,
+    ) -> HumanVisualQAApprovalReadinessReport:
+        """Apply the unchanged readiness precedence to one normalized evidence view."""
 
         canonical_judgment = _canonical_judgment(human_judgment)
         findings: list[ApprovalReadinessFindingDTO] = []
@@ -343,7 +423,7 @@ def _append_persisted_page_findings(
 
 def _append_attempt_binding_findings(
     scope: ApprovalReadinessScopeDTO,
-    report: AttemptToEvidenceBindingReport,
+    report: _AttemptBinding,
     findings: list[ApprovalReadinessFindingDTO],
 ) -> None:
     if report.attempt_id != scope.attempt_id:
@@ -436,7 +516,7 @@ def _append_workflow_page_binding_findings(
 def _append_visual_qa_findings(
     scope: ApprovalReadinessScopeDTO,
     report: VisualContinuityQAReport,
-    attempt_binding_report: AttemptToEvidenceBindingReport,
+    attempt_binding_report: _AttemptBinding,
     identity_validation_report: IdentityValidationReport | None,
     findings: list[ApprovalReadinessFindingDTO],
 ) -> None:
@@ -511,7 +591,7 @@ def _append_visual_qa_findings(
 
 def _visual_qa_report_is_complete(
     report: VisualContinuityQAReport,
-    attempt_binding_report: AttemptToEvidenceBindingReport,
+    attempt_binding_report: _AttemptBinding,
     identity_validation_report: IdentityValidationReport | None,
 ) -> bool:
     if not report.comparisons or not report.checklist:

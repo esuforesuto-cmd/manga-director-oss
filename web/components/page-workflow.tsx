@@ -2,9 +2,15 @@ import type { PageDetail } from "@/lib/api/types";
 
 import { api } from "@/lib/api/client";
 import { ApprovalForm } from "./approval-form";
+import { HumanVisualReviewForm } from "./human-visual-review-form";
 import { PageActions } from "./page-actions";
 import styles from "./page-workflow.module.css";
-import { availableWorkflowActions, canShowApproval, canShowGeneratedAsset } from "@/lib/workflow-view";
+import {
+  availableWorkflowActions,
+  canShowApproval,
+  canShowGeneratedAsset,
+  canShowVisualReview
+} from "@/lib/workflow-view";
 
 const stages = ["Page Design", "Review", "Storyboard", "Dialogue", "Prompt", "Generated Image", "Quality", "Continuity", "Approval"];
 
@@ -33,6 +39,9 @@ export function PageWorkflowView({
             src={api.pages.generatedAssetUrl(projectId, page.pageNumber)}
           />
         </section>
+      ) : null}
+      {canShowVisualReview(page) ? (
+        <HumanVisualReviewForm projectId={projectId} pageNumber={page.pageNumber} />
       ) : null}
       {canShowApproval(page) ? <ApprovalForm projectId={projectId} pageNumber={page.pageNumber} /> : null}
       <section className={styles.panel} aria-labelledby="input-heading">
