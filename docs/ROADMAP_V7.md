@@ -838,6 +838,173 @@ DTO or public-contract changes, StateMachine, WorkflowEngine, persistence
 schema, dependencies, I02, `main`, versioning, release, tag, publication,
 Settings, branch deletion, force push, or history rewriting.
 
+## V7-09 — Safe Local Approved Asset Download
+
+### Planning status
+
+Design approved and frozen by
+[RFC-V7-007: Safe Local Approved Asset Download](RFC_V7_007_SAFE_LOCAL_APPROVED_ASSET_DOWNLOAD.md).
+Implementation is not authorized.
+
+### Objective
+
+Define the smallest loopback-only, read-only download boundary that returns
+the exact V7-07 PNG for one existing Page only after the canonical workflow has
+persisted that Page as `Approved` with explicit human approval evidence.
+
+### Inputs
+
+- one existing LocalFile Project ID from the route;
+- one route-bounded positive Page number from the route;
+- the Page's persisted `Approved` state, closed approval artifact, canonical
+  terminal workflow history, and logical generated-asset descriptor; and
+- the existing V7-07 ledger, generation evidence, owner registry, strict PNG,
+  and exact-file lease proof.
+
+Asset ID, attempt, Provider, digest, path, storage name, root, URL, format,
+profile, filename, disposition, reviewer identity, and approval identity are
+not caller inputs.
+
+### Outputs
+
+- one verified `image/png` attachment using a fixed Page-number filename; or
+- one redacted fail-closed response with no approval, workflow, generation,
+  storage, Provider, or filesystem disclosure.
+
+The response is one local file download only. It is not print, Web, eBook,
+package, archive, release-bundle, publication, or commercial-delivery
+readiness.
+
+### Frozen behavior
+
+- use one separately approvable additive loopback-only operation equivalent to
+  `GET /projects/{project_id}/pages/{page_number}/approved-asset-download`;
+- before integer conversion or repository access, require the raw Page segment
+  to match `^[1-9][0-9]{0,9}$` and be no greater than `2147483647`, without
+  changing the existing Page model or public contract;
+- reject query parameters, request bodies, transfer encoding, caller
+  filenames, and all caller-selected asset, filesystem, Provider, export,
+  workflow, and approval authority;
+- reject requests containing `Range`, `If-Range`, `If-Match`,
+  `If-None-Match`, `If-Modified-Since`, or `If-Unmodified-Since`;
+- before repository or lease access, require exactly one parsed `Referer`
+  origin in the existing local Web-origin allowlist together with
+  `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, and
+  `Sec-Fetch-User: ?1`; reject absent, duplicate, malformed, or mismatched
+  evidence, direct address-bar use, iframe navigation, preload, and non-browser
+  callers without accepting `Origin`, a token, or a custom header instead;
+- do not require `Sec-Fetch-Site`, because the allowed local Web origin and API
+  may use different loopback host spellings; do not persist, log, or return the
+  admission headers;
+- require the authoritative Page to be exactly `Approved`, with the closed
+  existing approval artifact and canonical final `QualityChecked` to
+  `Approved` workflow-history entry;
+- require the Page's one closed logical generated-asset descriptor and reuse
+  the complete V7-07 private proof for the same Project and Page;
+- return only bytes validated under the retained exact-file lease, with no
+  path reopen after size, SHA-256, media-type, and strict-PNG validation;
+- return `Content-Type: image/png`, `Content-Disposition` with the fixed
+  `page-{page_number}.png` filename, `Cache-Control: no-store`, and
+  `X-Content-Type-Options: nosniff`;
+- emit no ETag, Last-Modified, Location, Content-Location, Accept-Ranges,
+  redirect, Project title or ID, approver or reviewer identity, asset or
+  attempt ID, Provider, digest, path, storage name, root, provenance, registry,
+  ledger, or evidence metadata;
+- keep the Web control explicit and user-initiated, derived only from Project
+  ID and Page number; load, refresh, navigation, approval, or V7-08 assessment
+  must not start a download;
+- open only existing repository, ledger, evidence, registry, and asset state
+  read-only and create, repair, migrate, checkpoint, copy, cache, or log
+  nothing;
+- fail closed on platforms that cannot retain the existing safe exact-file
+  lease;
+- perform no Page mutation, review or readiness persistence, quality action,
+  approval, StateMachine transition, WorkflowEngine execution, Provider call,
+  generation, retry, fallback, export-engine call, DNS, proxy, redirect, or
+  outbound request;
+- preserve current exact-origin CORS and expose no remote, LAN, wildcard, CLI,
+  MCP, SDK, Plugin, or public Python surface;
+- treat CORS as transport policy rather than download authority; the
+  route-specific browser-initiated admission rule remains mandatory; and
+- remain completely independent of I02.
+
+### Acceptance criteria
+
+- only an authoritative `Approved` Page with matching approval, terminal
+  workflow history, logical artifact, V7-07 proof, and exact bytes succeeds;
+- every earlier state and every missing, malformed, duplicate, ambiguous,
+  stale, corrupt, mismatched, unsafe, oversize, digest-invalid, malformed-PNG,
+  trailing-data, or partial-read state fails closed without fallback or repair;
+- the server derives every authoritative identity and a fixed ASCII filename;
+  the browser selects no asset, path, URL, filename, format, or export profile;
+- the route admits only bounded Page-number input and explicit user-activated
+  document navigation from an existing allowed local Web origin before any
+  repository or lease access;
+- success, failure, response abort, refresh, repeat request, and recovery write
+  or repair no server/application-controlled repository, Page, sidecar,
+  database, asset-root, service-filesystem, review, readiness, workflow,
+  approval, export, or publication state;
+- only a successful user-initiated response may cause the browser to create
+  its chosen destination file or native download history; the feature neither
+  selects nor programmatically reads, writes, records, or persists either;
+- V7-08 remains transient and advisory and does not become a persisted or
+  reconstructed prerequisite for download;
+- existing generated-asset presentation, visual-review readiness, approval,
+  Python, CLI, HTTP, Web, MCP, SDK, Plugin, Repository, LocalFile, Provider,
+  generation, Project import/export, v5/v6, and public compatibility remain
+  unchanged;
+- no existing DTO, public export, StateMachine, WorkflowEngine, schema,
+  dependency, lockfile, package metadata, version, Settings, release, or
+  `main` change is authorized; and
+- a future implementation must stay within a separately approved exact
+  allowlist and pass focused/full regression, Web, security, package,
+  independent-review, CI, CodeQL, and post-merge gates with P0/P1 = 0.
+
+### Compatibility and exclusions
+
+This docs-only design changes no current contract. A separately approved
+implementation may add only the bounded binary GET, private Application proof
+composition, and explicit Web download control described by RFC-V7-007.
+
+Existing routes and DTOs, public Python imports, CLI, MCP, SDK, Plugin,
+Repository and LocalFile formats, Providers, StateMachine, WorkflowEngine,
+quality, visual review, approval, Project import/export, and Page states remain
+unchanged.
+
+No migration is required. Batch/chapter/project download, caller filenames,
+generic file serving, print/Web/eBook conversion, packaging, archives, release
+bundles, publication, authentication, remote exposure, live generation,
+Provider execution, I02, dependencies, versioning, release, tag,
+Settings, `main`, force push, history rewriting, and branch deletion are out
+of scope.
+
+### Validation
+
+- exact two-file docs allowlist: RFC-V7-007 and this roadmap entry;
+- local Markdown-link resolution and `git diff --check`;
+- zero source, test, dependency, lockfile, workflow, package-metadata, version,
+  Settings, or `main` diff;
+- architecture, approval-authority, exact-file security, privacy, export/
+  publication boundary, public-contract, and compatibility review;
+- independent read-only review with P0 = 0 and P1 = 0; and
+- required hosted CI, CodeQL, and post-merge verification.
+
+### Authorization gate
+
+RFC-V7-007 and this V7-09 entry authorize only the exact two-file docs-only
+design record. They do not authorize implementation, HTTP or Web changes,
+file download, asset access beyond current V7-07 behavior, a third file,
+export, packaging, publication, review persistence, quality execution,
+approval, Page mutation, Provider calls, live generation, public-contract
+changes, StateMachine, WorkflowEngine, persistence schema, dependencies, I02,
+`main`, versioning, release, tag, Settings, branch deletion,
+force push, or history rewriting.
+
+A future implementation requires its own read-only preflight, exact allowlist,
+explicit approval, and executed validation. Any need for a current DTO or
+public API change, persistence, approval coupling, remote surface, dependency,
+general export behavior, or I02 authority is a scope expansion and must stop.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -849,6 +1016,7 @@ Settings, branch deletion, force push, or history rewriting.
 | V7-06 Human Visual QA and Approval Readiness | Complete and verified | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | PR #31 merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact three-file allowlist; feature branch retained; `main` unchanged |
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-08 Safe Local Human Visual Review and Approval Readiness | Complete and verified | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | PR #36 final head `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact sixteen-file allowlist; feature branch retained; `main` unchanged |
+| V7-09 Safe Local Approved Asset Download | Design approved; implementation not authorized | Completed V7-07 and V7-08 plus accepted RFC-V7-007 docs design | RFC-V7-007 and the matching roadmap entry accepted within the exact two-file docs allowlist; no implementation, download, export, publication, runtime, public-contract, persistence, dependency, or approval behavior change |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
