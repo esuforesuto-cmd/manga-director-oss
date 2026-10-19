@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 
 let projectCreated = false;
 let pageState = "Draft";
+let reviewEvidenceRecordCount = 0;
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 const nextState = {
@@ -92,10 +93,14 @@ createServer(async (request, response) => {
   if (request.method === "POST" && pathname === "/projects") {
     projectCreated = true;
     pageState = "Draft";
+    reviewEvidenceRecordCount = 0;
     return json(response, 201, project());
   }
   if (request.method === "GET" && pathname === "/projects/demo") return json(response, 200, project());
   if (request.method === "GET" && pathname === "/projects/demo/pages/1") return json(response, 200, page());
+  if (request.method === "GET" && pathname === "/test-only/review-evidence-count") {
+    return json(response, 200, { count: reviewEvidenceRecordCount });
+  }
   if (request.method === "GET" && pathname === "/projects/demo/pages/1/generated-asset") {
     response.writeHead(200, {
       "access-control-allow-origin": "http://127.0.0.1:3000",
@@ -133,6 +138,37 @@ createServer(async (request, response) => {
       pageState,
       findings: ready ? [] : [{ code: "QUALITY_CHECK_REQUIRED", status: "needs_review", message: "Quality review required.", criterion: "" }],
       missingPrerequisites: ready ? [] : ["QUALITY_CHECK_REQUIRED"],
+      analysisOnly: true
+    }, {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+  }
+  if (request.method === "POST" && pathname === "/projects/demo/pages/1/visual-review-evidence") {
+    const body = await requestBody(request);
+    const complete = body.reviewerId
+      && body.reviewedAt
+      && body.overallJudgment
+      && body.rationale
+      && Array.isArray(body.checklist)
+      && body.checklist.length === 18;
+    if (!complete || !["Generated", "QualityChecked"].includes(pageState)) {
+      return json(response, complete ? 404 : 422, {
+        code: complete ? "not_found" : "invalid_input",
+        message: complete ? "Not found." : "Request validation failed."
+      });
+    }
+    const ready = pageState === "QualityChecked";
+    const idempotentReplay = reviewEvidenceRecordCount > 0;
+    if (!idempotentReplay) reviewEvidenceRecordCount += 1;
+    return json(response, 200, {
+      status: ready ? "ready" : "needs_review",
+      ready,
+      pageState,
+      findings: ready ? [] : [{ code: "QUALITY_CHECK_REQUIRED", status: "needs_review", message: "Quality review required.", criterion: "" }],
+      missingPrerequisites: ready ? [] : ["QUALITY_CHECK_REQUIRED"],
+      evidenceRecorded: true,
+      idempotentReplay,
       analysisOnly: true
     }, {
       "cache-control": "no-store",

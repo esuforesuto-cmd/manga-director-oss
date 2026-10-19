@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, cast
 
@@ -26,11 +26,13 @@ from manga_director.production.next_generation_human_visual_qa_approval_readines
     HumanVisualCriterion,
     HumanVisualJudgmentDTO,
     HumanVisualOutcome,
+    HumanVisualQAApprovalReadinessReport,
     HumanVisualQAApprovalReadinessService,
     OverallHumanJudgment,
 )
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresenter,
+    _SafeLocalGeneratedAssetProof,
 )
 from manga_director.production.next_generation_visual_continuity_qa import (
     ContinuityCharacterEvidenceDTO,
@@ -76,13 +78,33 @@ class HumanVisualReviewReadinessResult:
     analysis_only: Literal[True] = True
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class _HumanVisualReviewSubmission:
     reviewer_id: str
     reviewed_at: datetime
     checklist: tuple[HumanVisualChecklistDecisionDTO, ...]
     overall_judgment: OverallHumanJudgment
     rationale: str
+
+    def __repr__(self) -> str:
+        return "_HumanVisualReviewSubmission(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _HumanVisualReviewReadinessProof:
+    """Canonical readiness report retained under the exact-file lease."""
+
+    report: HumanVisualQAApprovalReadinessReport
+    _asset_proof: _SafeLocalGeneratedAssetProof = field(repr=False, compare=False)
+    _workflow_consistency: WorkflowConsistencyReport = field(
+        repr=False, compare=False
+    )
+
+    def __repr__(self) -> str:
+        return "_HumanVisualReviewReadinessProof(<redacted>)"
+
+    def release(self) -> None:
+        self._asset_proof.release()
 
 
 class HumanVisualReviewReadinessService:
@@ -108,33 +130,62 @@ class HumanVisualReviewReadinessService:
         overall_judgment: OverallHumanJudgment,
         rationale: str,
     ) -> HumanVisualReviewReadinessResult:
-        proof = None
+        proof = self._prove(
+            project_id,
+            page_number,
+            reviewer_id=reviewer_id,
+            reviewed_at=reviewed_at,
+            checklist=checklist,
+            overall_judgment=overall_judgment,
+            rationale=rationale,
+        )
+        try:
+            return _redacted_result(proof.report)
+        finally:
+            proof.release()
+
+    def _prove(
+        self,
+        project_id: str,
+        page_number: int,
+        *,
+        reviewer_id: str,
+        reviewed_at: datetime,
+        checklist: tuple[HumanVisualChecklistDecisionDTO, ...],
+        overall_judgment: OverallHumanJudgment,
+        rationale: str,
+    ) -> _HumanVisualReviewReadinessProof:
+        """Return one canonical report while retaining its exact-file proof."""
+
+        asset_proof: _SafeLocalGeneratedAssetProof | None = None
         try:
             page = self._repository._load_authoritative_page(project_id, page_number)
             if page.state not in _ASSESSABLE_STATES:
                 raise HumanVisualReviewReadinessUnavailable(
                     "human visual review readiness is unavailable"
                 )
-            proof = self._presenter._prove(
+            asset_proof = self._presenter._prove(
                 project_id,
                 str(page.page_number),
                 _output_asset_id(page),
             )
-            evidence_report = GenerationEvidenceValidationService().validate((proof.evidence,))
+            evidence_report = GenerationEvidenceValidationService().validate(
+                (asset_proof.evidence,)
+            )
             scope_seed = ApprovalReadinessScopeDTO(
                 project_id=project_id,
                 page_id=str(page.page_number),
                 page_number=page.page_number,
-                target_page_reference=proof.binding.target_page_reference,
-                attempt_id=proof.binding.attempt_id,
-                output_asset_id=proof.binding.output_asset_id,
-                provenance_reference=proof.evidence.provenance_reference,
+                target_page_reference=asset_proof.binding.target_page_reference,
+                attempt_id=asset_proof.binding.attempt_id,
+                output_asset_id=asset_proof.binding.output_asset_id,
+                provenance_reference=asset_proof.evidence.provenance_reference,
                 qa_report_reference="qa-report:pending",
             )
             visual_report = _visual_report(
                 page,
                 scope_seed,
-                proof.evidence.identity_bindings,
+                asset_proof.evidence.identity_bindings,
                 evidence_report,
             )
             scope = scope_seed.model_copy(
@@ -151,38 +202,50 @@ class HumanVisualReviewReadinessService:
                 overall_judgment=overall_judgment,
                 rationale=rationale,
             )
+            workflow_consistency = _workflow_consistency(project_id, page)
             report = self._readiness._assess_server_resolved(
                 scope,
                 evidence_report,
-                _workflow_binding_report(proof.binding),
-                _workflow_consistency(project_id, page),
+                _workflow_binding_report(asset_proof.binding),
+                workflow_consistency,
                 visual_report,
                 human_judgment=_human_judgment(project_id, page, scope, submission),
             )
-            return HumanVisualReviewReadinessResult(
-                status=report.status,
-                ready=report.ready,
-                page_state=report.persisted_page_state.value,
-                findings=tuple(
-                    HumanVisualReviewReadinessFinding(
-                        code=item.code,
-                        status=item.status,
-                        message=item.message,
-                        criterion=item.criterion,
-                    )
-                    for item in report.findings
-                ),
-                missing_prerequisites=report.missing_prerequisites,
+            return _HumanVisualReviewReadinessProof(
+                report=report,
+                _asset_proof=asset_proof,
+                _workflow_consistency=workflow_consistency,
             )
         except HumanVisualReviewReadinessUnavailable:
+            if asset_proof is not None:
+                asset_proof.release()
             raise
         except Exception as error:
+            if asset_proof is not None:
+                asset_proof.release()
             raise HumanVisualReviewReadinessUnavailable(
                 "human visual review readiness is unavailable"
             ) from error
-        finally:
-            if proof is not None:
-                proof.release()
+
+
+def _redacted_result(
+    report: HumanVisualQAApprovalReadinessReport,
+) -> HumanVisualReviewReadinessResult:
+    return HumanVisualReviewReadinessResult(
+        status=report.status,
+        ready=report.ready,
+        page_state=report.persisted_page_state.value,
+        findings=tuple(
+            HumanVisualReviewReadinessFinding(
+                code=item.code,
+                status=item.status,
+                message=item.message,
+                criterion=item.criterion,
+            )
+            for item in report.findings
+        ),
+        missing_prerequisites=report.missing_prerequisites,
+    )
 
 
 def _workflow_binding_report(

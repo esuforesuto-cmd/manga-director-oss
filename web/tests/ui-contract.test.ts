@@ -83,6 +83,28 @@ describe("UI workflow contract", () => {
     }
   );
 
+  it("keeps explicit review evidence separate from approval authority", () => {
+    const artifact = {
+      image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:001" }
+    };
+    expect(canShowVisualReview({
+      state: "Generated" as PageState,
+      artifacts: artifact
+    })).toBe(true);
+    expect(canShowApproval({
+      state: "Generated" as PageState,
+      approvalRequired: false
+    })).toBe(false);
+    expect(canShowVisualReview({
+      state: "QualityChecked" as PageState,
+      artifacts: artifact
+    })).toBe(true);
+    expect(canShowApproval({
+      state: "QualityChecked" as PageState,
+      approvalRequired: true
+    })).toBe(true);
+  });
+
   it("shows approved download only for the exact Approved logical artifact", () => {
     const artifact = {
       image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:001" }

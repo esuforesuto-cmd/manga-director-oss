@@ -5,6 +5,7 @@ import type {
   PageDetail,
   ProjectDetail,
   ProjectSummary,
+  VisualReviewEvidenceResponse,
   VisualReviewReadinessRequest,
   VisualReviewReadinessResponse,
   WorkflowStatus
@@ -106,6 +107,20 @@ export const api = {
     ) =>
       request<VisualReviewReadinessResponse>(
         `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/visual-review-readiness`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+          headers: { "Content-Type": "application/json" }
+        },
+        loopbackApiBaseUrl()
+      ),
+    recordVisualReviewEvidence: (
+      projectId: string,
+      pageNumber: number,
+      body: VisualReviewReadinessRequest
+    ) =>
+      request<VisualReviewEvidenceResponse>(
+        `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/visual-review-evidence`,
         {
           method: "POST",
           body: JSON.stringify(body),
