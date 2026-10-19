@@ -1023,9 +1023,12 @@ rewriting.
 
 Design approved and frozen by
 [RFC-V7-008: Durable Local Human Visual Review Evidence](RFC_V7_008_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE.md).
-Implementation and execution are not authorized.
+The exact fourteen-file V7-10 implementation is complete and verified. PR #42
+final head `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` was merged into `v7-dev`
+at `3c83a067ece1a1b3d45f89d4816ffb47153f81d8` after independent review and
+all required local, hosted CI, CodeQL, merge, and post-merge gates passed.
 
-The exact docs allowlist is:
+The approved design docs allowlist was:
 
 1. `docs/RFC_V7_008_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE.md`
 2. `docs/ROADMAP_V7.md`
@@ -1128,7 +1131,7 @@ readiness.
 
 ### Persistence boundary
 
-The future private owner is equivalent to:
+The implemented private owner is equivalent to:
 
 `_next_generation_normal_execution/review-evidence/human-visual-review-evidence.sqlite3`
 
@@ -1149,10 +1152,9 @@ only on its existing authoritative approval proof.
 Any future approval-to-review evidence linkage requires a separate RFC and
 explicit authorization.
 
-### Candidate implementation allowlist
+### Implementation allowlist
 
-The smallest current candidate is the following fifteen files. It remains
-planning-only until separately revalidated and explicitly approved:
+The implementation was completed within the approved exact fourteen files:
 
 1. `src/manga_director/production/next_generation_durable_human_visual_review_evidence.py` (new)
 2. `src/manga_director/application/human_visual_review_evidence.py` (new)
@@ -1168,7 +1170,6 @@ planning-only until separately revalidated and explicitly approved:
 12. `web/tests/ui-contract.test.ts`
 13. `web/e2e/mock-api.mjs`
 14. `web/e2e/workflow.spec.ts`
-15. `docs/ROADMAP_V7.md`
 
 The existing Page view and V7-08 visibility predicate are sufficient, so
 `web/components/page-workflow.tsx` and `web/lib/workflow-view.ts` are excluded.
@@ -1197,8 +1198,8 @@ exports, dependency, and lock files are also excluded.
   SDK, Plugin, Provider, dependencies, I02, v5, and v6 remain unchanged;
 - errors and responses expose no human text, internal identity, Provider,
   digest, SQL, path, storage, root, redirect, or cache validator;
-- the future implementation stays within an explicitly approved exact
-  allowlist and passes focused/full regression, Web, security, package,
+- the implementation stayed within its approved exact fourteen-file allowlist
+  and passed focused/full regression, Web, security, package,
   independent-review, CI, CodeQL, and post-merge gates with P0/P1 = 0; and
 - this design diff stays within the exact two-file docs allowlist.
 
@@ -1215,8 +1216,9 @@ exports, dependency, and lock files are also excluded.
 
 ### STOP conditions
 
-A third docs file, a sixteenth implementation file, existing DTO or public
-export change, Project/Repository/LocalFile or existing sidecar schema change,
+A second completion-state file, a fifteenth implementation file, existing DTO
+or public export change, Project/Repository/LocalFile or existing sidecar
+schema change,
 `Page.review` or approval coupling, StateMachine, WorkflowEngine, V7-09
 eligibility, dependency, Provider, I02, remote surface, exact-lease weakening,
 sidecar repair/migration, unresolved P0/P1, failed required check, conflict, or
@@ -1224,12 +1226,12 @@ scope drift requires a new explicit decision.
 
 ### Authorization gate
 
-Approval of RFC-V7-008 authorizes only the exact two-file docs design. It does
-not authorize the fifteen-file candidate implementation, the additive route,
-Web changes, private sidecar or schema creation, runtime persistence, Page or
-workflow mutation, quality, approval, Provider, generation, I02, dependencies,
-`main`, versioning, release, tag, Settings, branch deletion, force push, or
-history rewriting.
+V7-10 is complete. Its exact fourteen-file implementation authorization was
+exhausted by PR #42 and does not authorize a fifteenth file, an additional
+route or Web change, sidecar or schema change, runtime persistence behavior,
+Page or workflow mutation, quality, approval, Provider, generation, I02,
+dependencies, `main`, versioning, release, tag, Settings, branch deletion,
+force push, or history rewriting.
 
 ## Epic 1 sequencing
 
@@ -1243,7 +1245,7 @@ history rewriting.
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-08 Safe Local Human Visual Review and Approval Readiness | Complete and verified | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | PR #36 final head `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact sixteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-09 Safe Local Approved Asset Download | Complete and verified | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | PR #39 final head `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24 after one approved Windows 3.12 rerun; post-merge checks passed 13/13 with CodeQL 3/3; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
-| V7-10 Durable Local Human Visual Review Evidence | Design approved; implementation not authorized | Completed V7-06 through V7-09 and accepted RFC-V7-008 | Docs-only design; exact two-file allowlist; future fifteen-file candidate requires separate explicit implementation approval |
+| V7-10 Durable Local Human Visual Review Evidence | Complete and verified | Completed V7-06 through V7-09, accepted RFC-V7-008, and explicit approval of the exact fourteen-file implementation package | PR #42 final head `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` merged into `v7-dev` at `3c83a067ece1a1b3d45f89d4816ffb47153f81d8`; full pytest passed (3190 passed / 20 skipped); PR checks passed 10/10 with CodeQL 3/3; post-merge checks passed 10/10 with CodeQL 3/3; independent review P0/P1/P2 = 0/0/0; exact fourteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
