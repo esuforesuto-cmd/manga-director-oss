@@ -1017,6 +1017,220 @@ StateMachine, WorkflowEngine, persistence schema, dependencies, I02, `main`,
 versioning, release, tag, Settings, branch deletion, force push, or history
 rewriting.
 
+## V7-10 — Durable Local Human Visual Review Evidence
+
+### Planning status
+
+Design approved and frozen by
+[RFC-V7-008: Durable Local Human Visual Review Evidence](RFC_V7_008_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE.md).
+Implementation and execution are not authorized.
+
+The exact docs allowlist is:
+
+1. `docs/RFC_V7_008_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE.md`
+2. `docs/ROADMAP_V7.md`
+
+### Objective
+
+Define the smallest local-only persistence boundary that records one explicit
+V7-08 human visual judgment as immutable historical evidence for the exact
+Page, generation attempt, output, provenance, Visual QA report, and safely
+leased PNG resolved by the server.
+
+### Inputs
+
+- one existing LocalFile Project ID from the route;
+- one route-bounded positive Page number from the route;
+- the same bounded reviewer reference, timezone-aware review timestamp,
+  complete criterion checklist, overall judgment, and rationale accepted by
+  V7-08; and
+- the server-resolved V7-07 proof and canonical V7-08 readiness report.
+
+Review ID, attempt, asset, provenance, QA reference, Provider, digest, path,
+storage name, root, URL, readiness result, prior assessment, approval identity,
+and workflow command are not caller inputs.
+
+### Outputs
+
+- one immutable canonical review-evidence row newly appended or exactly
+  confirmed as an idempotent replay;
+- one redacted `ready`, `needs_review`, or human/QA-derived `blocked` result
+  that explicitly reports successful evidence storage; or
+- one fail-closed response with no partial row, repair, fallback, Page
+  mutation, workflow action, or approval effect.
+
+The record is historical evidence only. It is not approval, authentication,
+authorization, a workflow transition, download eligibility, or publication
+readiness.
+
+### Frozen behavior
+
+- keep the existing V7-08
+  `POST /projects/{project_id}/pages/{page_number}/visual-review-readiness`
+  transient and behaviorally unchanged;
+- use one separately approvable additive loopback-only operation equivalent to
+  `POST /projects/{project_id}/pages/{page_number}/visual-review-evidence`;
+- require `application/json`, exactly one allowed local Web `Origin`, no query
+  parameters, and the same closed human-input fields and validation as V7-08;
+- reject caller-supplied Project/Page fields in the body and all review,
+  attempt, asset, provenance, QA, Provider, digest, path, storage, URL,
+  readiness, approval, and workflow authority;
+- resolve the authoritative Page and reuse the complete V7-07 proof plus the
+  canonical V7-08/V7-06 assessment path during the same request;
+- add only a private V7-08 proof capability so transient assessment and
+  durable recording share resolution and evaluation logic without changing
+  existing `assess()` behavior;
+- prohibit placeholder, unchecked, or `model_construct` reconstruction of a
+  report or judgment;
+- keep the exact-file lease active until the evidence transaction commits or
+  rolls back and never reopen the asset by path after validation;
+- make the private Application write service the sole owner of the retained
+  proof: the sidecar owner closes only its transaction and connections, and
+  the Application releases the proof exactly once after persistence finishes
+  and before HTTP response construction;
+- persist one closed canonical record containing the server-derived review
+  identity, exact logical Page/generation/QA binding, complete human judgment,
+  readiness result, payload digest, and binding fingerprint;
+- store no image bytes, path, storage name, root, Provider metadata, approval,
+  browser headers, current server timestamp, randomness, or secret;
+- use one dedicated versioned private SQLite sidecar below the existing fixed
+  Next Generation normal-execution durability root without changing Project,
+  Page, Repository, LocalFile, ledger, generation-evidence, registry, approval,
+  or workflow schemas;
+- create the sidecar only on an explicit valid record operation when it is
+  absent and no conflicting state exists;
+- treat an exact canonical retry as idempotently confirmed, append every
+  distinct valid review, and never update, delete, overwrite, merge, compact,
+  migrate, repair, or select a latest/best review;
+- allow only a private exact-ID lookup for idempotency, verification, and
+  tests; add no HTTP listing, search, read, delete, update, export, or recovery
+  surface;
+- fail closed on invalid input, earlier or `Approved` Page state, missing or
+  inconsistent proof, unsupported exact-file lease, unsafe filesystem
+  identity, sidecar conflict, corruption, schema mismatch, transaction, or I/O
+  failure without recording infrastructure failure as a review judgment;
+- allow `Generated` to persist only `needs_review` or human/QA-derived
+  `blocked`; allow `QualityChecked` to persist `ready`, `needs_review`, or
+  human/QA-derived `blocked`; never reopen `Approved`;
+- keep `analysisOnly: true` for readiness and return only redacted status,
+  boolean, Page state, findings, missing-prerequisite codes, storage success,
+  and idempotent-replay status;
+- add a separate explicit Web control; Page load, image load, refresh,
+  navigation, transient assessment, quality, approval, or download must never
+  record evidence;
+- do not copy reviewer identity into approval or use a record to enable, fill,
+  gate, invoke, replace, revoke, or deny approval;
+- keep V7-09 completely independent of the new evidence sidecar;
+- preserve existing loopback binding and exact-origin CORS without DNS, proxy,
+  redirect, remote request, Provider call, retry, fallback, or I02; and
+- expose no CLI, MCP, SDK, Plugin, public Python, LAN, wildcard, cloud, or
+  remote surface.
+
+### Persistence boundary
+
+The future private owner is equivalent to:
+
+`_next_generation_normal_execution/review-evidence/human-visual-review-evidence.sqlite3`
+
+It is a new isolated private version-1 sidecar, not a Project or Repository
+migration. The first valid explicit write may create its fixed directory and
+schema. Existing invalid, unsafe, corrupt, or unsupported state is never
+repaired or migrated. Any standalone reader opens only an existing database
+with `mode=ro` and query-only semantics.
+
+### Approval and workflow boundary
+
+`ready` remains advisory. V7-10 adds no Page state, transition, command,
+event, rejection, revocation, approval prerequisite, approver selection, or
+review-selection policy. The existing explicit approval action remains the
+sole authority for `QualityChecked` to `Approved`, and V7-09 continues to rely
+only on its existing authoritative approval proof.
+
+Any future approval-to-review evidence linkage requires a separate RFC and
+explicit authorization.
+
+### Candidate implementation allowlist
+
+The smallest current candidate is the following fifteen files. It remains
+planning-only until separately revalidated and explicitly approved:
+
+1. `src/manga_director/production/next_generation_durable_human_visual_review_evidence.py` (new)
+2. `src/manga_director/application/human_visual_review_evidence.py` (new)
+3. `src/manga_director/application/human_visual_review_readiness.py`
+4. `src/manga_director/api/composition.py`
+5. `src/manga_director/api/workflow.py`
+6. `tests/test_next_generation_durable_human_visual_review_evidence.py` (new)
+7. `tests/test_safe_local_human_visual_review_evidence.py` (new)
+8. `web/lib/api/types.ts`
+9. `web/lib/api/client.ts`
+10. `web/components/human-visual-review-form.tsx`
+11. `web/tests/api-client.test.ts`
+12. `web/tests/ui-contract.test.ts`
+13. `web/e2e/mock-api.mjs`
+14. `web/e2e/workflow.spec.ts`
+15. `docs/ROADMAP_V7.md`
+
+The existing Page view and V7-08 visibility predicate are sufficient, so
+`web/components/page-workflow.tsx` and `web/lib/workflow-view.ts` are excluded.
+LocalFile, Project, StateMachine, WorkflowEngine, approval, V7-09, package
+exports, dependency, and lock files are also excluded.
+
+### Acceptance criteria
+
+- one explicit valid request records or idempotently confirms exactly one
+  canonical immutable human visual review evidence row;
+- Page, attempt, output, provenance, QA, readiness, and review identities are
+  server-resolved or server-derived and match the same safely leased bytes;
+- exact-file lease retention covers the final database commit or rollback;
+- the Application writer alone releases the retained proof exactly once after
+  persistence completes and before an HTTP response can be aborted;
+- exact retry is idempotent, a distinct valid judgment appends, and no record
+  is updated, deleted, overwritten, selected as latest, or used as approval;
+- `ready`, `needs_review`, and human/QA-derived `blocked` may be historical
+  evidence, while invalid input, unavailable proof, corruption, or
+  infrastructure failure never becomes a review row;
+- the existing V7-08 endpoint remains transient and creates no sidecar;
+- Page load, image load, refresh, quality, approval, and V7-09 download create
+  no review evidence;
+- Project, Page, `review`, `approval`, workflow history, StateMachine,
+  WorkflowEngine, existing schemas, routes, DTOs, public Python API, CLI, MCP,
+  SDK, Plugin, Provider, dependencies, I02, v5, and v6 remain unchanged;
+- errors and responses expose no human text, internal identity, Provider,
+  digest, SQL, path, storage, root, redirect, or cache validator;
+- the future implementation stays within an explicitly approved exact
+  allowlist and passes focused/full regression, Web, security, package,
+  independent-review, CI, CodeQL, and post-merge gates with P0/P1 = 0; and
+- this design diff stays within the exact two-file docs allowlist.
+
+### Validation
+
+- exact two-file docs allowlist: RFC-V7-008 and this roadmap entry;
+- local Markdown-link resolution and `git diff --check`;
+- zero source, test, dependency, lockfile, workflow, package-metadata, version,
+  Settings, or `main` diff;
+- architecture, persistence-owner, exact-file lease, privacy,
+  approval-authority, public-contract, and compatibility review;
+- independent read-only review with P0 = 0 and P1 = 0; and
+- required hosted CI, CodeQL, and post-merge verification.
+
+### STOP conditions
+
+A third docs file, a sixteenth implementation file, existing DTO or public
+export change, Project/Repository/LocalFile or existing sidecar schema change,
+`Page.review` or approval coupling, StateMachine, WorkflowEngine, V7-09
+eligibility, dependency, Provider, I02, remote surface, exact-lease weakening,
+sidecar repair/migration, unresolved P0/P1, failed required check, conflict, or
+scope drift requires a new explicit decision.
+
+### Authorization gate
+
+Approval of RFC-V7-008 authorizes only the exact two-file docs design. It does
+not authorize the fifteen-file candidate implementation, the additive route,
+Web changes, private sidecar or schema creation, runtime persistence, Page or
+workflow mutation, quality, approval, Provider, generation, I02, dependencies,
+`main`, versioning, release, tag, Settings, branch deletion, force push, or
+history rewriting.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -1029,6 +1243,7 @@ rewriting.
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-08 Safe Local Human Visual Review and Approval Readiness | Complete and verified | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | PR #36 final head `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact sixteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-09 Safe Local Approved Asset Download | Complete and verified | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | PR #39 final head `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24 after one approved Windows 3.12 rerun; post-merge checks passed 13/13 with CodeQL 3/3; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
+| V7-10 Durable Local Human Visual Review Evidence | Design approved; implementation not authorized | Completed V7-06 through V7-09 and accepted RFC-V7-008 | Docs-only design; exact two-file allowlist; future fifteen-file candidate requires separate explicit implementation approval |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
