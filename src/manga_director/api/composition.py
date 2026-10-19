@@ -14,6 +14,10 @@ from manga_director.application.generated_asset_presentation import (
     attach_generated_asset_presentation,
     build_generated_asset_presentation,
 )
+from manga_director.application.human_visual_review_evidence import (
+    attach_human_visual_review_evidence,
+    build_human_visual_review_evidence,
+)
 from manga_director.application.human_visual_review_readiness import (
     attach_human_visual_review_readiness,
     build_human_visual_review_readiness,
@@ -41,6 +45,7 @@ def build_workflow_app(
         repository=repository,
     )
     if isinstance(repository, LocalFileRepository):
+        human_visual_review_readiness = build_human_visual_review_readiness(repository)
         attach_approved_asset_download(
             application,
             build_approved_asset_download(repository),
@@ -51,6 +56,13 @@ def build_workflow_app(
         )
         attach_human_visual_review_readiness(
             application,
-            build_human_visual_review_readiness(repository),
+            human_visual_review_readiness,
+        )
+        attach_human_visual_review_evidence(
+            application,
+            build_human_visual_review_evidence(
+                repository,
+                human_visual_review_readiness,
+            ),
         )
     return create_workflow_app(application)

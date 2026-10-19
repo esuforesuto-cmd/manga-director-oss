@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
 test("shows human approval only for a QualityChecked page", async ({ page, request }) => {
+  async function reviewEvidenceCount(): Promise<number> {
+    const response = await request.get("http://127.0.0.1:4010/test-only/review-evidence-count");
+    expect(response.status()).toBe(200);
+    return (await response.json()).count;
+  }
+
   const created = await request.post("http://127.0.0.1:4010/projects", { data: { id: "demo", title: "Demo manga" } });
   expect(created.status()).toBe(201);
 
@@ -18,6 +24,7 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
     "http://127.0.0.1:4010/projects/demo/pages/1/generated-asset"
   );
   await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
+  expect(await reviewEvidenceCount()).toBe(0);
   const review = page.getByRole("region", { name: "Human visual review readiness" });
   await expect(review).toBeVisible();
   await review.getByLabel("Reviewer reference").fill("reviewer:local");
@@ -30,12 +37,24 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   await review.getByLabel("Overall rationale").fill("Complete local visual review");
   await review.getByRole("button", { name: "Assess readiness" }).click();
   await expect(review.getByText("Advisory result: ready")).toBeVisible();
+  await expect(review.getByText(/Historical evidence recorded/)).toHaveCount(0);
+  expect(await reviewEvidenceCount()).toBe(0);
+  await review.getByRole("button", { name: "Record review evidence" }).click();
+  await expect(review.getByText("Historical evidence recorded.")).toBeVisible();
+  expect(await reviewEvidenceCount()).toBe(1);
+  await review.getByRole("button", { name: "Record review evidence" }).click();
+  await expect(
+    review.getByText("Historical evidence recorded (existing identical record confirmed).")
+  ).toBeVisible();
+  expect(await reviewEvidenceCount()).toBe(1);
   await expect(page.getByLabel("Approved by")).toHaveValue("");
 
   await page.reload();
   await expect(page.getByText("Advisory result: ready")).toHaveCount(0);
+  await expect(page.getByText(/Historical evidence recorded/)).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Download approved PNG" })).toHaveCount(0);
+  expect(await reviewEvidenceCount()).toBe(1);
 
   await page.getByLabel("Approved by").fill("editor:local");
   await page.getByRole("button", { name: "Approve page" }).click();
@@ -49,4 +68,5 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   await downloadLink.click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("page-1.png");
+  expect(await reviewEvidenceCount()).toBe(1);
 });

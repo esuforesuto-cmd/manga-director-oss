@@ -21,6 +21,11 @@ from manga_director.application.generated_asset_presentation import (
     GeneratedAssetPresentationUnavailable,
     generated_asset_presentation_for,
 )
+from manga_director.application.human_visual_review_evidence import (
+    HumanVisualReviewEvidencePersistenceUnavailable,
+    HumanVisualReviewEvidenceUnavailable,
+    human_visual_review_evidence_for,
+)
 from manga_director.application.human_visual_review_readiness import (
     HumanVisualReviewReadinessUnavailable,
     ReviewChecklistDecision,
@@ -64,6 +69,11 @@ _VISUAL_REVIEW_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 _VISUAL_REVIEW_SUFFIX = "/visual-review-readiness"
+_VISUAL_REVIEW_EVIDENCE_SUFFIX = "/visual-review-evidence"
+_VISUAL_REVIEW_SUFFIXES = (
+    _VISUAL_REVIEW_SUFFIX,
+    _VISUAL_REVIEW_EVIDENCE_SUFFIX,
+)
 _VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
 _VISUAL_REVIEW_REQUIRED_CRITERIA = {
     "character_identity",
@@ -272,6 +282,11 @@ class VisualReviewReadinessResponse(_ClosedHttpModel):
     analysis_only: Literal[True] = Field(alias="analysisOnly")
 
 
+class VisualReviewEvidenceResponse(VisualReviewReadinessResponse):
+    evidence_recorded: Literal[True] = Field(alias="evidenceRecorded")
+    idempotent_replay: bool = Field(alias="idempotentReplay")
+
+
 def create_workflow_app(application: WorkflowApplicationService) -> Any:
     """Create a localhost CORS-scoped workflow API without importing MCP."""
 
@@ -315,7 +330,7 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
     async def reject_unbounded_visual_review_request(request: Any, call_next: Any) -> Any:
         if (
             request.method == "POST"
-            and request.url.path.endswith(_VISUAL_REVIEW_SUFFIX)
+            and request.url.path.endswith(_VISUAL_REVIEW_SUFFIXES)
             and (
                 request.query_params
                 or "transfer-encoding" in request.headers
@@ -417,7 +432,7 @@ def _http_error_content(status_code: int) -> tuple[str, str]:
 
 def _visual_review_headers_for(request: Any) -> dict[str, str] | None:
     path = getattr(getattr(request, "url", None), "path", "")
-    return _VISUAL_REVIEW_HEADERS if path.endswith(_VISUAL_REVIEW_SUFFIX) else None
+    return _VISUAL_REVIEW_HEADERS if path.endswith(_VISUAL_REVIEW_SUFFIXES) else None
 
 
 def _register_routes(
@@ -492,6 +507,11 @@ def _register_routes(
         request_type=request_type,
         json_response=json_response,
     )
+    record_visual_review_evidence = _visual_review_evidence_route(
+        application,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -534,6 +554,10 @@ def _register_routes(
         "/projects/{project_id}/pages/{page_number}/visual-review-readiness",
         response_model=VisualReviewReadinessResponse,
     )(assess_visual_review)
+    app.post(
+        "/projects/{project_id}/pages/{page_number}/visual-review-evidence",
+        response_model=VisualReviewEvidenceResponse,
+    )(record_visual_review_evidence)
     app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
@@ -611,6 +635,88 @@ def _visual_review_readiness_route(
     return assess_visual_review
 
 
+def _visual_review_evidence_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def record_visual_review_evidence(
+        project_id: str,
+        page_number: str,
+        body: VisualReviewReadinessRequest,
+        request: Any,
+    ) -> Any:
+        content_length = request.headers.get("content-length")
+        if (
+            request.query_params
+            or "transfer-encoding" in request.headers
+            or not _bounded_content_length(content_length)
+            or not _visual_review_evidence_admission(request)
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            raw_page_number = _raw_visual_review_evidence_page_number(
+                request,
+                project_id,
+                page_number,
+            )
+            validated_page_number = _validated_download_page_number(raw_page_number)
+        except ValidationError:
+            return _visual_review_error(json_response, 422, "invalid_input")
+        service = human_visual_review_evidence_for(application)
+        if service is None:
+            return _visual_review_error(json_response, 404, "not_found")
+        try:
+            result = service.record(
+                project_id,
+                validated_page_number,
+                reviewer_id=body.reviewer_id,
+                reviewed_at=body.reviewed_at,
+                checklist=tuple(
+                    ReviewChecklistDecision(
+                        criterion=item.criterion,
+                        outcome=item.outcome,
+                        rationale=item.rationale,
+                    )
+                    for item in body.checklist
+                ),
+                overall_judgment=body.overall_judgment,
+                rationale=body.rationale,
+            )
+        except HumanVisualReviewEvidenceUnavailable:
+            return _visual_review_error(json_response, 404, "not_found")
+        except HumanVisualReviewEvidencePersistenceUnavailable:
+            return _visual_review_persistence_error(json_response)
+        response = VisualReviewEvidenceResponse(
+            status=result.status,
+            ready=result.ready,
+            pageState=PageState(result.page_state),
+            findings=tuple(
+                VisualReviewFindingDTO(
+                    code=item.code,
+                    status=cast(Literal["needs_review", "blocked"], item.status),
+                    message=item.message,
+                    criterion=item.criterion,
+                )
+                for item in result.findings
+            ),
+            missingPrerequisites=result.missing_prerequisites,
+            evidenceRecorded=True,
+            idempotentReplay=result.idempotent_replay,
+            analysisOnly=True,
+        )
+        return json_response(
+            status_code=200,
+            content=response.model_dump(mode="json", by_alias=True),
+            headers=_VISUAL_REVIEW_HEADERS,
+        )
+
+    record_visual_review_evidence.__annotations__["request"] = request_type
+    return record_visual_review_evidence
+
+
 def _bounded_content_length(value: str | None) -> bool:
     if value is None:
         return False
@@ -643,6 +749,17 @@ def _visual_review_error(json_response: Any, status_code: int, code: str) -> Any
     return json_response(
         status_code=status_code,
         content={"code": code, "message": message},
+        headers=_VISUAL_REVIEW_HEADERS,
+    )
+
+
+def _visual_review_persistence_error(json_response: Any) -> Any:
+    return json_response(
+        status_code=503,
+        content={
+            "code": "persistence_unavailable",
+            "message": "Persistence unavailable.",
+        },
         headers=_VISUAL_REVIEW_HEADERS,
     )
 
@@ -792,6 +909,36 @@ def _single_request_header(request: Any, name: str) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
+def _visual_review_evidence_admission(request: Any) -> bool:
+    content_type = _single_request_header(request, "content-type")
+    origin = _single_request_header(request, "origin")
+    return bool(
+        content_type is not None
+        and content_type.split(";", 1)[0].strip().lower() == "application/json"
+        and origin is not None
+        and _allowed_local_origin(origin)
+    )
+
+
+def _allowed_local_origin(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        port = parsed.port
+    except ValueError:
+        return False
+    return f"http://{parsed.hostname}:{port}" in LOCAL_WEB_ORIGINS
+
+
 def _allowed_local_referer(value: str) -> bool:
     try:
         parsed = urlsplit(value)
@@ -828,6 +975,32 @@ def _raw_download_page_number(
         or parts[1] != b"projects"
         or parts[3] != b"pages"
         or parts[5] != b"approved-asset-download"
+        or raw_project_id != project_id
+        or raw_page_number != page_number
+    ):
+        raise ValidationError("pageNumber is invalid.")
+    return raw_page_number
+
+
+def _raw_visual_review_evidence_page_number(
+    request: Any,
+    project_id: str,
+    page_number: str,
+) -> str:
+    raw_path = request.scope.get("raw_path")
+    if not isinstance(raw_path, bytes):
+        raise ValidationError("pageNumber is invalid.")
+    parts = raw_path.split(b"/")
+    try:
+        raw_project_id = parts[2].decode("ascii")
+        raw_page_number = parts[4].decode("ascii")
+    except (IndexError, UnicodeDecodeError) as error:
+        raise ValidationError("pageNumber is invalid.") from error
+    if (
+        len(parts) != 6
+        or parts[1] != b"projects"
+        or parts[3] != b"pages"
+        or parts[5] != b"visual-review-evidence"
         or raw_project_id != project_id
         or raw_page_number != page_number
     ):

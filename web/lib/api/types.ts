@@ -140,3 +140,8 @@ export interface VisualReviewReadinessResponse {
   missingPrerequisites: string[];
   analysisOnly: true;
 }
+
+export interface VisualReviewEvidenceResponse extends VisualReviewReadinessResponse {
+  evidenceRecorded: true;
+  idempotentReplay: boolean;
+}
