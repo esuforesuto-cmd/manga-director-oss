@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { PageState } from "@/lib/api/types";
-import { canShowApproval, canShowGeneratedAsset, canShowVisualReview } from "@/lib/workflow-view";
+import {
+  canShowApproval,
+  canShowApprovedAssetDownload,
+  canShowGeneratedAsset,
+  canShowVisualReview
+} from "@/lib/workflow-view";
 
 describe("UI workflow contract", () => {
   it("exposes approval only through the API-provided approval flag", () => {
@@ -77,4 +82,22 @@ describe("UI workflow contract", () => {
       })).toBe(false);
     }
   );
+
+  it("shows approved download only for the exact Approved logical artifact", () => {
+    const artifact = {
+      image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:001" }
+    };
+    expect(canShowApprovedAssetDownload({
+      state: "Approved" as PageState,
+      artifacts: artifact
+    })).toBe(true);
+    expect(canShowApprovedAssetDownload({
+      state: "QualityChecked" as PageState,
+      artifacts: artifact
+    })).toBe(false);
+    expect(canShowApprovedAssetDownload({
+      state: "Approved" as PageState,
+      artifacts: { image: { path: "C:/private/image.png" } }
+    })).toBe(false);
+  });
 });

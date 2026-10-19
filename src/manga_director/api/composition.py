@@ -6,6 +6,10 @@ from typing import Any
 
 from manga_director.api.workflow import create_workflow_app
 from manga_director.application import build_workflow_application
+from manga_director.application.approved_asset_download import (
+    attach_approved_asset_download,
+    build_approved_asset_download,
+)
 from manga_director.application.generated_asset_presentation import (
     attach_generated_asset_presentation,
     build_generated_asset_presentation,
@@ -37,6 +41,10 @@ def build_workflow_app(
         repository=repository,
     )
     if isinstance(repository, LocalFileRepository):
+        attach_approved_asset_download(
+            application,
+            build_approved_asset_download(repository),
+        )
         attach_generated_asset_presentation(
             application,
             build_generated_asset_presentation(repository),

@@ -97,6 +97,8 @@ export const api = {
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`),
     generatedAssetUrl: (projectId: string, pageNumber: number) =>
       `${loopbackApiBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/generated-asset`,
+    approvedAssetDownloadUrl: (projectId: string, pageNumber: number) =>
+      `${loopbackApiBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/approved-asset-download`,
     assessVisualReview: (
       projectId: string,
       pageNumber: number,

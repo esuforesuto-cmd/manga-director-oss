@@ -105,6 +105,18 @@ createServer(async (request, response) => {
     });
     return response.end(png);
   }
+  if (request.method === "GET" && pathname === "/projects/demo/pages/1/approved-asset-download") {
+    if (pageState !== "Approved") {
+      return json(response, 404, { code: "not_found", message: "Not found." });
+    }
+    response.writeHead(200, {
+      "cache-control": "no-store",
+      "content-disposition": "attachment; filename=\"page-1.png\"",
+      "content-type": "image/png",
+      "x-content-type-options": "nosniff"
+    });
+    return response.end(png);
+  }
   if (request.method === "POST" && pathname === "/projects/demo/pages/1/visual-review-readiness") {
     const body = await requestBody(request);
     const complete = body.reviewerId

@@ -8,6 +8,7 @@ import styles from "./page-workflow.module.css";
 import {
   availableWorkflowActions,
   canShowApproval,
+  canShowApprovedAssetDownload,
   canShowGeneratedAsset,
   canShowVisualReview
 } from "@/lib/workflow-view";
@@ -38,6 +39,13 @@ export function PageWorkflowView({
             alt={`Generated asset for page ${page.pageNumber}`}
             src={api.pages.generatedAssetUrl(projectId, page.pageNumber)}
           />
+          {canShowApprovedAssetDownload(page) ? (
+            <p>
+              <a href={api.pages.approvedAssetDownloadUrl(projectId, page.pageNumber)}>
+                Download approved PNG
+              </a>
+            </p>
+          ) : null}
         </section>
       ) : null}
       {canShowVisualReview(page) ? (

@@ -35,4 +35,18 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   await page.reload();
   await expect(page.getByText("Advisory result: ready")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Download approved PNG" })).toHaveCount(0);
+
+  await page.getByLabel("Approved by").fill("editor:local");
+  await page.getByRole("button", { name: "Approve page" }).click();
+  const downloadLink = page.getByRole("link", { name: "Download approved PNG" });
+  await expect(downloadLink).toBeVisible();
+  await expect(downloadLink).toHaveAttribute(
+    "href",
+    "http://127.0.0.1:4010/projects/demo/pages/1/approved-asset-download"
+  );
+  const downloadPromise = page.waitForEvent("download");
+  await downloadLink.click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("page-1.png");
 });

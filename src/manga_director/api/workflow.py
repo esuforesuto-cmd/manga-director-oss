@@ -8,10 +8,15 @@ import unicodedata
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from manga_director._version import __version__
+from manga_director.application.approved_asset_download import (
+    ApprovedAssetDownloadUnavailable,
+    approved_asset_download_for,
+)
 from manga_director.application.generated_asset_presentation import (
     GeneratedAssetPresentationUnavailable,
     generated_asset_presentation_for,
@@ -42,6 +47,18 @@ _GENERATED_ASSET_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
 }
+_APPROVED_ASSET_DOWNLOAD_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+}
+_APPROVED_ASSET_DOWNLOAD_REJECTED_HEADERS = (
+    "range",
+    "if-range",
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-unmodified-since",
+)
 _VISUAL_REVIEW_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -460,6 +477,16 @@ def _register_routes(
         json_response=json_response,
         background_task_type=background_task_type,
     )
+    get_approved_asset_download = _approved_asset_download_route(
+        application,
+        request_type=request_type,
+        response_type=response_type,
+        json_response=json_response,
+        background_task_type=background_task_type,
+    )
+    reject_invalid_approved_asset_download_path = (
+        _invalid_approved_asset_download_path_route(json_response)
+    )
     assess_visual_review = _visual_review_readiness_route(
         application,
         request_type=request_type,
@@ -495,6 +522,14 @@ def _register_routes(
     app.get("/projects/{project_id}/pages/{page_number}/generated-asset")(
         get_generated_asset
     )
+    app.get(
+        "/projects/{project_id}/pages/{page_number}/approved-asset-download"
+    )(get_approved_asset_download)
+    app.get(
+        "/projects/{project_id}/pages/{page_number}/approved-asset-download/"
+        "{invalid_path:path}",
+        include_in_schema=False,
+    )(reject_invalid_approved_asset_download_path)
     app.post(
         "/projects/{project_id}/pages/{page_number}/visual-review-readiness",
         response_model=VisualReviewReadinessResponse,
@@ -666,6 +701,150 @@ def _generated_asset_error(json_response: Any, status_code: int, code: str) -> A
         status_code=status_code,
         content={"code": code, "message": message},
         headers=_GENERATED_ASSET_HEADERS,
+    )
+
+
+def _approved_asset_download_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    response_type: Any,
+    json_response: Any,
+    background_task_type: Any,
+) -> Any:
+    def get_approved_asset_download(
+        project_id: str,
+        page_number: str,
+        request: Any,
+    ) -> Any:
+        content_length = request.headers.get("content-length")
+        if (
+            request.query_params
+            or (content_length is not None and content_length != "0")
+            or "transfer-encoding" in request.headers
+            or any(name in request.headers for name in _APPROVED_ASSET_DOWNLOAD_REJECTED_HEADERS)
+            or not _approved_download_browser_admission(request)
+        ):
+            return _approved_asset_download_error(json_response, 422, "invalid_input")
+        try:
+            raw_page_number = _raw_download_page_number(request, project_id, page_number)
+            project_id = _validated_project_id(project_id)
+            validated_page_number = _validated_download_page_number(raw_page_number)
+        except ValidationError:
+            return _approved_asset_download_error(json_response, 422, "invalid_input")
+        service = approved_asset_download_for(application)
+        if service is None:
+            return _approved_asset_download_error(json_response, 404, "not_found")
+        try:
+            result = service.get(project_id, validated_page_number)
+        except ApprovedAssetDownloadUnavailable:
+            return _approved_asset_download_error(json_response, 404, "not_found")
+        return response_type(
+            content=result.image_bytes,
+            status_code=200,
+            media_type="image/png",
+            headers={
+                **_APPROVED_ASSET_DOWNLOAD_HEADERS,
+                "Content-Disposition": (
+                    f'attachment; filename="page-{validated_page_number}.png"'
+                ),
+            },
+            background=background_task_type(result.release),
+        )
+
+    get_approved_asset_download.__annotations__["request"] = request_type
+    return get_approved_asset_download
+
+
+def _invalid_approved_asset_download_path_route(json_response: Any) -> Any:
+    def reject_invalid_approved_asset_download_path(
+        project_id: str,
+        page_number: str,
+        invalid_path: str,
+    ) -> Any:
+        del project_id, page_number, invalid_path
+        return _approved_asset_download_error(json_response, 422, "invalid_input")
+
+    return reject_invalid_approved_asset_download_path
+
+
+def _approved_download_browser_admission(request: Any) -> bool:
+    referer = _single_request_header(request, "referer")
+    if referer is None or not _allowed_local_referer(referer):
+        return False
+    return all(
+        _single_request_header(request, name) == value
+        for name, value in (
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+            ("sec-fetch-user", "?1"),
+        )
+    )
+
+
+def _single_request_header(request: Any, name: str) -> str | None:
+    encoded_name = name.encode("ascii")
+    values = [
+        value.decode("latin-1")
+        for key, value in request.scope.get("headers", ())
+        if key.lower() == encoded_name
+    ]
+    return values[0] if len(values) == 1 else None
+
+
+def _allowed_local_referer(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            return False
+        port = parsed.port
+    except ValueError:
+        return False
+    return f"http://{parsed.hostname}:{port}" in LOCAL_WEB_ORIGINS
+
+
+def _raw_download_page_number(
+    request: Any,
+    project_id: str,
+    page_number: str,
+) -> str:
+    raw_path = request.scope.get("raw_path")
+    if not isinstance(raw_path, bytes):
+        raise ValidationError("pageNumber is invalid.")
+    parts = raw_path.split(b"/")
+    try:
+        raw_project_id = parts[2].decode("ascii")
+        raw_page_number = parts[4].decode("ascii")
+    except (IndexError, UnicodeDecodeError) as error:
+        raise ValidationError("pageNumber is invalid.") from error
+    if (
+        len(parts) != 6
+        or parts[1] != b"projects"
+        or parts[3] != b"pages"
+        or parts[5] != b"approved-asset-download"
+        or raw_project_id != project_id
+        or raw_page_number != page_number
+    ):
+        raise ValidationError("pageNumber is invalid.")
+    return raw_page_number
+
+
+def _approved_asset_download_error(
+    json_response: Any,
+    status_code: int,
+    code: str,
+) -> Any:
+    message = "Not found." if status_code == 404 else "Request validation failed."
+    return json_response(
+        status_code=status_code,
+        content={"code": code, "message": message},
+        headers=_APPROVED_ASSET_DOWNLOAD_HEADERS,
     )
 
 
@@ -844,3 +1023,12 @@ def _validated_page_number(page_number: int) -> int:
     if page_number < 1:
         raise ValidationError("pageNumber must be at least 1.")
     return page_number
+
+
+def _validated_download_page_number(page_number: str) -> int:
+    if re.fullmatch(r"[1-9][0-9]{0,9}", page_number) is None:
+        raise ValidationError("pageNumber is invalid.")
+    value = int(page_number)
+    if value > 2_147_483_647:
+        raise ValidationError("pageNumber is invalid.")
+    return value
