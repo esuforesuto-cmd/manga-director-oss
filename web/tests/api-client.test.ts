@@ -45,6 +45,9 @@ describe("REST API client", () => {
     expect(api.pages.generatedAssetUrl("my project", 7)).toBe(
       "http://127.0.0.1:8000/projects/my%20project/pages/7/generated-asset"
     );
+    expect(api.pages.approvedAssetDownloadUrl("my project", 7)).toBe(
+      "http://127.0.0.1:8000/projects/my%20project/pages/7/approved-asset-download"
+    );
   });
 
   it("posts only explicit human judgment to the fixed visual readiness route", async () => {
@@ -94,6 +97,7 @@ describe("REST API client", () => {
     vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", configured);
 
     expect(() => api.pages.generatedAssetUrl("demo", 1)).toThrow(ApiClientError);
+    expect(() => api.pages.approvedAssetDownloadUrl("demo", 1)).toThrow(ApiClientError);
   });
 
   it.each([

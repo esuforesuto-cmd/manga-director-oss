@@ -30,6 +30,13 @@ export function canShowGeneratedAsset(
   );
 }
 
+/** Download remains an explicit action for one exact, already Approved image. */
+export function canShowApprovedAssetDownload(
+  page: Pick<PageDetail, "artifacts" | "state">
+): boolean {
+  return page.state === "Approved" && canShowGeneratedAsset(page);
+}
+
 /** Human readiness is advisory and never reopens an Approved Page. */
 export function canShowVisualReview(
   page: Pick<PageDetail, "artifacts" | "state">

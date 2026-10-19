@@ -844,7 +844,24 @@ Settings, branch deletion, force push, or history rewriting.
 
 Design approved and frozen by
 [RFC-V7-007: Safe Local Approved Asset Download](RFC_V7_007_SAFE_LOCAL_APPROVED_ASSET_DOWNLOAD.md).
-Implementation is not authorized.
+Implementation is authorized only through the exact twelve-file V7-09
+package. Completion requires its feature PR to pass all required local,
+independent-review, hosted CI, CodeQL, merge, and post-merge gates.
+
+The exact implementation allowlist is:
+
+1. `src/manga_director/application/approved_asset_download.py`
+2. `src/manga_director/api/composition.py`
+3. `src/manga_director/api/workflow.py`
+4. `tests/test_safe_local_approved_asset_download.py`
+5. `web/lib/api/client.ts`
+6. `web/lib/workflow-view.ts`
+7. `web/components/page-workflow.tsx`
+8. `web/tests/api-client.test.ts`
+9. `web/tests/ui-contract.test.ts`
+10. `web/e2e/mock-api.mjs`
+11. `web/e2e/workflow.spec.ts`
+12. `docs/ROADMAP_V7.md`
 
 ### Objective
 
@@ -956,15 +973,15 @@ readiness.
 - no existing DTO, public export, StateMachine, WorkflowEngine, schema,
   dependency, lockfile, package metadata, version, Settings, release, or
   `main` change is authorized; and
-- a future implementation must stay within a separately approved exact
+- the implementation must stay within the approved exact twelve-file
   allowlist and pass focused/full regression, Web, security, package,
   independent-review, CI, CodeQL, and post-merge gates with P0/P1 = 0.
 
 ### Compatibility and exclusions
 
-This docs-only design changes no current contract. A separately approved
-implementation may add only the bounded binary GET, private Application proof
-composition, and explicit Web download control described by RFC-V7-007.
+This implementation adds only the bounded binary GET, private Application
+proof composition, and explicit Web download control described by
+RFC-V7-007.
 
 Existing routes and DTOs, public Python imports, CLI, MCP, SDK, Plugin,
 Repository and LocalFile formats, Providers, StateMachine, WorkflowEngine,
@@ -991,19 +1008,17 @@ of scope.
 
 ### Authorization gate
 
-RFC-V7-007 and this V7-09 entry authorize only the exact two-file docs-only
-design record. They do not authorize implementation, HTTP or Web changes,
-file download, asset access beyond current V7-07 behavior, a third file,
-export, packaging, publication, review persistence, quality execution,
-approval, Page mutation, Provider calls, live generation, public-contract
-changes, StateMachine, WorkflowEngine, persistence schema, dependencies, I02,
-`main`, versioning, release, tag, Settings, branch deletion,
-force push, or history rewriting.
+The V7-09 implementation authorization is limited to its exact twelve files
+and the normal verified path through merge and post-merge checks. It does not
+authorize a thirteenth file, general export, packaging, publication, review
+persistence, quality execution, approval execution, Page mutation, Provider
+calls, live generation, public-contract changes, StateMachine, WorkflowEngine,
+persistence schema, dependencies, I02, `main`, versioning, release, tag,
+Settings, branch deletion, force push, or history rewriting.
 
-A future implementation requires its own read-only preflight, exact allowlist,
-explicit approval, and executed validation. Any need for a current DTO or
-public API change, persistence, approval coupling, remote surface, dependency,
-general export behavior, or I02 authority is a scope expansion and must stop.
+Any need for a current DTO or public API change, persistence, approval
+coupling, remote surface, dependency, general export behavior, or I02
+authority is a scope expansion and must stop.
 
 ## Epic 1 sequencing
 
@@ -1016,7 +1031,7 @@ general export behavior, or I02 authority is a scope expansion and must stop.
 | V7-06 Human Visual QA and Approval Readiness | Complete and verified | Verified V7 generation and asset evidence on `v7-dev`, including PR #28, plus accepted RFC-V7-004 and the exact three-file implementation approval | PR #31 merged into `v7-dev` at `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact three-file allowlist; feature branch retained; `main` unchanged |
 | V7-07 Safe Local Generated Asset Presentation | Complete and verified | Completed V7-06, verified LocalFile generated-asset chain, accepted RFC-V7-005, and explicit approval of the exact fifteen-file implementation allowlist | PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba` merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge checks 13/13 and CodeQL 3/3 passed after one approved Windows 3.11 rerun; independent review P0/P1/P2 = 0; exact fifteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-08 Safe Local Human Visual Review and Approval Readiness | Complete and verified | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | PR #36 final head `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact sixteen-file allowlist; feature branch retained; `main` unchanged |
-| V7-09 Safe Local Approved Asset Download | Design approved; implementation not authorized | Completed V7-07 and V7-08 plus accepted RFC-V7-007 docs design | RFC-V7-007 and the matching roadmap entry accepted within the exact two-file docs allowlist; no implementation, download, export, publication, runtime, public-contract, persistence, dependency, or approval behavior change |
+| V7-09 Safe Local Approved Asset Download | Implementation authorized; completion requires verified feature-PR merge | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | One additive loopback-only approved PNG download, private approval-plus-V7-07 proof composition, no mutation or export/publication coupling, P0/P1 = 0, and all required local/hosted/post-merge gates |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
