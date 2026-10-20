@@ -1,10 +1,29 @@
 # RFC-V7-009: Safe Local Human Visual Review Evidence History
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Complete and verified
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-11 Safe Local Human Visual Review Evidence History
-- Delivery scope: docs-only design
+- Delivery scope: completed exact fifteen-file implementation
 - Decision owner: an explicit local human operator
+
+## Completion evidence
+
+The exact fifteen-file V7-11 implementation was completed in PR #45. Final
+head `32a0386dce4101606fd1c66e748eef3ffa213e62` was merged into `v7-dev` at
+`7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`.
+
+Full pytest passed with 3215 tests and 20 skips. The focused V7-11 suite passed
+with 35 tests and 2 skips, and the V6 public/LTS compatibility suite passed 14
+tests. Ruff, Windows/Linux mypy, Web lint/typecheck/unit/build, mock and real
+boundary browser E2E, security/audit, package, clean-install, CLI/MCP/Plugin
+smoke, whitespace, and exact-allowlist checks passed. PR checks passed 24/24.
+Post-merge CI run #156 passed 10/10 jobs and CodeQL run #59 passed 3/3 jobs.
+Independent read-only review reported P0/P1/P2 = 0/0/0.
+
+The feature branch remains retained. `main` remains unchanged at
+`b0291437af05fe53454843ba95fdf88216700f7c`, and I02 remains out of scope. This
+RFC remains the frozen design and completion record; completion grants no new
+runtime, approval, workflow, release, or publication authority.
 
 ## Decision boundary
 
@@ -12,7 +31,7 @@ This RFC freezes the smallest loopback-only, read-only boundary that lets a
 local human inspect the immutable V7-10 human visual review evidence history
 for one authoritative Page.
 
-The future reader reuses the existing V7-10 private sidecar and its exact
+The implemented reader reuses the existing V7-10 private sidecar and its exact
 schema, canonical payload, digest, and binding validation. It opens only an
 existing database with SQLite read-only and query-only semantics. It creates,
 updates, deletes, repairs, compacts, checkpoints, vacuums, or migrates
@@ -62,8 +81,8 @@ or creating another workflow authority.
   order, an empty complete history, or one redacted fail-closed response.
 - **Dependencies:** Completed V7-08, V7-09, and V7-10; the authoritative
   LocalFile Project; and the existing V7-10 private sidecar contract.
-- **Estimated complexity:** Medium for a separately approved implementation;
-  Low for this docs-only design.
+- **Estimated complexity:** Medium for the completed separately approved
+  implementation; Low for the original docs-only design.
 - **Architecture notes:** The production owner reads and validates its own
   sidecar, an Application service binds the result to the authoritative Page,
   and HTTP/Web remain presentation adapters.
@@ -121,7 +140,7 @@ or creating another workflow authority.
 
 ## Source contracts
 
-The future feature composes existing owners without replacing them:
+The implemented feature composes existing owners without replacing them:
 
 - the authoritative LocalFile Project supplies the exact Project, Page number,
   Page ID, and current persisted Page state;
@@ -143,7 +162,7 @@ independently authorizes approval, workflow action, or download.
 
 ### Explicit local history operation
 
-A separately approved implementation may add exactly one logical read:
+The separately approved implementation added exactly one logical read:
 
 `GET /projects/{project_id}/pages/{page_number}/visual-review-evidence`
 
@@ -202,7 +221,7 @@ expand the read into unrelated owners.
 
 ### Existing-store read discipline
 
-The V7-10 owner may add one private Page-history read capability. It must:
+The V7-10 owner adds one private Page-history read capability. It must:
 
 - treat a completely absent review-evidence directory and database as an
   empty history without creating them;
@@ -419,7 +438,7 @@ V7-11 adds no repair, migration, recovery, or retry command.
 
 ## Public contract compatibility
 
-A separately approved implementation may add one loopback-only JSON GET, one
+The separately approved implementation added one loopback-only JSON GET, one
 closed response family, one private Application reader, one private V7-10
 owner read capability, and one explicit Web history panel.
 
@@ -438,11 +457,10 @@ The V7-10 schema version remains 1. No migration, index, column, table, meta
 row, directory, or alternate store is added. Any need to change one of those
 contracts is a scope expansion and must stop.
 
-## Candidate implementation allowlist
+## Implementation allowlist
 
-This design identifies the following smallest candidate set for a future
-implementation. It is planning evidence only and is not implementation
-authorization:
+The implementation was completed within the separately approved exact fifteen
+files:
 
 1. `src/manga_director/production/next_generation_durable_human_visual_review_evidence.py`
 2. `src/manga_director/application/human_visual_review_evidence_history.py` (new)
@@ -464,12 +482,11 @@ authorization:
 StateMachine, WorkflowEngine, approval, V7-09, Provider, generation,
 dependency, and lock files are excluded.
 
-The candidate must be rechecked and explicitly approved as an exact allowlist
-before implementation. A sixteenth file is a scope expansion.
+No sixteenth file was required. Any future sixteenth file is a scope expansion.
 
 ## Validation plan
 
-This docs-only design requires:
+This completion-state update requires:
 
 - exact two-file allowlist:
   `docs/RFC_V7_009_SAFE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_HISTORY.md` and
@@ -482,7 +499,7 @@ This docs-only design requires:
 - independent read-only review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI, CodeQL, and post-merge verification.
 
-A separately approved implementation would additionally require:
+The completed implementation additionally passed:
 
 - positive reads for one and multiple V7-10 records after process restart;
 - exact authoritative Project ID, Page ID, and Page-number correlation;
@@ -517,12 +534,12 @@ A separately approved implementation would additionally require:
 - independent read-only review with P0/P1/P2 classification, followed by
   hosted CI, CodeQL, merge, and post-merge verification only when P0/P1 = 0.
 
-Those implementation checks are planning only and are not executed by this
-RFC.
+Those implementation checks completed successfully before merge or in the
+recorded post-merge runs.
 
 ## Acceptance criteria
 
-The design is accepted when:
+V7-11 is complete and verified because:
 
 1. one explicit local GET returns only immutable V7-10 records for one exact
    authoritative Page;
@@ -548,7 +565,7 @@ The design is accepted when:
 
 ## STOP conditions
 
-Design or future implementation must stop on any of the following:
+Any follow-up must stop on any of the following:
 
 - a third docs file or a sixteenth implementation file is required;
 - the V7-10 schema, table, column, index, journal mode, payload, digest,
@@ -569,14 +586,9 @@ Design or future implementation must stop on any of the following:
 
 ## Authorization gate
 
-Approval of RFC-V7-009 authorizes only this docs-only design record and the
-matching V7-11 roadmap entry. It does not authorize implementation, the GET
-route, Web changes, runtime sidecar reads, database or directory access,
-Page mutation, quality, approval, workflow transition, V7-09 changes,
+V7-11 is complete. Its separately approved exact fifteen-file implementation
+authorization was exhausted by PR #45. It does not authorize a sixteenth file,
+another route or Web change, sidecar or schema change, runtime mutation,
+approval linkage, Page or workflow mutation, V7-09 eligibility changes,
 Provider calls, generation, I02, dependencies, `main`, versioning, release,
 tag, publication, Settings, branch deletion, force push, or history rewriting.
-
-Any future implementation requires explicit approval of a revalidated exact
-allowlist, the closed additive GET/DTO contract, the complete-history bounds,
-and the applicable validation plan. Documentation acceptance alone grants no
-runtime authority.
