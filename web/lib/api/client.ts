@@ -5,6 +5,7 @@ import type {
   PageDetail,
   ProjectDetail,
   ProjectSummary,
+  VisualReviewEvidenceHistoryResponse,
   VisualReviewEvidenceResponse,
   VisualReviewReadinessRequest,
   VisualReviewReadinessResponse,
@@ -126,6 +127,15 @@ export const api = {
           body: JSON.stringify(body),
           headers: { "Content-Type": "application/json" }
         },
+        loopbackApiBaseUrl()
+      ),
+    getVisualReviewEvidenceHistory: (
+      projectId: string,
+      pageNumber: number
+    ) =>
+      request<VisualReviewEvidenceHistoryResponse>(
+        `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/visual-review-evidence`,
+        { method: "GET" },
         loopbackApiBaseUrl()
       ),
     execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>

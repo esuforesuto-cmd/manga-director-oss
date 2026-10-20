@@ -2,6 +2,7 @@ import type { PageDetail } from "@/lib/api/types";
 
 import { api } from "@/lib/api/client";
 import { ApprovalForm } from "./approval-form";
+import { HumanVisualReviewEvidenceHistory } from "./human-visual-review-evidence-history";
 import { HumanVisualReviewForm } from "./human-visual-review-form";
 import { PageActions } from "./page-actions";
 import styles from "./page-workflow.module.css";
@@ -10,7 +11,8 @@ import {
   canShowApproval,
   canShowApprovedAssetDownload,
   canShowGeneratedAsset,
-  canShowVisualReview
+  canShowVisualReview,
+  canShowVisualReviewEvidenceHistory
 } from "@/lib/workflow-view";
 
 const stages = ["Page Design", "Review", "Storyboard", "Dialogue", "Prompt", "Generated Image", "Quality", "Continuity", "Approval"];
@@ -50,6 +52,12 @@ export function PageWorkflowView({
       ) : null}
       {canShowVisualReview(page) ? (
         <HumanVisualReviewForm projectId={projectId} pageNumber={page.pageNumber} />
+      ) : null}
+      {canShowVisualReviewEvidenceHistory(page) ? (
+        <HumanVisualReviewEvidenceHistory
+          projectId={projectId}
+          pageNumber={page.pageNumber}
+        />
       ) : null}
       {canShowApproval(page) ? <ApprovalForm projectId={projectId} pageNumber={page.pageNumber} /> : null}
       <section className={styles.panel} aria-labelledby="input-heading">

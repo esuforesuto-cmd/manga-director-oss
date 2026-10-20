@@ -43,3 +43,10 @@ export function canShowVisualReview(
 ): boolean {
   return ["Generated", "QualityChecked"].includes(page.state) && canShowGeneratedAsset(page);
 }
+
+/** History is an explicit read-only action and remains available after approval. */
+export function canShowVisualReviewEvidenceHistory(
+  page: Pick<PageDetail, "state">
+): boolean {
+  return ["Generated", "QualityChecked", "Approved"].includes(page.state);
+}

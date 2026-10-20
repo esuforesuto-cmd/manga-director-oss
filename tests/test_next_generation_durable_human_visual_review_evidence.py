@@ -110,6 +110,160 @@ def test_append_exact_retry_distinct_review_and_restart_lookup(tmp_path: Path) -
         ).fetchone() == (2,)
 
 
+def test_page_history_is_empty_when_store_is_absent_without_creating_state(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "normal"
+    root.mkdir()
+    owner = LocalDurableHumanVisualReviewEvidenceOwner(root)
+
+    assert owner.read_page_history("project-v7-10", "1", 1) == ()
+    assert tuple(root.iterdir()) == ()
+
+
+def test_page_history_is_complete_bound_and_canonically_ordered(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "normal"
+    root.mkdir()
+    owner = LocalDurableHumanVisualReviewEvidenceOwner(root)
+    owner.persist(_payload("review:v7-10:003"))
+    owner.persist(_payload("review:v7-10:001"))
+    owner.persist(_payload("review:v7-10:002"))
+    owner.persist(
+        _payload("review:v7-10:other").model_copy(
+            update={"project_id": "project-v7-10-other"}
+        )
+    )
+    before = {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    history = owner.read_page_history("project-v7-10", "1", 1)
+
+    assert tuple(item.review_id for item in history) == (
+        "review:v7-10:001",
+        "review:v7-10:002",
+        "review:v7-10:003",
+    )
+    assert all(
+        item.project_id == "project-v7-10"
+        and item.page_id == "1"
+        and item.page_number == 1
+        for item in history
+    )
+    assert {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_page_history_rejects_conflicting_missing_database_and_oversized_history(
+    tmp_path: Path,
+) -> None:
+    conflicting_root = tmp_path / "conflicting"
+    conflicting_root.mkdir()
+    (conflicting_root / "review-evidence").mkdir()
+    conflicting = LocalDurableHumanVisualReviewEvidenceOwner(conflicting_root)
+    before_conflict = tuple((conflicting_root / "review-evidence").iterdir())
+
+    with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+        conflicting.read_page_history("project-v7-10", "1", 1)
+    assert tuple((conflicting_root / "review-evidence").iterdir()) == before_conflict
+
+    exact_root = tmp_path / "exact-bound"
+    exact_root.mkdir()
+    exact = LocalDurableHumanVisualReviewEvidenceOwner(exact_root)
+    for index in range(32):
+        exact.persist(_payload(f"review:v7-10:{index:03d}"))
+    exact_before = _database(exact_root).read_bytes()
+
+    exact_history = exact.read_page_history("project-v7-10", "1", 1)
+
+    assert len(exact_history) == 32
+    assert _database(exact_root).read_bytes() == exact_before
+
+    bounded_root = tmp_path / "bounded"
+    bounded_root.mkdir()
+    bounded = LocalDurableHumanVisualReviewEvidenceOwner(bounded_root)
+    for index in range(33):
+        bounded.persist(_payload(f"review:v7-10:{index:03d}"))
+    before_database = _database(bounded_root).read_bytes()
+
+    with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+        bounded.read_page_history("project-v7-10", "1", 1)
+    assert _database(bounded_root).read_bytes() == before_database
+
+
+def test_page_history_rejects_ambiguous_page_identity_without_partial_result(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "normal"
+    root.mkdir()
+    owner = LocalDurableHumanVisualReviewEvidenceOwner(root)
+    owner.persist(_payload("review:v7-10:matching"))
+    owner.persist(
+        _payload("review:v7-10:ambiguous").model_copy(
+            update={"page_id": "different-page-id"}
+        )
+    )
+    before = _database(root).read_bytes()
+
+    with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+        owner.read_page_history("project-v7-10", "1", 1)
+
+    assert _database(root).read_bytes() == before
+
+
+def test_page_history_fails_whole_read_on_corruption_lock_or_budget_exhaustion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corrupt_root = tmp_path / "corrupt"
+    corrupt_root.mkdir()
+    corrupt = LocalDurableHumanVisualReviewEvidenceOwner(corrupt_root)
+    corrupt.persist(_payload())
+    corrupt.persist(
+        _payload("review:v7-10:other").model_copy(
+            update={"project_id": "project-v7-10-other"}
+        )
+    )
+    with sqlite3.connect(_database(corrupt_root)) as connection:
+        connection.execute(
+            "UPDATE human_visual_review_evidence_records SET payload_digest = ? "
+            "WHERE review_id = ?",
+            ("0" * 64, "review:v7-10:other"),
+        )
+    corrupt_before = _database(corrupt_root).read_bytes()
+    with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+        corrupt.read_page_history("project-v7-10", "1", 1)
+    assert _database(corrupt_root).read_bytes() == corrupt_before
+
+    busy_root = tmp_path / "busy-history"
+    busy_root.mkdir()
+    busy = LocalDurableHumanVisualReviewEvidenceOwner(busy_root)
+    busy.persist(_payload())
+    with sqlite3.connect(_database(busy_root), timeout=0.0, isolation_level=None) as lock:
+        lock.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+            busy.read_page_history("project-v7-10", "1", 1)
+        lock.rollback()
+
+    budget_root = tmp_path / "budget"
+    budget_root.mkdir()
+    budget = LocalDurableHumanVisualReviewEvidenceOwner(budget_root)
+    budget.persist(_payload())
+    budget_before = _database(budget_root).read_bytes()
+    monkeypatch.setattr(evidence_module, "_READ_PROGRESS_GRANULARITY", 1)
+    monkeypatch.setattr(evidence_module, "_MAX_READ_PROGRESS_CALLBACKS", 0)
+    with pytest.raises(DurableHumanVisualReviewEvidenceUnavailable):
+        budget.read_page_history("project-v7-10", "1", 1)
+    assert _database(budget_root).read_bytes() == budget_before
+
+
 def test_exact_id_conflict_and_corrupt_payload_fail_without_repair(tmp_path: Path) -> None:
     root = tmp_path / "normal"
     root.mkdir()

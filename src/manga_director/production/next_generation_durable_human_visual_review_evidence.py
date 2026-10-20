@@ -28,6 +28,9 @@ _DATABASE_NAME = "human-visual-review-evidence.sqlite3"
 _META_TABLE = "human_visual_review_evidence_schema_meta"
 _RECORD_TABLE = "human_visual_review_evidence_records"
 _MAX_PAYLOAD_BYTES = 65_536
+_MAX_HISTORY_RECORDS = 32
+_READ_PROGRESS_GRANULARITY = 100
+_MAX_READ_PROGRESS_CALLBACKS = 10_000
 _SQLITE_HEADER = b"SQLite format 3\x00"
 _SQLITE_ROLLBACK_JOURNAL_VERSIONS = b"\x01\x01"
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\\\/]")
@@ -350,6 +353,109 @@ class LocalDurableHumanVisualReviewEvidenceOwner:
         finally:
             connection.close()
 
+    def read_page_history(
+        self,
+        project_id: str,
+        page_id: str,
+        page_number: int,
+    ) -> tuple[_HumanVisualReviewEvidencePayload, ...]:
+        """Read one complete bounded Page history without creating state."""
+
+        connection: sqlite3.Connection | None = None
+        began = False
+        try:
+            _logical_reference(project_id)
+            _logical_reference(page_id)
+            if type(page_number) is not int or not 1 <= page_number <= 2_147_483_647:
+                raise ValueError("page_number is invalid")
+            if (
+                self._directory.parent != self._normal_execution_root
+                or self._database.parent != self._directory
+                or not _safe_directory(self._normal_execution_root)
+            ):
+                raise DurableHumanVisualReviewEvidenceUnavailable(
+                    "human visual review evidence persistence is unavailable"
+                )
+            directory_present = self._directory.exists() or _is_link_or_reparse(
+                self._directory
+            )
+            database_present = self._database.exists() or _is_link_or_reparse(
+                self._database
+            )
+            if not directory_present and not database_present:
+                return ()
+            _require_existing_store(
+                self._normal_execution_root,
+                self._directory,
+                self._database,
+            )
+            _require_rollback_journal_database(self._database)
+            connection = sqlite3.connect(
+                f"{self._database.as_uri()}?mode=ro",
+                uri=True,
+                timeout=0.0,
+                isolation_level=None,
+            )
+            remaining_callbacks = _MAX_READ_PROGRESS_CALLBACKS
+
+            def bounded_read_work() -> int:
+                nonlocal remaining_callbacks
+                remaining_callbacks -= 1
+                return int(remaining_callbacks < 0)
+
+            connection.set_progress_handler(
+                bounded_read_work,
+                _READ_PROGRESS_GRANULARITY,
+            )
+            connection.execute("PRAGMA query_only=ON")
+            if connection.execute("PRAGMA query_only").fetchall() != [(1,)]:
+                raise DurableHumanVisualReviewEvidenceUnavailable(
+                    "human visual review evidence persistence is unavailable"
+                )
+            _validate_journal_mode(connection)
+            connection.execute("BEGIN")
+            began = True
+            _validate_schema(connection)
+            _validate_all_rows(
+                connection,
+                expected_page=(project_id, page_id, page_number),
+            )
+            rows = connection.execute(
+                f"SELECT {_record_columns()} FROM {_RECORD_TABLE} "
+                "WHERE project_id = ? AND page_id = ? AND page_number = ? "
+                "ORDER BY review_id LIMIT ?",
+                (project_id, page_id, page_number, _MAX_HISTORY_RECORDS + 1),
+            ).fetchall()
+            if len(rows) > _MAX_HISTORY_RECORDS:
+                raise DurableHumanVisualReviewEvidenceUnavailable(
+                    "human visual review evidence persistence is unavailable"
+                )
+            payloads = tuple(_payload_from_row([row]) for row in rows)
+            if any(
+                payload.project_id != project_id
+                or payload.page_id != page_id
+                or payload.page_number != page_number
+                for payload in payloads
+            ):
+                raise DurableHumanVisualReviewEvidenceUnavailable(
+                    "human visual review evidence persistence is unavailable"
+                )
+            connection.rollback()
+            began = False
+            return payloads
+        except DurableHumanVisualReviewEvidenceUnavailable:
+            _rollback(connection, began)
+            raise
+        except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            _rollback(connection, began)
+            raise DurableHumanVisualReviewEvidenceUnavailable(
+                "human visual review evidence persistence is unavailable"
+            ) from error
+        finally:
+            if connection is not None:
+                connection.set_progress_handler(None, 0)
+                connection.close()
+
 def _canonical_payload(payload: _HumanVisualReviewEvidencePayload) -> str:
     value = json.dumps(
         payload.model_dump(mode="json"),
@@ -443,12 +549,24 @@ def _payload_from_row(rows: object) -> _HumanVisualReviewEvidencePayload:
     return payload
 
 
-def _validate_all_rows(connection: sqlite3.Connection) -> None:
-    rows = connection.execute(
+def _validate_all_rows(
+    connection: sqlite3.Connection,
+    *,
+    expected_page: tuple[str, str, int] | None = None,
+) -> None:
+    for row in connection.execute(
         f"SELECT {_record_columns()} FROM {_RECORD_TABLE} ORDER BY review_id"
-    ).fetchall()
-    for row in rows:
-        _payload_from_row([row])
+    ):
+        payload = _payload_from_row([row])
+        if expected_page is None:
+            continue
+        project_id, page_id, page_number = expected_page
+        if payload.project_id == project_id and (
+            (payload.page_id == page_id) != (payload.page_number == page_number)
+        ):
+            raise DurableHumanVisualReviewEvidenceUnavailable(
+                "human visual review evidence persistence is unavailable"
+            )
 
 
 def _record_columns() -> str:

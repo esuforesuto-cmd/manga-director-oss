@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import unicodedata
@@ -25,6 +26,11 @@ from manga_director.application.human_visual_review_evidence import (
     HumanVisualReviewEvidencePersistenceUnavailable,
     HumanVisualReviewEvidenceUnavailable,
     human_visual_review_evidence_for,
+)
+from manga_director.application.human_visual_review_evidence_history import (
+    HumanVisualReviewEvidenceHistoryPersistenceUnavailable,
+    HumanVisualReviewEvidenceHistoryUnavailable,
+    human_visual_review_evidence_history_for,
 )
 from manga_director.application.human_visual_review_readiness import (
     HumanVisualReviewReadinessUnavailable,
@@ -75,6 +81,15 @@ _VISUAL_REVIEW_SUFFIXES = (
     _VISUAL_REVIEW_EVIDENCE_SUFFIX,
 )
 _VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
+_VISUAL_REVIEW_HISTORY_MAX_RESPONSE_BYTES = 1_048_576
+_VISUAL_REVIEW_HISTORY_REJECTED_HEADERS = (
+    "range",
+    "if-range",
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-unmodified-since",
+)
 _VISUAL_REVIEW_REQUIRED_CRITERIA = {
     "character_identity",
     "face",
@@ -285,6 +300,37 @@ class VisualReviewReadinessResponse(_ClosedHttpModel):
 class VisualReviewEvidenceResponse(VisualReviewReadinessResponse):
     evidence_recorded: Literal[True] = Field(alias="evidenceRecorded")
     idempotent_replay: bool = Field(alias="idempotentReplay")
+
+
+class VisualReviewHistoryChecklistItemDTO(_ClosedHttpModel):
+    criterion: ReviewCriterion
+    outcome: ReviewOutcome
+    rationale: str
+
+
+class VisualReviewHistoryRecordDTO(_ClosedHttpModel):
+    review_id: str = Field(alias="reviewId")
+    output_asset_id: str = Field(alias="outputAssetId")
+    reviewer_id: str = Field(alias="reviewerId")
+    reviewed_at: datetime = Field(alias="reviewedAt")
+    page_state: Literal["Generated", "QualityChecked"] = Field(alias="pageState")
+    checklist: tuple[VisualReviewHistoryChecklistItemDTO, ...]
+    overall_judgment: ReviewOverallJudgment = Field(alias="overallJudgment")
+    rationale: str
+    status: Literal["ready", "needs_review", "blocked"]
+    ready: bool
+    findings: tuple[VisualReviewFindingDTO, ...]
+    missing_prerequisites: tuple[str, ...] = Field(alias="missingPrerequisites")
+    analysis_only: Literal[True] = Field(alias="analysisOnly")
+
+
+class VisualReviewEvidenceHistoryResponse(_ClosedHttpModel):
+    page_number: int = Field(alias="pageNumber")
+    record_count: int = Field(alias="recordCount")
+    complete: Literal[True]
+    read_only: Literal[True] = Field(alias="readOnly")
+    analysis_only: Literal[True] = Field(alias="analysisOnly")
+    records: tuple[VisualReviewHistoryRecordDTO, ...]
 
 
 def create_workflow_app(application: WorkflowApplicationService) -> Any:
@@ -512,6 +558,11 @@ def _register_routes(
         request_type=request_type,
         json_response=json_response,
     )
+    read_visual_review_evidence_history = _visual_review_evidence_history_route(
+        application,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -558,6 +609,10 @@ def _register_routes(
         "/projects/{project_id}/pages/{page_number}/visual-review-evidence",
         response_model=VisualReviewEvidenceResponse,
     )(record_visual_review_evidence)
+    app.get(
+        "/projects/{project_id}/pages/{page_number}/visual-review-evidence",
+        response_model=VisualReviewEvidenceHistoryResponse,
+    )(read_visual_review_evidence_history)
     app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
@@ -717,6 +772,97 @@ def _visual_review_evidence_route(
     return record_visual_review_evidence
 
 
+def _visual_review_evidence_history_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def read_visual_review_evidence_history(
+        project_id: str,
+        page_number: str,
+        request: Any,
+    ) -> Any:
+        if not _visual_review_evidence_history_admission(request):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            raw_page_number = _raw_visual_review_evidence_page_number(
+                request,
+                project_id,
+                page_number,
+            )
+            validated_page_number = _validated_download_page_number(raw_page_number)
+        except ValidationError:
+            return _visual_review_error(json_response, 422, "invalid_input")
+        service = human_visual_review_evidence_history_for(application)
+        if service is None:
+            return _visual_review_error(json_response, 404, "not_found")
+        try:
+            result = service.get(project_id, validated_page_number)
+        except HumanVisualReviewEvidenceHistoryUnavailable:
+            return _visual_review_error(json_response, 404, "not_found")
+        except HumanVisualReviewEvidenceHistoryPersistenceUnavailable:
+            return _visual_review_history_unavailable(json_response)
+        response = VisualReviewEvidenceHistoryResponse(
+            pageNumber=result.page_number,
+            recordCount=len(result.records),
+            complete=True,
+            readOnly=True,
+            analysisOnly=True,
+            records=tuple(
+                VisualReviewHistoryRecordDTO(
+                    reviewId=record.review_id,
+                    outputAssetId=record.output_asset_id,
+                    reviewerId=record.reviewer_id,
+                    reviewedAt=record.reviewed_at,
+                    pageState=record.page_state,
+                    checklist=tuple(
+                        VisualReviewHistoryChecklistItemDTO(
+                            criterion=item.criterion,
+                            outcome=item.outcome,
+                            rationale=item.rationale,
+                        )
+                        for item in record.checklist
+                    ),
+                    overallJudgment=record.overall_judgment,
+                    rationale=record.rationale,
+                    status=record.status,
+                    ready=record.ready,
+                    findings=tuple(
+                        VisualReviewFindingDTO(
+                            code=item.code,
+                            status=item.status,
+                            message=item.message,
+                            criterion=item.criterion,
+                        )
+                        for item in record.findings
+                    ),
+                    missingPrerequisites=record.missing_prerequisites,
+                    analysisOnly=True,
+                )
+                for record in result.records
+            ),
+        )
+        content = response.model_dump(mode="json", by_alias=True)
+        encoded = json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) > _VISUAL_REVIEW_HISTORY_MAX_RESPONSE_BYTES:
+            return _visual_review_history_unavailable(json_response)
+        return json_response(
+            status_code=200,
+            content=content,
+            headers=_VISUAL_REVIEW_HEADERS,
+        )
+
+    read_visual_review_evidence_history.__annotations__["request"] = request_type
+    return read_visual_review_evidence_history
+
+
 def _bounded_content_length(value: str | None) -> bool:
     if value is None:
         return False
@@ -759,6 +905,17 @@ def _visual_review_persistence_error(json_response: Any) -> Any:
         content={
             "code": "persistence_unavailable",
             "message": "Persistence unavailable.",
+        },
+        headers=_VISUAL_REVIEW_HEADERS,
+    )
+
+
+def _visual_review_history_unavailable(json_response: Any) -> Any:
+    return json_response(
+        status_code=503,
+        content={
+            "code": "history_unavailable",
+            "message": "History unavailable.",
         },
         headers=_VISUAL_REVIEW_HEADERS,
     )
@@ -917,6 +1074,34 @@ def _visual_review_evidence_admission(request: Any) -> bool:
         and content_type.split(";", 1)[0].strip().lower() == "application/json"
         and origin is not None
         and _allowed_local_origin(origin)
+    )
+
+
+def _visual_review_evidence_history_admission(request: Any) -> bool:
+    if (
+        request.query_params
+        or "transfer-encoding" in request.headers
+        or any(name in request.headers for name in _VISUAL_REVIEW_HISTORY_REJECTED_HEADERS)
+    ):
+        return False
+    content_length = _single_request_header(request, "content-length")
+    origin = _single_request_header(request, "origin")
+    referer = _single_request_header(request, "referer")
+    accept = _single_request_header(request, "accept")
+    if content_length not in {None, "0"}:
+        return False
+    return bool(
+        origin is not None
+        and _allowed_local_origin(origin)
+        and referer is not None
+        and _allowed_local_referer(referer)
+        and _single_request_header(request, "sec-fetch-mode") == "cors"
+        and _single_request_header(request, "sec-fetch-dest") == "empty"
+        and accept is not None
+        and any(
+            item.split(";", 1)[0].strip().lower() == "application/json"
+            for item in accept.split(",")
+        )
     )
 
 
