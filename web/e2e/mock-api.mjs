@@ -4,6 +4,8 @@ import { Buffer } from "node:buffer";
 let projectCreated = false;
 let pageState = "Draft";
 let reviewEvidenceRecordCount = 0;
+let reviewEvidenceHistoryReadCount = 0;
+let reviewEvidenceRecord = null;
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 const nextState = {
@@ -94,12 +96,17 @@ createServer(async (request, response) => {
     projectCreated = true;
     pageState = "Draft";
     reviewEvidenceRecordCount = 0;
+    reviewEvidenceHistoryReadCount = 0;
+    reviewEvidenceRecord = null;
     return json(response, 201, project());
   }
   if (request.method === "GET" && pathname === "/projects/demo") return json(response, 200, project());
   if (request.method === "GET" && pathname === "/projects/demo/pages/1") return json(response, 200, page());
   if (request.method === "GET" && pathname === "/test-only/review-evidence-count") {
     return json(response, 200, { count: reviewEvidenceRecordCount });
+  }
+  if (request.method === "GET" && pathname === "/test-only/review-evidence-history-read-count") {
+    return json(response, 200, { count: reviewEvidenceHistoryReadCount });
   }
   if (request.method === "GET" && pathname === "/projects/demo/pages/1/generated-asset") {
     response.writeHead(200, {
@@ -160,7 +167,24 @@ createServer(async (request, response) => {
     }
     const ready = pageState === "QualityChecked";
     const idempotentReplay = reviewEvidenceRecordCount > 0;
-    if (!idempotentReplay) reviewEvidenceRecordCount += 1;
+    if (!idempotentReplay) {
+      reviewEvidenceRecordCount += 1;
+      reviewEvidenceRecord = {
+        reviewId: "review:demo:001",
+        outputAssetId: "asset:demo:001",
+        reviewerId: body.reviewerId,
+        reviewedAt: body.reviewedAt,
+        pageState,
+        checklist: body.checklist,
+        overallJudgment: body.overallJudgment,
+        rationale: body.rationale,
+        status: ready ? "ready" : "needs_review",
+        ready,
+        findings: ready ? [] : [{ code: "QUALITY_CHECK_REQUIRED", status: "needs_review", message: "Quality review required.", criterion: "" }],
+        missingPrerequisites: ready ? [] : ["QUALITY_CHECK_REQUIRED"],
+        analysisOnly: true
+      };
+    }
     return json(response, 200, {
       status: ready ? "ready" : "needs_review",
       ready,
@@ -170,6 +194,24 @@ createServer(async (request, response) => {
       evidenceRecorded: true,
       idempotentReplay,
       analysisOnly: true
+    }, {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+  }
+  if (request.method === "GET" && pathname === "/projects/demo/pages/1/visual-review-evidence") {
+    if (!["Generated", "QualityChecked", "Approved"].includes(pageState)) {
+      return json(response, 404, { code: "not_found", message: "Not found." });
+    }
+    reviewEvidenceHistoryReadCount += 1;
+    const records = reviewEvidenceRecord ? [reviewEvidenceRecord] : [];
+    return json(response, 200, {
+      pageNumber: 1,
+      recordCount: records.length,
+      complete: true,
+      readOnly: true,
+      analysisOnly: true,
+      records
     }, {
       "cache-control": "no-store",
       "x-content-type-options": "nosniff"

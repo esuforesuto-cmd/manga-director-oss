@@ -145,3 +145,34 @@ export interface VisualReviewEvidenceResponse extends VisualReviewReadinessRespo
   evidenceRecorded: true;
   idempotentReplay: boolean;
 }
+
+export interface VisualReviewHistoryChecklistItem {
+  criterion: HumanVisualCriterion;
+  outcome: HumanVisualOutcome;
+  rationale: string;
+}
+
+export interface VisualReviewHistoryRecord {
+  reviewId: string;
+  outputAssetId: string;
+  reviewerId: string;
+  reviewedAt: string;
+  pageState: "Generated" | "QualityChecked";
+  checklist: VisualReviewHistoryChecklistItem[];
+  overallJudgment: OverallHumanJudgment;
+  rationale: string;
+  status: "ready" | "needs_review" | "blocked";
+  ready: boolean;
+  findings: VisualReviewFinding[];
+  missingPrerequisites: string[];
+  analysisOnly: true;
+}
+
+export interface VisualReviewEvidenceHistoryResponse {
+  pageNumber: number;
+  recordCount: number;
+  complete: true;
+  readOnly: true;
+  analysisOnly: true;
+  records: VisualReviewHistoryRecord[];
+}

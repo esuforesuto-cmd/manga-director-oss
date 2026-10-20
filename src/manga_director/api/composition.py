@@ -18,6 +18,10 @@ from manga_director.application.human_visual_review_evidence import (
     attach_human_visual_review_evidence,
     build_human_visual_review_evidence,
 )
+from manga_director.application.human_visual_review_evidence_history import (
+    attach_human_visual_review_evidence_history,
+    build_human_visual_review_evidence_history,
+)
 from manga_director.application.human_visual_review_readiness import (
     attach_human_visual_review_readiness,
     build_human_visual_review_readiness,
@@ -64,5 +68,9 @@ def build_workflow_app(
                 repository,
                 human_visual_review_readiness,
             ),
+        )
+        attach_human_visual_review_evidence_history(
+            application,
+            build_human_visual_review_evidence_history(repository),
         )
     return create_workflow_app(application)

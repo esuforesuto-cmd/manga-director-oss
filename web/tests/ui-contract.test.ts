@@ -5,7 +5,8 @@ import {
   canShowApproval,
   canShowApprovedAssetDownload,
   canShowGeneratedAsset,
-  canShowVisualReview
+  canShowVisualReview,
+  canShowVisualReviewEvidenceHistory
 } from "@/lib/workflow-view";
 
 describe("UI workflow contract", () => {
@@ -104,6 +105,20 @@ describe("UI workflow contract", () => {
       approvalRequired: true
     })).toBe(true);
   });
+
+  it.each(["Generated", "QualityChecked", "Approved"] as PageState[])(
+    "shows read-only evidence history without deriving approval in %s",
+    (state) => {
+      expect(canShowVisualReviewEvidenceHistory({ state })).toBe(true);
+    }
+  );
+
+  it.each(["Draft", "Designed", "Reviewed", "Storyboarded", "PromptBuilt"] as PageState[])(
+    "does not expose evidence history before generation in %s",
+    (state) => {
+      expect(canShowVisualReviewEvidenceHistory({ state })).toBe(false);
+    }
+  );
 
   it("shows approved download only for the exact Approved logical artifact", () => {
     const artifact = {
