@@ -1239,9 +1239,13 @@ force push, or history rewriting.
 
 Design approved and frozen by
 [RFC-V7-009: Safe Local Human Visual Review Evidence History](RFC_V7_009_SAFE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_HISTORY.md).
-Implementation and execution are not authorized.
+The exact fifteen-file V7-11 implementation is complete and verified. PR #45
+final head `32a0386dce4101606fd1c66e748eef3ffa213e62` was merged into `v7-dev`
+at `7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`. PR checks passed 24/24;
+post-merge CI run #156 passed 10/10 jobs and CodeQL run #59 passed 3/3 jobs;
+independent read-only review reported P0/P1/P2 = 0/0/0.
 
-The exact docs allowlist is:
+The approved design docs allowlist was:
 
 1. `docs/RFC_V7_009_SAFE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_HISTORY.md`
 2. `docs/ROADMAP_V7.md`
@@ -1341,7 +1345,7 @@ workflow transition, V7-09 eligibility, or publication readiness.
 
 ### Public contract, security, and privacy
 
-The candidate is one additive closed JSON GET and one explicit Web-only
+The implementation is one additive closed JSON GET and one explicit Web-only
 history panel. Success and failure use `Cache-Control: no-store` and
 `X-Content-Type-Options: nosniff` and emit no ETag, Last-Modified, Location,
 Content-Location, redirect, filename, or cache validator.
@@ -1369,10 +1373,9 @@ Provider, generation, quality, V7-08, V7-09, v5, and v6 behavior remain
 unchanged. No migration, index, dependency, lockfile, package metadata,
 version, release, tag, Settings, `main`, or I02 change is permitted.
 
-### Candidate implementation allowlist
+### Implementation allowlist
 
-The smallest current candidate is the following fifteen files. It remains
-planning-only until separately revalidated and explicitly approved:
+The implementation was completed within the approved exact fifteen files:
 
 1. `src/manga_director/production/next_generation_durable_human_visual_review_evidence.py`
 2. `src/manga_director/application/human_visual_review_evidence_history.py` (new)
@@ -1418,7 +1421,10 @@ files are excluded. A sixteenth implementation file is a scope expansion.
 - existing schemas, routes, DTOs, public Python API, CLI, MCP, SDK, Plugin,
   Repository, LocalFile, Provider, dependencies, I02, v5, and v6 remain
   unchanged; and
-- the docs-only diff stays within the exact two-file allowlist.
+- the implementation stayed within its approved exact fifteen-file allowlist
+  and passed focused/full regression, Web, security, package, CI, CodeQL, and
+  post-merge gates with no blocking failure; and
+- this completion-state diff stays within the exact two-file docs allowlist.
 
 ### Validation
 
@@ -1431,13 +1437,13 @@ files are excluded. A sixteenth implementation file is a scope expansion.
 - independent read-only review with P0 = 0 and P1 = 0; and
 - required hosted CI, CodeQL, and post-merge verification.
 
-A separately approved implementation additionally requires focused absent,
-empty, one-record, multiple-record, restart, ordering, binding, state, bound,
-admission, redaction, corruption, unsafe-file, WAL, schema, duplicate, lock,
+The completed implementation passed focused absent, empty, one-record,
+multiple-record, restart, ordering, binding, state, bound, admission,
+redaction, corruption, unsafe-file, WAL, schema, duplicate, lock,
 bounded-read-work, I/O, no-partial-result, no-mutation, Web-explicit-action,
 approval-separation, V7-09-independence, no-Provider, no-generation, and no-I02
-tests; full Python, Web, browser, security, audit, package, compatibility,
-exact-allowlist, and whitespace gates; and independent P0/P1/P2 review.
+tests together with the full Python, Web, browser, security, audit, package,
+compatibility, exact-allowlist, and whitespace gates.
 
 ### STOP conditions
 
@@ -1451,10 +1457,10 @@ conflict, or scope drift requires a new explicit decision.
 
 ### Authorization gate
 
-Approval of RFC-V7-009 authorizes only the exact two-file docs design. It does
-not authorize the fifteen-file candidate implementation, the additive GET,
-Web changes, runtime sidecar reads, database access, Page or workflow
-mutation, quality, approval, V7-09 changes, Provider, generation, I02,
+V7-11 is complete. Its exact fifteen-file implementation authorization was
+exhausted by PR #45 and does not authorize a sixteenth file, another route or
+Web change, sidecar or schema change, runtime mutation, approval linkage, Page
+or workflow mutation, quality, V7-09 changes, Provider, generation, I02,
 dependencies, `main`, versioning, release, tag, publication, Settings, branch
 deletion, force push, or history rewriting.
 
@@ -1471,7 +1477,7 @@ deletion, force push, or history rewriting.
 | V7-08 Safe Local Human Visual Review and Approval Readiness | Complete and verified | Completed V7-06 and V7-07, accepted RFC-V7-006, and explicit approval of the exact sixteen-file implementation package | PR #36 final head `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks 13/13 and CodeQL 3/3 passed; independent review P0/P1/P2 = 0; exact sixteen-file allowlist; feature branch retained; `main` unchanged |
 | V7-09 Safe Local Approved Asset Download | Complete and verified | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | PR #39 final head `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24 after one approved Windows 3.12 rerun; post-merge checks passed 13/13 with CodeQL 3/3; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-10 Durable Local Human Visual Review Evidence | Complete and verified | Completed V7-06 through V7-09, accepted RFC-V7-008, and explicit approval of the exact fourteen-file implementation package | PR #42 final head `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` merged into `v7-dev` at `3c83a067ece1a1b3d45f89d4816ffb47153f81d8`; full pytest passed (3190 passed / 20 skipped); PR checks passed 10/10 with CodeQL 3/3; post-merge checks passed 10/10 with CodeQL 3/3; independent review P0/P1/P2 = 0/0/0; exact fourteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
-| V7-11 Safe Local Human Visual Review Evidence History | Design approved; implementation not authorized | Completed V7-08 through V7-10 and accepted RFC-V7-009 | Docs-only design; exact two-file allowlist; future fifteen-file candidate requires separate explicit implementation approval |
+| V7-11 Safe Local Human Visual Review Evidence History | Complete and verified | Completed V7-08 through V7-10, accepted RFC-V7-009, and explicit approval of the exact fifteen-file implementation package | PR #45 final head `32a0386dce4101606fd1c66e748eef3ffa213e62` merged into `v7-dev` at `7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`; full pytest passed (3215 passed / 20 skipped); PR checks passed 24/24; post-merge CI run #156 passed 10/10 with CodeQL run #59 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact fifteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
