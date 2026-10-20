@@ -1464,6 +1464,216 @@ or workflow mutation, quality, V7-09 changes, Provider, generation, I02,
 dependencies, `main`, versioning, release, tag, publication, Settings, branch
 deletion, force push, or history rewriting.
 
+## V7-12 — Durable Local Human Visual Review Evidence-Linked Approval
+
+### Planning status
+
+Docs-only design approved and frozen by
+[RFC-V7-010: Durable Local Human Visual Review Evidence-Linked Approval](RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md).
+Implementation and execution are not authorized.
+
+The approved design docs allowlist is exactly:
+
+1. `docs/RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md` (new)
+2. `docs/ROADMAP_V7.md`
+
+### Objective
+
+Define the smallest loopback-only operation that lets a local human explicitly
+approve one authoritative `QualityChecked` Page while durably naming one exact
+immutable V7-10 review evidence record. Inside the existing durable LocalFile
+Page fence and after loading the fresh revision, the operation must re-prove
+the record against the current exact generated asset before delegating the
+unchanged transition to the existing workflow owners.
+
+V7-12 is additive and optional. Existing ordinary approval remains available
+and unchanged. Historical evidence, a `ready` result, history display, or record
+selection never approves a Page without a separate explicit submit and an
+independent `approvedBy` value.
+
+### Inputs
+
+- one existing LocalFile Project ID and one bounded positive Page number from
+  the route;
+- one caller-selected exact `reviewId`; and
+- one independently entered non-empty `approvedBy` reference.
+
+The operation accepts no generic metadata, output, attempt, provenance, QA,
+Provider, path, storage, digest, status, sort, fallback, or workflow command.
+`reviewerId` is never copied into, suggested as, or compared with `approvedBy`.
+
+### Outputs
+
+- the existing Page-detail response after one normal durable
+  `QualityChecked -> Approved` transition; and
+- an approval artifact containing exactly `approved_by` plus the selected
+  `review_evidence_id` for this new operation; or
+- one redacted fail-closed response with no evidence mutation, direct Page
+  save, alternate approval, automatic retry, or fallback record.
+
+Legacy ordinary approval continues to contain only `approved_by`.
+
+### Frozen behavior
+
+- add one separately approvable closed local POST equivalent to
+  `/projects/{project_id}/pages/{page_number}/evidence-linked-approval`;
+- require exact local browser-write admission, canonical path values, closed
+  JSON, explicit JSON content negotiation, and no query parameters before
+  Project or evidence access;
+- require the caller to select one exact `reviewId`; never enumerate or choose
+  a latest, newest, best, winning, consensus, only, first, or last record;
+- read the record only through the V7-10 owner using the existing read-only,
+  query-only, bounded, schema-validating, fail-closed exact-ID path;
+- require exact Project ID, Page ID, Page number, and authoritative current
+  `QualityChecked` state binding;
+- require the stored record itself to have `pageState: QualityChecked`,
+  `status: ready`, `ready: true`, no findings, and no missing prerequisites;
+- acquire the existing durable LocalFile Page fence, load the fresh revision,
+  and only then invoke the private Application validation gate;
+- reconstruct the complete stored human submission inside that fence and use
+  the existing V7-08 service to re-prove readiness against the same current
+  Page, exact safe generated asset, generation attempt, provenance, and Visual
+  QA binding;
+- require the Page identity, state, approval absence, image, quality, and
+  workflow history used by re-proof to equal the freshly fenced context;
+- require the recomputed V7-10 canonical payload to equal the immutable stored
+  payload exactly, with no tolerance, normalization, partial comparison, or
+  substitution;
+- retain both the Page fence and existing exact-file lease through transition,
+  conditional commit, post-commit verification, event publication, failure,
+  and cleanup, releasing the proof lease before the fence exactly once;
+- preserve existing durable failure semantics: pre-commit failure leaves the
+  Page unchanged, while a later verification or event-publication failure may
+  leave it durably Approved and requires authoritative reload without
+  compensation, retry, or a false rollback claim;
+- reserve the evidence-link input to the new private Application service so
+  generic approval metadata cannot forge it;
+- run approval only through the existing durable LocalFile command path,
+  approval agent, WorkflowEngine, and StateMachine;
+- leave the StateMachine and WorkflowEngine source and behavior unchanged;
+- keep ordinary approval available and unchanged for legacy callers and Pages;
+- persist only the explicit approver and exact evidence reference, copying no
+  evidence payload, reviewer text, status, timestamp, digest, path, or policy;
+- allow V7-09 to validate both closed approval artifact shapes while keeping
+  its existing eligibility rules identical and never reading review evidence;
+- expose one deliberate linked-approval action only for an explicitly displayed
+  eligible history record on a `QualityChecked` Page;
+- require the human to enter `approvedBy` separately and submit once; viewing,
+  loading, or selecting evidence performs no transition;
+- keep the ordinary approval form visible as an unlinked compatibility path;
+- perform no background fetch, auto-submit, polling, optimistic approval,
+  retry, queue, browser persistence, or auto-refresh except the existing
+  post-success server refresh; and
+- add no Provider, generation, CLI, MCP, SDK, Plugin, public Python, LAN,
+  wildcard, cloud, remote, or I02 surface.
+
+### Compatibility and exclusions
+
+The V7-08 readiness calculation, V7-10 schema and immutable rows, V7-10 record
+POST, V7-11 history GET, existing approval request and response, StateMachine
+transitions, WorkflowEngine sequencing, Repository protocols, and LocalFile
+Project/Page model schemas remain unchanged.
+
+The evidence-linked artifact is an additive closed shape within the existing
+`Page.approval` mapping. Existing persisted Pages remain valid and are not
+migrated. V7-09 may recognize the optional reference but cannot make evidence a
+new eligibility rule or dereference it during download.
+
+No dependency, lockfile, package metadata, version, release, tag, publication,
+Settings, `main`, I02, branch-deletion, force-push, or history-rewrite change is
+permitted.
+
+### Candidate implementation allowlist
+
+Implementation is not authorized. A later explicit approval may authorize only
+this exact twenty-one-file candidate allowlist:
+
+1. `src/manga_director/application/evidence_linked_approval.py` (new)
+2. `src/manga_director/application/workflow.py`
+3. `src/manga_director/agents/builtin.py`
+4. `src/manga_director/workflow/durable_execution.py`
+5. `src/manga_director/application/approved_asset_download.py`
+6. `src/manga_director/api/composition.py`
+7. `src/manga_director/api/workflow.py`
+8. `tests/test_evidence_linked_approval.py` (new)
+9. `tests/test_safe_local_approved_asset_download.py`
+10. `tests/test_workflow_application.py`
+11. `tests/test_localfile_primary_durable_routing.py`
+12. `tests/test_workflow_http_api.py`
+13. `tests/unit/test_agents.py`
+14. `web/lib/api/types.ts`
+15. `web/lib/api/client.ts`
+16. `web/components/human-visual-review-evidence-history.tsx`
+17. `web/components/page-workflow.tsx`
+18. `web/tests/api-client.test.ts`
+19. `web/tests/ui-contract.test.ts`
+20. `web/e2e/mock-api.mjs`
+21. `web/e2e/workflow.spec.ts`
+
+The V7-10 store and writer, V7-08 readiness service, V7-11 history service,
+Page/Project models, repositories, StateMachine, WorkflowEngine, dependencies,
+lockfiles, Provider, generation, CLI, MCP, SDK, Plugin, and I02 are excluded. A
+twenty-second implementation file is a scope expansion.
+
+### Acceptance criteria
+
+- one explicit local submit supplies one exact review ID and one separate
+  explicit approver reference;
+- no history order, timestamp, status, record count, or UI state selects a
+  record automatically;
+- stored evidence is exact, immutable, `QualityChecked`, `ready`, and bound to
+  the authoritative Page;
+- current readiness is re-proved only against the freshly loaded revision
+  inside the same Page fence and reproduces the stored canonical payload while
+  the exact asset lease remains held;
+- generic approval cannot forge a link and ordinary approval remains unchanged;
+- the existing StateMachine and WorkflowEngine perform the only transition and
+  are not modified;
+- evidence-linked approval survives restart with only the exact reference added
+  to its existing approval artifact;
+- V7-09 accepts legacy and linked artifacts under identical eligibility rules;
+- V7-10/V7-11 evidence remains unchanged on success and failure;
+- Project/Page model schemas, repositories, public APIs, Provider, generation,
+  dependencies, I02, v5, and v6 remain unchanged; and
+- the design diff stays within its exact two-file allowlist and independent
+  review reports no P0/P1 issue.
+
+### Validation
+
+- exact two-file docs allowlist and zero non-doc diff;
+- Markdown-link resolution and `git diff --check`;
+- architecture, approval authority, durable execution, lease lifetime,
+  LocalFile security, privacy, V7-09 compatibility, public-contract, and V6 LTS
+  review; and
+- independent read-only review with P0 = 0 and P1 = 0.
+
+A separately approved implementation must run focused stored/current binding,
+ready/non-ready, fresh-revision in-fence validation, pre-fence and concurrent
+change rejection, anti-forgery, lease/fence release ordering, rollback,
+persistence, post-commit verification/event failure and authoritative reload,
+restart, ordinary approval compatibility, V7-09 parity, Web explicit-action,
+redaction, and no-evidence-mutation tests plus the full Python, Ruff,
+Windows/Linux mypy, Web, browser-E2E, security/audit, package, compatibility,
+exact-allowlist, CI, and CodeQL gates defined by RFC-V7-010.
+
+### STOP conditions
+
+A third docs file, a twenty-second implementation file, automatic record
+selection, inferred approval, reviewer-to-approver copy, V7-10 mutation or
+schema change, Page/Project/Repository/LocalFile model schema change,
+StateMachine or WorkflowEngine change/bypass, evidence-dependent V7-09
+eligibility, Provider, generation, remote access, I02, dependency, lockfile,
+package, version, release, tag, publication, Settings, `main`, branch deletion,
+force push, history rewrite, unresolved P0/P1, failed required check, conflict,
+or scope drift requires a new explicit decision.
+
+### Authorization gate
+
+V7-12 docs-only design is approved. Implementation, tests, commit, push, PR
+creation, merge, release, publication, Settings, `main`, I02, branch deletion,
+force push, and history rewriting remain unauthorized. Implementation requires
+new explicit approval of the exact twenty-one-file allowlist and validation plan.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -1478,6 +1688,7 @@ deletion, force push, or history rewriting.
 | V7-09 Safe Local Approved Asset Download | Complete and verified | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | PR #39 final head `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24 after one approved Windows 3.12 rerun; post-merge checks passed 13/13 with CodeQL 3/3; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-10 Durable Local Human Visual Review Evidence | Complete and verified | Completed V7-06 through V7-09, accepted RFC-V7-008, and explicit approval of the exact fourteen-file implementation package | PR #42 final head `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` merged into `v7-dev` at `3c83a067ece1a1b3d45f89d4816ffb47153f81d8`; full pytest passed (3190 passed / 20 skipped); PR checks passed 10/10 with CodeQL 3/3; post-merge checks passed 10/10 with CodeQL 3/3; independent review P0/P1/P2 = 0/0/0; exact fourteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-11 Safe Local Human Visual Review Evidence History | Complete and verified | Completed V7-08 through V7-10, accepted RFC-V7-009, and explicit approval of the exact fifteen-file implementation package | PR #45 final head `32a0386dce4101606fd1c66e748eef3ffa213e62` merged into `v7-dev` at `7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`; full pytest passed (3215 passed / 20 skipped); PR checks passed 24/24; post-merge CI run #156 passed 10/10 with CodeQL run #59 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact fifteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
+| V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Design approved; implementation not authorized | Completed V7-07 through V7-11, accepted RFC-V7-010, and a separate explicit implementation approval | Docs-only design is frozen in RFC-V7-010; exact two-file docs allowlist; candidate twenty-one-file implementation allowlist; no implementation, runtime, approval, V7-09 eligibility, dependency, `main`, or I02 authority granted |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
