@@ -15,6 +15,8 @@ from manga_director.production.next_generation_safe_local_generated_asset_presen
 from manga_director.repositories.local_file import LocalFileRepository
 
 _WORKFLOW_ENTRY_KEYS = {"kind", "from", "to", "step"}
+_LEGACY_APPROVAL_KEYS = {"approved_by"}
+_LINKED_APPROVAL_KEYS = {"approved_by", "review_evidence_id"}
 
 
 class ApprovedAssetDownloadUnavailable(ValueError):
@@ -81,9 +83,13 @@ def _approved_output_asset_id(page: Page) -> str:
     if (
         page.state is not PageState.APPROVED
         or not isinstance(approval, Mapping)
-        or set(approval) != {"approved_by"}
+        or set(approval) not in (_LEGACY_APPROVAL_KEYS, _LINKED_APPROVAL_KEYS)
         or not isinstance(approval.get("approved_by"), str)
         or not cast(str, approval["approved_by"]).strip()
+        or (
+            "review_evidence_id" in approval
+            and not _valid_review_evidence_id(approval.get("review_evidence_id"))
+        )
         or not history
         or not all(isinstance(item, Mapping) for item in history)
         or not _is_transition(
@@ -111,6 +117,20 @@ def _approved_output_asset_id(page: Page) -> str:
             "approved asset download is unavailable"
         )
     return cast(str, image["output_asset_id"])
+
+
+def _valid_review_evidence_id(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and 1 <= len(value) <= 200
+        and value == value.strip()
+        and not any(character.isspace() or ord(character) < 32 for character in value)
+        and not value.startswith(("/", "\\"))
+        and "/" not in value
+        and "\\" not in value
+        and "://" not in value
+        and "@" not in value
+    )
 
 
 def _is_transition(

@@ -1,22 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { api } from "@/lib/api/client";
-import type { VisualReviewEvidenceHistoryResponse } from "@/lib/api/types";
+import type {
+  PageState,
+  VisualReviewEvidenceHistoryResponse,
+  VisualReviewHistoryRecord
+} from "@/lib/api/types";
 
 import styles from "./page-workflow.module.css";
 
 export function HumanVisualReviewEvidenceHistory({
   projectId,
-  pageNumber
-}: Readonly<{ projectId: string; pageNumber: number }>) {
+  pageNumber,
+  pageState
+}: Readonly<{ projectId: string; pageNumber: number; pageState: PageState }>) {
+  const router = useRouter();
   const [history, setHistory] = useState<VisualReviewEvidenceHistoryResponse | null>(null);
+  const [selectedReviewId, setSelectedReviewId] = useState("");
+  const [approvedBy, setApprovedBy] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   async function showHistory() {
     setHistory(null);
+    setSelectedReviewId("");
+    setApprovedBy("");
     setError("");
     setLoading(true);
     try {
@@ -25,6 +37,26 @@ export function HumanVisualReviewEvidenceHistory({
       setError("The read-only visual review evidence history is unavailable.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function approveWithEvidence(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedReviewId) return;
+    setError("");
+    setApproving(true);
+    try {
+      await api.pages.approveWithReviewEvidence(projectId, pageNumber, {
+        approvedBy,
+        reviewId: selectedReviewId
+      });
+      setSelectedReviewId("");
+      setApprovedBy("");
+      setApproving(false);
+      router.refresh();
+    } catch {
+      setError("Evidence-linked approval is unavailable.");
+      setApproving(false);
     }
   }
 
@@ -83,10 +115,50 @@ export function HumanVisualReviewEvidenceHistory({
                   {record.missingPrerequisites.map((item) => <li key={item}>{item}</li>)}
                 </ul>
               ) : <p>None.</p>}
+              {canUseEvidenceForLinkedApproval(record, pageState) ? (
+                <button
+                  type="button"
+                  aria-pressed={selectedReviewId === record.reviewId}
+                  onClick={() => setSelectedReviewId(record.reviewId)}
+                >
+                  Link this review to approval
+                </button>
+              ) : null}
             </article>
           ))}
+          {selectedReviewId ? (
+            <form aria-label="Evidence-linked approval" onSubmit={approveWithEvidence}>
+              <h3>Approve with selected review evidence</h3>
+              <p>Selected review: {selectedReviewId}</p>
+              <label htmlFor="evidence-linked-approved-by">Approved by</label>
+              <input
+                id="evidence-linked-approved-by"
+                required
+                value={approvedBy}
+                onChange={(event) => setApprovedBy(event.target.value)}
+              />
+              <button type="submit" disabled={approving}>
+                {approving ? "Approving…" : "Approve with this review"}
+              </button>
+            </form>
+          ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+function canUseEvidenceForLinkedApproval(
+  record: Pick<
+    VisualReviewHistoryRecord,
+    "pageState" | "status" | "ready" | "findings" | "missingPrerequisites"
+  >,
+  pageState: PageState
+): boolean {
+  return pageState === "QualityChecked"
+    && record.pageState === "QualityChecked"
+    && record.status === "ready"
+    && record.ready
+    && record.findings.length === 0
+    && record.missingPrerequisites.length === 0;
 }

@@ -57,6 +57,7 @@ export function PageWorkflowView({
         <HumanVisualReviewEvidenceHistory
           projectId={projectId}
           pageNumber={page.pageNumber}
+          pageState={page.state}
         />
       ) : null}
       {canShowApproval(page) ? <ApprovalForm projectId={projectId} pageNumber={page.pageNumber} /> : null}

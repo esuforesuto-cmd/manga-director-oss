@@ -1,6 +1,9 @@
+import pytest
+
 from manga_director.adapters import ImageGeneratorFactory, LLMFactory
 from manga_director.agents.registry import primary_agents, support_agents
 from manga_director.application import WorkflowApplicationService, build_workflow_application
+from manga_director.domain.exceptions import StateTransitionError
 from manga_director.domain.state_machine import StateMachine
 from manga_director.events import MemoryEventBus
 from manga_director.mcp.application import MangaApplicationService
@@ -60,3 +63,16 @@ def test_application_service_delegates_workflow_and_explicit_approval() -> None:
     assert before_approval.current_state.value == "QualityChecked"
     assert after_approval.current_state.value == "Approved"
     assert application.get_project("demo").metadata == {"genre": "drama"}
+
+
+def test_non_localfile_application_cannot_enter_private_evidence_linked_path() -> None:
+    application = _application()
+
+    with pytest.raises(StateTransitionError, match="LocalFile"):
+        application._approve_page_with_evidence(
+            "demo",
+            1,
+            "editor:local",
+            "review:exact:001",
+            object(),  # type: ignore[arg-type]
+        )

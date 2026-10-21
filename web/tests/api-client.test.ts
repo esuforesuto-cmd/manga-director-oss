@@ -142,6 +142,31 @@ describe("REST API client", () => {
     expect(fetchMock.mock.calls[0][1].headers).toEqual({ Accept: "application/json" });
   });
 
+  it("posts only the selected review and separate approver to the linked approval route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      pageNumber: 7,
+      state: "Approved"
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.pages.approveWithReviewEvidence("my project", 7, {
+      approvedBy: "editor:local",
+      reviewId: "review:exact:001"
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/projects/my%20project/pages/7/evidence-linked-approval"
+    );
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      approvedBy: "editor:local",
+      reviewId: "review:exact:001"
+    });
+    expect(fetchMock.mock.calls[0][1].body).not.toMatch(
+      /reviewerId|metadata|status|ready|assetId|path|digest/
+    );
+  });
+
   it.each([
     "https://127.0.0.1:8000",
     "http://localhost:8000",
@@ -184,6 +209,10 @@ describe("REST API client", () => {
     expect(() => api.pages.assessVisualReview("demo", 1, body)).toThrow(ApiClientError);
     expect(() => api.pages.recordVisualReviewEvidence("demo", 1, body)).toThrow(ApiClientError);
     expect(() => api.pages.getVisualReviewEvidenceHistory("demo", 1)).toThrow(ApiClientError);
+    expect(() => api.pages.approveWithReviewEvidence("demo", 1, {
+      approvedBy: "editor:local",
+      reviewId: "review:exact:001"
+    })).toThrow(ApiClientError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -246,12 +246,43 @@ def test_application_composes_approval_and_exact_proof_without_early_release(
     assert lease.releases == 1
 
 
+def test_application_accepts_linked_artifact_without_making_evidence_an_eligibility_rule(
+    tmp_path: Path,
+) -> None:
+    page = _approved_page("asset:v7-09:001").model_copy(
+        update={
+            "approval": {
+                "approved_by": "editor:local",
+                "review_evidence_id": "review:exact:001",
+            }
+        }
+    )
+    repository = _repository(tmp_path, page)
+    presenter = _Presenter(_Lease())
+    service = ApprovedAssetDownloadService(repository, cast(Any, presenter))
+
+    result = service.get(_PROJECT, 1)
+
+    assert result.image_bytes == b"approved-png"
+    assert presenter.calls == [(_PROJECT, "1", "asset:v7-09:001")]
+    result.release()
+
+
 @pytest.mark.parametrize(
     ("update", "case"),
     (
         ({"state": PageState.QUALITY_CHECKED, "approval": None}, "not-approved"),
         ({"approval": {}}, "missing-approver"),
         ({"approval": {"approved_by": "editor", "role": "admin"}}, "approval-extra"),
+        (
+            {
+                "approval": {
+                    "approved_by": "editor",
+                    "review_evidence_id": "../private/review",
+                }
+            },
+            "invalid-review-reference",
+        ),
         ({"history": [_GENERATED, _QUALITY_CHECKED]}, "missing-terminal-approval"),
         (
             {"history": [_GENERATED, _GENERATED, _QUALITY_CHECKED, _APPROVED]},

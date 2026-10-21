@@ -11,6 +11,7 @@ from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.workflow.coordinator import WorkflowCoordinator
 from manga_director.workflow.durable_execution import (
+    EvidenceLinkedApprovalGatePort,
     LogicalOutputAssetQualityGatePort,
     _route_localfile_primary,
 )
@@ -128,4 +129,31 @@ class WorkflowApplicationService:
             project_id,
             page_number,
             {**metadata, "approved_by": approved_by},
+        )
+
+    def _approve_page_with_evidence(
+        self,
+        project_id: str,
+        page_number: int,
+        approved_by: str,
+        review_id: str,
+        gate: EvidenceLinkedApprovalGatePort,
+    ) -> Any:
+        """Run the private LocalFile-only linked operation through the durable path."""
+
+        if not isinstance(self._repository, LocalFileRepository):
+            raise StateTransitionError(
+                "evidence-linked approval requires a LocalFile repository."
+            )
+        return _route_localfile_primary(
+            self._engine,
+            self._repository,
+            project_id,
+            str(page_number),
+            "approve",
+            {
+                "approved_by": approved_by,
+                "review_evidence_id": review_id,
+            },
+            evidence_linked_approval_gate=gate,
         )

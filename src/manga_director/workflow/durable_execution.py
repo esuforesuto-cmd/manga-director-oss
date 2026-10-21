@@ -23,7 +23,7 @@ from manga_director.repositories.local_file_durability import (
 )
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.workflow.contracts import WorkflowContext, WorkflowResult, WorkflowStatus
-from manga_director.workflow.engine import WorkflowEngine
+from manga_director.workflow.engine import WorkflowEngine, _UnpublishedWorkflowStep
 from manga_director.workflow.page_execution_fence import (
     PageExecutionFenceError,
     PageExecutionFencePort,
@@ -112,6 +112,32 @@ class LogicalOutputAssetQualityGatePort(Protocol):
     """Private read-only proof gate for a logical generated artifact."""
 
     def require_applied(self, context: WorkflowContext) -> str | None: ...
+
+
+class EvidenceLinkedApprovalProofPort(Protocol):
+    """Private retained proof released before the enclosing Page fence."""
+
+    def release(self) -> None: ...
+
+
+class EvidenceLinkedApprovalGatePort(Protocol):
+    """Private in-fence gate for one caller-selected immutable review record."""
+
+    def _prove_under_fence(
+        self,
+        snapshot: RevisionedProjectSnapshot,
+        context: WorkflowContext,
+        project_id: str,
+        page_id: str,
+        review_id: str,
+    ) -> EvidenceLinkedApprovalProofPort: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _EvidenceLinkedApprovalAuthority:
+    """Process-local marker created only after the private gate succeeds."""
+
+    review_id: str
 
 
 class LocalFileDurablePageStore(DurablePageStorePort):
@@ -247,6 +273,8 @@ class DurableWorkflowExecutionCoordinator:
         page_id: str,
         command: str | None,
         execution_input: Mapping[str, Any],
+        *,
+        evidence_linked_approval_gate: EvidenceLinkedApprovalGatePort | None = None,
     ) -> _DurableWorkflowExecutionReceipt:
         """Private LocalFile routing seam with an ephemeral command-input overlay."""
 
@@ -257,6 +285,7 @@ class DurableWorkflowExecutionCoordinator:
         ):
             return _receipt(_not_applied(project_id, page_id, "DURABLE_EXECUTION_INPUT_INVALID"))
         fence: PageExecutionFencePort | None = None
+        evidence_proof: EvidenceLinkedApprovalProofPort | None = None
         unpublished: object | None = None
         try:
             fence = self._fence_factory(project_id, page_id)
@@ -270,38 +299,25 @@ class DurableWorkflowExecutionCoordinator:
                     authoritative_context=context,
                 )
             assert command is not None
-            context = _apply_execution_input(context, command, execution_input)
+            context, evidence_proof = _prepare_execution_context(
+                snapshot,
+                context,
+                project_id,
+                page_id,
+                command,
+                execution_input,
+                evidence_linked_approval_gate,
+            )
             unpublished = self._engine._execute_unpublished(context, command=command)
             if not self._engine._is_canonical_unpublished(unpublished):
                 self._engine._discard_unpublished(unpublished)
                 return _receipt(_not_applied(project_id, page_id, "UNPUBLISHED_EVENT_NONCANONICAL"))
-            next_context = self._engine._unpublished_context(unpublished)
-            project = self._page_store.project_from_context(snapshot, page_id, next_context)
-            try:
-                self._page_store.conditional_commit(snapshot, project)
-            except Exception:
-                self._engine._discard_unpublished(unpublished)
-                return _receipt(_not_applied(project_id, page_id, "AUTHORITATIVE_CAS_FAILED"))
-            if not self._page_store.verify_committed(project_id, page_id, project):
-                self._engine._discard_unpublished(unpublished)
-                return _receipt(
-                    _event_failed(project_id, page_id, "AUTHORITATIVE_POST_COMMIT_VERIFICATION_FAILED")
-                )
-            try:
-                self._engine._publish_unpublished(unpublished)
-            except Exception:
-                return _receipt(_event_failed(project_id, page_id, "POST_COMMIT_EVENT_PUBLICATION_FAILED"))
-            result = self._engine._unpublished_result(unpublished)
-            return _DurableWorkflowExecutionReceipt(
-                outcome=DurableWorkflowExecutionResult(
-                    project_id=project_id,
-                    page_id=page_id,
-                    status="transition_applied_event_published",
-                    code="TRANSITION_APPLIED",
-                    event_published=True,
-                ),
-                workflow_result=result,
-                canonical_event=result.events[0],
+            return self._commit_and_publish(
+                snapshot,
+                project_id,
+                page_id,
+                unpublished,
+                evidence_proof,
             )
         except PageExecutionFenceError:
             return _receipt(_not_applied(project_id, page_id, "PAGE_EXECUTION_FENCE_UNAVAILABLE"))
@@ -314,8 +330,51 @@ class DurableWorkflowExecutionCoordinator:
                 self._engine._discard_unpublished(unpublished)
             return _receipt(_not_applied(project_id, page_id, "DURABLE_EXECUTION_FAILED"))
         finally:
-            if fence is not None:
-                fence.release()
+            try:
+                if evidence_proof is not None:
+                    evidence_proof.release()
+            finally:
+                if fence is not None:
+                    fence.release()
+
+    def _commit_and_publish(
+        self,
+        snapshot: RevisionedProjectSnapshot,
+        project_id: str,
+        page_id: str,
+        unpublished: _UnpublishedWorkflowStep,
+        evidence_proof: EvidenceLinkedApprovalProofPort | None,
+    ) -> _DurableWorkflowExecutionReceipt:
+        next_context = self._engine._unpublished_context(unpublished)
+        if evidence_proof is not None:
+            next_context = _remove_evidence_linked_approval_input(next_context)
+        project = self._page_store.project_from_context(snapshot, page_id, next_context)
+        try:
+            self._page_store.conditional_commit(snapshot, project)
+        except Exception:
+            self._engine._discard_unpublished(unpublished)
+            return _receipt(_not_applied(project_id, page_id, "AUTHORITATIVE_CAS_FAILED"))
+        if not self._page_store.verify_committed(project_id, page_id, project):
+            self._engine._discard_unpublished(unpublished)
+            return _receipt(
+                _event_failed(project_id, page_id, "AUTHORITATIVE_POST_COMMIT_VERIFICATION_FAILED")
+            )
+        try:
+            self._engine._publish_unpublished(unpublished)
+        except Exception:
+            return _receipt(_event_failed(project_id, page_id, "POST_COMMIT_EVENT_PUBLICATION_FAILED"))
+        result = self._engine._unpublished_result(unpublished)
+        return _DurableWorkflowExecutionReceipt(
+            outcome=DurableWorkflowExecutionResult(
+                project_id=project_id,
+                page_id=page_id,
+                status="transition_applied_event_published",
+                code="TRANSITION_APPLIED",
+                event_published=True,
+            ),
+            workflow_result=result,
+            canonical_event=result.events[0],
+        )
 
     def _execute_next_with_receipt(
         self, project_id: str, page_id: str
@@ -355,6 +414,7 @@ def _route_localfile_primary(
     execution_input: Mapping[str, Any],
     *,
     logical_output_asset_quality_gate: LogicalOutputAssetQualityGatePort | None = None,
+    evidence_linked_approval_gate: EvidenceLinkedApprovalGatePort | None = None,
 ) -> WorkflowResult:
     """Run one approved LocalFile primary command without a raw-save fallback."""
 
@@ -362,7 +422,13 @@ def _route_localfile_primary(
         engine,
         LocalFileDurablePageStore(repository),
         logical_output_asset_quality_gate=logical_output_asset_quality_gate,
-    )._execute_with_receipt(project_id, page_id, command, execution_input)
+    )._execute_with_receipt(
+        project_id,
+        page_id,
+        command,
+        execution_input,
+        evidence_linked_approval_gate=evidence_linked_approval_gate,
+    )
     if (
         receipt.outcome.status == "transition_applied_event_published"
         and receipt.workflow_result is not None
@@ -526,6 +592,36 @@ def _apply_execution_input(
     )
 
 
+def _prepare_execution_context(
+    snapshot: RevisionedProjectSnapshot,
+    context: WorkflowContext,
+    project_id: str,
+    page_id: str,
+    command: str,
+    execution_input: Mapping[str, Any],
+    evidence_linked_approval_gate: EvidenceLinkedApprovalGatePort | None,
+) -> tuple[WorkflowContext, EvidenceLinkedApprovalProofPort | None]:
+    if evidence_linked_approval_gate is None:
+        return _apply_execution_input(context, command, execution_input), None
+    approved_by, review_id = _validated_evidence_linked_approval_input(
+        command,
+        execution_input,
+        context,
+    )
+    proof = evidence_linked_approval_gate._prove_under_fence(
+        snapshot,
+        context,
+        project_id,
+        page_id,
+        review_id,
+    )
+    try:
+        return _apply_evidence_linked_approval_input(context, approved_by, review_id), proof
+    except Exception:
+        proof.release()
+        raise
+
+
 def _validate_page_design(values: dict[str, Any]) -> None:
     if set(values) != {"page_design"} or not isinstance(values["page_design"], Mapping):
         raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
@@ -561,6 +657,71 @@ def _validate_approved_by(values: dict[str, Any]) -> None:
     approved_by = values.get("approved_by")
     if set(values) != {"approved_by"} or not isinstance(approved_by, str) or not approved_by.strip():
         raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
+
+
+def _validated_evidence_linked_approval_input(
+    command: str,
+    execution_input: Mapping[str, Any],
+    context: WorkflowContext,
+) -> tuple[str, str]:
+    values = dict(execution_input)
+    approved_by = values.get("approved_by")
+    review_id = values.get("review_evidence_id")
+    if (
+        command != "approve"
+        or set(values) != {"approved_by", "review_evidence_id"}
+        or not _valid_bounded_reference(approved_by)
+        or not _valid_bounded_reference(review_id)
+        or "review_evidence_id" in context.metadata
+        or "_evidence_linked_approval_authority" in context.metadata
+    ):
+        raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
+    assert isinstance(approved_by, str)
+    assert isinstance(review_id, str)
+    return approved_by, review_id
+
+
+def _apply_evidence_linked_approval_input(
+    context: WorkflowContext,
+    approved_by: str,
+    review_id: str,
+) -> WorkflowContext:
+    return context.model_copy(
+        update={
+            "metadata": {
+                **deepcopy(context.metadata),
+                "approved_by": approved_by,
+                "review_evidence_id": review_id,
+                "_evidence_linked_approval_authority": _EvidenceLinkedApprovalAuthority(
+                    review_id
+                ),
+            }
+        },
+        deep=False,
+    )
+
+
+def _remove_evidence_linked_approval_input(
+    context: WorkflowContext,
+) -> WorkflowContext:
+    metadata = dict(context.metadata)
+    metadata.pop("review_evidence_id", None)
+    metadata.pop("_evidence_linked_approval_authority", None)
+    return context.model_copy(update={"metadata": metadata}, deep=False)
+
+
+def _valid_bounded_reference(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and 1 <= len(value) <= 200
+        and value == value.strip()
+        and not any(character.isspace() or ord(character) < 32 for character in value)
+        and not value.startswith(("/", "\\"))
+        and "/" not in value
+        and "\\" not in value
+        and "://" not in value
+        and "@" not in value
+    )
 
 
 def _page_number(page_id: str) -> int:
