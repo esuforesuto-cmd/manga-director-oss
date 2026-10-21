@@ -1,6 +1,11 @@
 # RFC-V7-007: Safe Local Approved Asset Download
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Design approved; V7-09 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #39 final head
+  `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at
+  `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24,
+  post-merge checks passed 13/13 with CodeQL 3/3, and independent review
+  reported P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-09 Safe Local Approved Asset Download
 - Delivery scope: docs-only design
@@ -431,8 +436,8 @@ no repair or recovery command.
 
 ## Public contract compatibility
 
-A separately approved implementation may add one loopback binary GET and one
-Web-only download control. All existing JSON DTOs and routes remain unchanged.
+The separately approved V7-09 implementation added one loopback binary GET and
+one Web-only download control. All existing JSON DTOs and routes remain unchanged.
 Public Python imports and exports remain unchanged.
 
 The design preserves CLI, MCP, SDK, Plugin, Repository, LocalFile, Provider,
@@ -448,10 +453,10 @@ separate authorization.
 
 ## Dependency, migration, and rollback policy
 
-This design authorizes no runtime or development dependency, optional extra,
-lockfile, package metadata, workflow configuration, or build change. A later
-implementation must use the existing HTTP/Web stack and existing PNG and
-exact-file validation.
+The completed V7-09 implementation used the existing HTTP/Web stack and
+existing PNG and exact-file validation, with no runtime or development
+dependency, optional extra, lockfile, package metadata, workflow configuration,
+or build change. Any future need for these is a scope expansion.
 
 No migration is required. Existing Projects, Pages, approvals, assets,
 registries, ledger bindings, generation evidence, and review behavior remain
@@ -478,7 +483,7 @@ This docs-only change requires:
 - independent read-only review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI, CodeQL, and post-merge verification.
 
-A separately approved implementation would additionally require:
+The separately approved V7-09 implementation additionally required:
 
 - an exact implementation allowlist established by read-only preflight;
 - positive Page -> approval -> V7-07 proof -> exact bytes correlation on
@@ -520,12 +525,12 @@ A separately approved implementation would additionally require:
 - independent read-only review with P0/P1/P2 classification, followed by CI,
   CodeQL, merge, and post-merge verification only when P0/P1 = 0.
 
-Those implementation checks are planning only and are not executed by this
-RFC.
+Executed results for the completed V7-09 implementation are summarized above
+and in `ROADMAP_V7.md`.
 
 ## Acceptance criteria
 
-The design is accepted when:
+The design was accepted when:
 
 1. V7-09 has exactly one responsibility: explicit local download of the exact
    approved Page PNG;
@@ -551,18 +556,18 @@ The design is accepted when:
    workflow, persistence, public-contract, dependency, schema, or I02 surface
    is added;
 11. the docs-only diff stays within the exact two-file allowlist; and
-12. independent review, required CI, CodeQL, and post-merge checks report no
-    blocking issue.
+12. independent review, required CI, CodeQL, and post-merge checks reported no
+    blocking issue for the completed V7-09 implementation (see evidence above).
 
 ## Authorization gate
 
-Approval of RFC-V7-007 authorizes only this docs-only design record and the
-matching V7-09 roadmap update. It does not authorize implementation, HTTP or
-Web changes, file download, asset access beyond existing V7-07 behavior,
-export, publication, approval changes, Page mutation, review persistence,
-Provider calls, live generation, I02, dependencies, `main`, versioning,
-release, tag, Settings, branch deletion, force push, or history
-rewriting.
+At acceptance, RFC-V7-007 authorized only this docs-only design record and the
+matching V7-09 roadmap update. The implementation was separately approved and
+completed as PR #39 (see evidence above); that authorization is exhausted. This
+RFC does not authorize follow-up implementation, publication, approval
+changes, Page mutation, review persistence beyond the completed scope, Provider
+calls, live generation, I02, dependencies, `main`, versioning, release, tag,
+Settings, branch deletion, force push, or history rewriting.
 
 Any future implementation requires a new exact allowlist, explicit
 implementation authorization, applicable security and compatibility review,

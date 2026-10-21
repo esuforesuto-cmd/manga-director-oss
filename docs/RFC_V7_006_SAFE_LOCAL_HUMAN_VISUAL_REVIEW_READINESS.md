@@ -1,6 +1,10 @@
 # RFC-V7-006: Safe Local Human Visual Review and Approval Readiness
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Design approved; V7-08 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #36 final head
+  `df2b6fdae559de9c5ca7e0a59dfc12fa2fad28cd` merged into `v7-dev` at
+  `ea45c7ef525198b2f77c236dced7742ee06857e1`; post-merge checks passed 13/13,
+  CodeQL passed 3/3, and independent review reported P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-08 Safe Local Human Visual Review and Approval Readiness
 - Delivery scope: docs-only design
@@ -132,7 +136,8 @@ V7-08 is a delivery adapter over those completed boundaries.
 
 ### Additive local route
 
-A separately approved implementation may add exactly one logical operation:
+The separately approved V7-08 implementation added exactly one logical
+operation:
 
 `POST /projects/{project_id}/pages/{page_number}/visual-review-readiness`
 
@@ -385,8 +390,9 @@ new submission does not modify or erase the prior transient result.
 
 ## Public contract compatibility
 
-A separately approved implementation may add one new loopback HTTP request and
-response DTO plus its Web-only form and client call. All existing JSON DTOs and
+The separately approved V7-08 implementation added one new loopback HTTP
+request and response DTO plus its Web-only form and client call. All existing
+JSON DTOs and
 routes remain unchanged. Public Python imports and exports remain unchanged.
 
 The design preserves CLI, MCP, SDK, Plugin, Repository, LocalFile, Provider,
@@ -413,7 +419,7 @@ This docs-only change requires:
 - independent review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI, CodeQL, and post-merge verification.
 
-A separately approved implementation would additionally require:
+The separately approved V7-08 implementation additionally required:
 
 - focused positive cases for `Generated` → `needs_review` and exact
   `QualityChecked` evidence plus acceptable judgment → `ready`;
@@ -440,12 +446,12 @@ A separately approved implementation would additionally require:
 - independent read-only review with P0/P1/P2 classification, followed by
   hosted CI, CodeQL, merge, and post-merge verification only when P0/P1 = 0.
 
-Those implementation checks are planning only and are not executed by this
-RFC.
+Executed results for the completed V7-08 implementation are summarized above
+and in `ROADMAP_V7.md`.
 
 ## Acceptance criteria
 
-The design is accepted when:
+The design was accepted when:
 
 1. V7-08 has exactly one bounded responsibility: transient local human visual
    judgment to advisory readiness for one existing Page;
@@ -467,17 +473,19 @@ The design is accepted when:
 9. existing routes, DTOs, public Python API, StateMachine, WorkflowEngine,
    schemas, dependencies, CORS, Provider, I02, v5, and v6 remain unchanged;
 10. the docs-only diff stays within the exact two-file allowlist; and
-11. independent review, required CI, CodeQL, and post-merge checks report no
-    blocking issue.
+11. independent review, required CI, CodeQL, and post-merge checks reported no
+    blocking issue for the completed V7-08 implementation (see evidence above).
 
 ## Authorization gate
 
-Approval of RFC-V7-006 authorizes only this docs-only design record and the
-matching V7-08 roadmap update. It does not authorize implementation, HTTP or
-Web changes, asset access beyond existing behavior, human-review persistence,
-quality execution, approval, Page mutation, Provider calls, live generation,
-I02, dependencies, `main`, versioning, release, tag, publication, Settings,
-branch deletion, force push, or history rewriting.
+At acceptance, RFC-V7-006 authorized only this docs-only design record and the
+matching V7-08 roadmap update. The implementation was separately approved and
+completed as PR #36 (see evidence above); that authorization is exhausted. This
+RFC does not authorize follow-up implementation, asset access beyond existing
+behavior, human-review persistence beyond the completed scope, quality
+execution, approval, Page mutation, Provider calls, live generation, I02,
+dependencies, `main`, versioning, release, tag, publication, Settings, branch
+deletion, force push, or history rewriting.
 
 Any future implementation requires a new exact allowlist, explicit
 implementation authorization, applicable security and compatibility review,

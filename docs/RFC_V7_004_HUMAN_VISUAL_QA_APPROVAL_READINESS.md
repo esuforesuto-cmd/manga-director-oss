@@ -1,6 +1,9 @@
 # RFC-V7-004: Human Visual QA and Approval Readiness
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Design approved; V7-06 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #31 merged into `v7-dev` at
+  `7c1d7d993e2c94dfd8c716ba7f6210c2b3117a42`; post-merge checks passed 13/13,
+  CodeQL passed 3/3, and independent review reported P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-06 Human Visual QA and Approval Readiness
 - Delivery scope: docs-only design
@@ -370,17 +373,17 @@ This docs-only change requires:
 - independent review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI and CodeQL checks for the final commit.
 
-A separately approved future implementation would additionally require
+A separately approved V7-06 implementation additionally required
 focused deterministic fixtures for every status and precedence rule,
 generation/asset binding regressions, StateMachine and explicit-approval
 regressions, LocalFile path-safety checks, public-contract tests, full
 applicable regression, lint, type-check, security/audit, and package gates.
-Those implementation checks are planning only and are not executed by this
-RFC.
+Executed results for the completed V7-06 implementation are summarized above
+and in `ROADMAP_V7.md`.
 
 ## Acceptance criteria
 
-The design is accepted when:
+The design was accepted when:
 
 1. the evidence flow is explicitly generation evidence → Visual QA → human
    judgment → approval readiness;
@@ -395,16 +398,18 @@ The design is accepted when:
 7. I02 remains independent and no public API, persistence, dependency,
    Provider, or compatibility change is authorized;
 8. the docs-only diff stays within the exact two-file allowlist; and
-9. independent review, required CI, CodeQL, and post-merge checks report no
-   blocking issue.
+9. independent review, required CI, CodeQL, and post-merge checks reported no
+   blocking issue for the completed V7-06 implementation (see evidence above).
 
 ## Authorization gate
 
-Approval of RFC-V7-004 authorizes only this docs-only design record and the
-matching V7-06 roadmap update. It does not authorize implementation, image or
-asset access, live generation, Project or Page mutation, approval execution,
-I02, dependencies, `main`, versioning, release, tag, publication, Settings,
-branch deletion, force push, or history rewriting.
+At acceptance, RFC-V7-004 authorized only this docs-only design record and the
+matching V7-06 roadmap update. The V7-06 implementation was separately
+approved and completed as PR #31 (see evidence above); that authorization is
+exhausted. This RFC does not authorize follow-up implementation, live
+generation, Project or Page mutation, approval execution, I02, dependencies,
+`main`, versioning, release, tag, publication, Settings, branch deletion,
+force push, or history rewriting.
 
 Any future implementation requires a new exact allowlist, explicit
 implementation authorization, applicable security and compatibility review,

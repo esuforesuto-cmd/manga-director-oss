@@ -1,11 +1,15 @@
 # RFC-V7-003: ComfyUI Local Provider Delivery
 
-- Status: Design frozen; implementation not authorized
+- Status: Design frozen; V7-04 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #26 merged into `v7-dev` at
+  `abd5a21a2597cb51286b666b23298b5f47450094`; post-merge CI run #95 passed
+  10/10 jobs, CodeQL run #19 passed 3/3 jobs, and independent review reported
+  P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Related roadmap item: V7-04 ComfyUI Local Provider
 - Reference Provider: local ComfyUI server
 - Default endpoint: `http://127.0.0.1:8188`
-- Delivery boundary: CLI-only explicit opt-in candidate
+- Delivery boundary: CLI-only explicit opt-in with `--real-provider comfyui`
 
 ## Decision boundary
 
@@ -14,16 +18,18 @@ RFC freezes the smallest safe architecture for applying the Provider-neutral
 LocalFile durable real-generation boundary completed by V7-03 to a second
 reference Provider: a local ComfyUI server.
 
-This RFC and its matching roadmap update are design documents only. They do
-not authorize implementation, a live ComfyUI request, a CLI change, a
+Acceptance of this RFC and its matching roadmap update records the frozen
+design only. The V7-04 implementation was separately approved and completed
+under PR #26 (see evidence above); that authorization is exhausted. This RFC
+does not authorize follow-up implementation, a live ComfyUI request, a CLI or
 dependency change, versioning, release, tag, publication, repository settings,
 branch deletion, force push, or a change to `main`. Any later implementation
 requires a separately approved exact allowlist and validation plan.
 
-I02 remains completely independent and outside this RFC. V7-04 must not use
-I02 authority, imports, persistence, contracts, or implementation. If a later
-implementation cannot proceed without I02, V7-04 is `BLOCKED` pending separate
-approval; its scope must not be widened silently.
+I02 remains completely independent and outside this RFC. The completed V7-04
+implementation did not use I02 authority, imports, persistence, contracts, or
+implementation. Any future scope that requires I02 remains blocked pending
+separate approval and must not be widened silently.
 
 ## Problem
 
@@ -155,10 +161,10 @@ fallback or bypass durable admission, authorization, validation, or recovery.
 
 ### CLI-only explicit opt-in
 
-The candidate first slice uses an explicit CLI selection equivalent to
+The completed first slice uses an explicit CLI selection equivalent to
 `--real-provider comfyui` together with non-empty human authorization
-evidence for the specific attempt. The exact CLI change is not authorized by
-this RFC.
+evidence for the specific attempt. That CLI change was separately approved and
+implemented within V7-04; this RFC alone does not authorize further CLI changes.
 
 `mock` remains the default. OpenAI V7-03 behavior remains unchanged. Starting,
 opening, installing, or upgrading Manga Director must not discover or invoke
@@ -306,8 +312,8 @@ filesystem names and paths never become LocalFile asset paths.
 
 ## Public contract compatibility
 
-RFC acceptance changes no public contract. A later implementation must be
-additive, private to the approved composition boundary, and preserve:
+RFC acceptance changes no public contract. The completed V7-04 implementation
+was additive, private to the approved composition boundary, and preserved:
 
 - v5/v6 Python imports, call forms, return shapes, and exception behavior;
 - existing CLI commands and defaults except the separately approved explicit
@@ -326,17 +332,17 @@ additive, private to the approved composition boundary, and preserve:
 - all v5/v6/public compatibility guarantees.
 
 No private type or V7-04 implementation detail becomes public merely because
-this RFC names its responsibility. Any necessary public-contract,
-StateMachine, LocalFile-schema, default, HTTP, Web, MCP, OpenAI, or I02 change
-is a scope expansion and blocks V7-04 pending separate approval.
+this RFC names its responsibility. Any future public-contract, StateMachine,
+LocalFile-schema, default, HTTP, Web, MCP, OpenAI, or I02 change is a scope
+expansion requiring separate approval.
 
 ## Dependency and packaging policy
 
-A future implementation must prefer the Python standard library or already
-declared runtime dependencies. This RFC authorizes no new dependency,
-optional extra, lockfile, package metadata, or build change. If a new
-dependency is proven necessary, it requires a separate bounded scope,
-dependency and license review, and explicit approval.
+The completed V7-04 implementation used the Python standard library or already
+declared runtime dependencies. This RFC records no new dependency, optional
+extra, lockfile, package metadata, or build change. Any future need for a new
+dependency requires a separate bounded scope, dependency and license review,
+and explicit approval.
 
 ComfyUI, custom nodes, models, and checkpoints remain independently installed
 local software and data. Manga Director must not vendor, copy, redistribute,
@@ -391,7 +397,7 @@ before writing that state.
 
 ## Validation plan
 
-This docs-only design change requires:
+The original docs-only design change required:
 
 - exact changed-file review proving only this RFC and `docs/ROADMAP_V7.md`
   changed;
@@ -399,9 +405,11 @@ This docs-only design change requires:
 - `git diff --check`;
 - proof that no code, dependency, lockfile, package metadata, version, or
   release file changed; and
-- independent read-only review with P0 = 0 and P1 = 0 before merge.
+- independent read-only review with P0 = 0 and P1 = 0 before merge; the
+  completed implementation's review and post-merge evidence are recorded above.
 
-A later implementation must add executed evidence for:
+The completed implementation was additionally validated against these
+execution requirements:
 
 - exact approved implementation allowlist and `git diff --check`;
 - unchanged default mock, legacy stub, OpenAI V7-03, and no-network behavior;
@@ -431,14 +439,14 @@ A later implementation must add executed evidence for:
 
 ## Acceptance criteria
 
-This RFC is accepted when reviewers confirm that it:
+This RFC was accepted when reviewers confirmed that it:
 
-- applies the V7-03 Provider-neutral LocalFile durable boundary to local
-  ComfyUI as a second reference Provider without implementation;
+- records the V7-03 Provider-neutral LocalFile durable boundary applied to
+  local ComfyUI as a second reference Provider by the completed implementation;
 - keeps the legacy `ComfyUIImageGenerator` as a deterministic non-network
   stub and keeps `mock` as the default;
-- defines CLI-only explicit opt-in and durable human authorization as future
-  first-slice prerequisites;
+- records CLI-only explicit opt-in and durable human authorization evidence
+  used by the completed first slice;
 - restricts transport to validated loopback-only HTTP with no remote, LAN,
   DNS, proxy, redirect, wildcard, credential, or cloud surface;
 - freezes a Manga Director-owned, fixed, core-node-only workflow graph and
@@ -457,13 +465,16 @@ This RFC is accepted when reviewers confirm that it:
 - preserves StateMachine, `WorkflowEngine`, storyboard, quality, approval,
   LocalFile, OpenAI V7-03, and public compatibility boundaries;
 - remains completely independent of I02; and
-- explicitly authorizes no implementation, live call, release, tag,
-  publication, Settings, force push, branch deletion, or `main` change.
+- records that the separately approved V7-04 implementation is complete and
+  authorizes no follow-up implementation, live call, release, tag, publication,
+  Settings, force push, branch deletion, or `main` change.
 
 ## Authorization gate
 
-Acceptance of this RFC completes the V7-04 Design Freeze only. It does not
-authorize V7-04 implementation or a live ComfyUI call. Before implementation,
-a separate proposal must identify the exact file allowlist, concrete private
-types, test changes, dependency result, security cases, migration result, and
-executed quality gates, and must receive explicit approval.
+Acceptance of this RFC completed the V7-04 Design Freeze. The implementation
+was separately approved and completed by PR #26 (see evidence above); that
+authorization is exhausted and does not authorize follow-up implementation or
+a live ComfyUI call. Any future scope requires a separate proposal with a
+revalidated exact allowlist, concrete private types, test changes, dependency
+result, security cases, migration result, and executed quality gates, followed
+by explicit approval.

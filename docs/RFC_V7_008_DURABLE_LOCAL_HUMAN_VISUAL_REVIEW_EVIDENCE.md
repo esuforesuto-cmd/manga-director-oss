@@ -1,6 +1,11 @@
 # RFC-V7-008: Durable Local Human Visual Review Evidence
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Design approved; V7-10 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #42 final head
+  `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` merged into `v7-dev` at
+  `3c83a067ece1a1b3d45f89d4816ffb47153f81d8`; full pytest passed (3,190 passed,
+  20 skipped); PR and post-merge checks each passed 10/10 with CodeQL 3/3; and
+  independent review reported P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-10 Durable Local Human Visual Review Evidence
 - Delivery scope: docs-only design
@@ -149,7 +154,8 @@ Every required authority must agree during the same request.
 
 ### Explicit local record operation
 
-A separately approved implementation may add exactly one logical operation:
+The separately approved V7-10 implementation added exactly one logical
+operation:
 
 `POST /projects/{project_id}/pages/{page_number}/visual-review-evidence`
 
@@ -472,8 +478,8 @@ migration design; V7-10 does not repair them.
 
 ## Public contract compatibility
 
-A separately approved implementation may add one loopback-only POST, one
-closed request/response pair, one private Application capability, one private
+The separately approved V7-10 implementation added one loopback-only POST,
+one closed request/response pair, one private Application capability, one private
 production evidence owner, and one explicit Web control. Existing routes and
 JSON DTOs remain unchanged.
 
@@ -493,11 +499,12 @@ schema, LocalFile contract, StateMachine, WorkflowEngine, approval behavior,
 V7-09 eligibility, dependency, remote surface, Provider, or I02 authority is a
 scope expansion and must stop.
 
-## Candidate implementation allowlist
+## Historical candidate implementation allowlist
 
-This design identifies the following smallest candidate set for a future
-implementation. It is planning evidence only and is not implementation
-authorization:
+This design identified the following candidate set for implementation
+planning. The completed V7-10 implementation was separately approved against
+the exact fourteen-file allowlist recorded in `ROADMAP_V7.md`; the historical
+candidate list below does not replace that approved allowlist:
 
 1. `src/manga_director/production/next_generation_durable_human_visual_review_evidence.py` (new)
 2. `src/manga_director/application/human_visual_review_evidence.py` (new)
@@ -521,8 +528,9 @@ because the existing V7-08 form placement and visibility rules are sufficient.
 exports, StateMachine, WorkflowEngine, approval, and V7-09 files are also
 excluded.
 
-The candidate must be rechecked and explicitly approved as an exact allowlist
-before implementation. A sixteenth file is a scope expansion.
+The completed V7-10 package was rechecked and approved against its exact
+fourteen-file implementation allowlist before work. Any future scope change
+requires a newly reviewed and explicitly approved allowlist.
 
 ## Validation plan
 
@@ -539,7 +547,7 @@ This docs-only design requires:
 - independent read-only review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI, CodeQL, and post-merge verification.
 
-A separately approved implementation would additionally require:
+The separately approved implementation additionally required:
 
 - focused positive cases for `Generated` historical `needs_review` and
   `QualityChecked` `ready`, `needs_review`, and human/QA-derived `blocked`;
@@ -579,12 +587,12 @@ A separately approved implementation would additionally require:
 - independent read-only review with P0/P1/P2 classification, followed by
   hosted CI, CodeQL, merge, and post-merge verification only when P0/P1 = 0.
 
-Those implementation checks are planning only and are not executed by this
-RFC.
+This RFC is a design record; executed implementation results are summarized
+above and in `ROADMAP_V7.md`.
 
 ## Acceptance criteria
 
-The design is accepted when:
+The design was accepted when:
 
 1. V7-10 has one responsibility: explicit immutable local human visual review
    evidence for one exact existing Page output;
@@ -605,8 +613,8 @@ The design is accepted when:
    API, CLI, MCP, SDK, Plugin, Provider, dependencies, I02, v5, and v6 remain
    unchanged;
 10. the docs-only diff stays within the exact two-file allowlist; and
-11. independent review, required CI, CodeQL, and post-merge checks report no
-   blocking issue.
+11. independent review, required CI, CodeQL, and post-merge checks reported no
+    blocking issue for the completed V7-10 implementation (see evidence above).
 
 ## STOP conditions
 
@@ -629,13 +637,14 @@ Design or future implementation must stop on any of the following:
 
 ## Authorization gate
 
-Approval of RFC-V7-008 authorizes only this docs-only design record and the
-matching V7-10 roadmap entry. It does not authorize implementation, HTTP or
-Web changes, sidecar creation, database or directory creation, human-review
-persistence, asset access beyond existing behavior, Page mutation, quality,
-approval, workflow transitions, Provider calls, generation, I02, dependencies,
-`main`, versioning, release, tag, publication, Settings, branch deletion,
-force push, or history rewriting.
+At acceptance, RFC-V7-008 authorized only this docs-only design record and the
+matching V7-10 roadmap entry. The implementation was separately approved and
+completed as PR #42 (see evidence above); that authorization is exhausted. This
+RFC does not authorize follow-up implementation, sidecar or data-format changes,
+asset access beyond the completed scope, Page mutation, approval or workflow
+changes, Provider calls, generation, I02, dependencies, `main`, versioning,
+release, tag, publication, Settings, branch deletion, force push, or history
+rewriting.
 
 Any future implementation requires explicit approval of a revalidated exact
 allowlist, the new private sidecar schema, the additive loopback POST, and the
