@@ -1,6 +1,10 @@
 # RFC-V7-005: Safe Local Generated Asset Presentation
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Design approved; V7-07 implementation complete and verified on `v7-dev`
+- Implementation evidence: PR #33 final head `d470dc4ddc5be9a33428fc39a9979262fc5578ba`
+  merged into `v7-dev` at `9aad271fd8ff66d7516e2f066f55d2a0d62d4fbf`; post-merge
+  checks passed 13/13, CodeQL passed 3/3, and independent review reported
+  P0/P1/P2 = 0/0/0.
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-07 Safe Local Generated Asset Presentation
 - Delivery scope: docs-only design
@@ -225,8 +229,9 @@ V7-06 readiness result, or `Approved`.
 
 ### LocalDurableAssetOwner read authority
 
-The future implementation must add or compose a narrowly private, read-only
-presentation capability around the existing `LocalDurableAssetOwner`. The HTTP
+The completed V7-07 implementation added or composed a narrowly private,
+read-only presentation capability around the existing `LocalDurableAssetOwner`.
+The HTTP
 adapter must not inspect SQLite, construct a storage path, or open a file
 itself. It delegates to the private Application read service, which coordinates
 the existing authorities without reimplementing their validation.
@@ -360,9 +365,9 @@ request. This RFC creates no repair or recovery command.
 
 ## Public contract compatibility
 
-This docs-only design changes no current contract. A later implementation is
-limited to the explicitly bounded additive loopback binary `GET` and private
-presentation composition. It must preserve:
+This docs-only design changes no current contract. The completed V7-07
+implementation was limited to the explicitly bounded additive loopback binary
+`GET` and private presentation composition. It preserved:
 
 - all current Python imports, exports, signatures, return shapes, and exception
   behavior;
@@ -381,18 +386,20 @@ presentation composition. It must preserve:
 - v5/v6 compatibility and the unchanged `main` LTS line.
 
 No existing endpoint changes meaning, and no new Python, CLI, MCP, SDK, Plugin,
-or remote public API is authorized. If the presentation cannot be implemented
-without a persistence migration, dependency, public export, existing DTO
-change, StateMachine change, WorkflowEngine change, Provider change, or I02,
-V7-07 is blocked pending a separate decision.
+or remote public API was authorized. At design time, V7-07 was blocked pending
+a separate implementation decision. The bounded implementation was
+subsequently approved and completed by PR #33 (see evidence above). Any future
+scope requiring a persistence migration, dependency, public export, existing
+DTO change, StateMachine change, WorkflowEngine change, Provider change, or I02
+still requires a separate decision.
 
 ## Dependency, migration, and rollback policy
 
-This design authorizes no runtime or development dependency, optional extra,
-lockfile, package metadata, or build change. A later implementation must use
-the standard library and already-declared local HTTP/Web capabilities. A need
-for a new image decoder, database package, transport client, or other
-dependency is a scope expansion.
+The completed V7-07 implementation used the standard library and
+already-declared local HTTP/Web capabilities, with no runtime or development
+dependency, optional extra, lockfile, package metadata, or build change. Any
+future need for a new image decoder, database package, transport client, or
+other dependency is a scope expansion.
 
 No migration is required. Existing Projects, Pages, generated artifacts,
 owner registries, generation evidence, review evidence, and approvals remain
@@ -418,7 +425,7 @@ This docs-only design change requires:
 - independent read-only review with P0 = 0 and P1 = 0 before merge; and
 - required hosted CI and CodeQL checks for the final commit.
 
-A separately approved future implementation would additionally require:
+The separately approved V7-07 implementation additionally required:
 
 - an exact implementation allowlist before modification;
 - positive tests proving Page → durable binding → registry → exact-byte
@@ -443,9 +450,12 @@ A separately approved future implementation would additionally require:
 - final independent review, CI, CodeQL, exact allowlist, and
   `git diff --check` evidence.
 
+Executed results for the completed V7-07 implementation are summarized above
+and in `ROADMAP_V7.md`.
+
 ## Acceptance criteria
 
-The design is accepted when reviewers confirm that it:
+The design was accepted when reviewers confirmed that it:
 
 1. presents only the exact registered PNG bound to one existing Page;
 2. accepts only Project and Page identity and forbids caller-supplied asset,
@@ -468,16 +478,18 @@ The design is accepted when reviewers confirm that it:
    persistence, migration, existing public-contract, version, release, or
    `main` change;
 10. stays within the exact two-file docs allowlist; and
-11. passes independent review, required CI, CodeQL, and post-merge checks with
-    no P0 or P1 finding.
+11. independent review, required CI, CodeQL, and post-merge checks reported no
+    P0 or P1 finding for the completed V7-07 implementation (see evidence above).
 
 ## Authorization gate
 
-Approval of RFC-V7-005 authorizes only this docs-only design record and the
-matching V7-07 roadmap update. It does not authorize implementation, asset
-access, Web rendering, live generation, Provider use, Project or Page mutation,
-review persistence, approval, I02, dependencies, `main`, versioning, release,
-tag, publication, Settings, branch deletion, force push, or history rewriting.
+At acceptance, RFC-V7-005 authorized only this docs-only design record and the
+matching V7-07 roadmap update. The implementation was separately approved and
+completed as PR #33 (see evidence above); that authorization is exhausted. This
+RFC does not authorize follow-up implementation, live generation, Provider
+use, Project or Page mutation, review persistence beyond the completed scope,
+approval, I02, dependencies, `main`, versioning, release, tag, publication,
+Settings, branch deletion, force push, or history rewriting.
 
 Any future implementation requires a new exact allowlist, explicit
 implementation authorization, applicable security and compatibility review,

@@ -1,26 +1,29 @@
 # RFC-V7-002: Provider-Neutral Real Image Delivery
 
-- Status: Accepted design; bounded V7-03 implementation explicitly approved
+- Status: Accepted design; bounded V7-03 implementation complete and verified
 - Target line: v7.0 Discovery (Post-LTS)
 - Related roadmap item: V7-03 Provider-Neutral Real Image Delivery
 - Reference Provider: OpenAI
 - Implementation branch: `feat/v7-03-real-image-delivery`
-- Local validation: PASS; pull-request CI and merge evidence pending
+- Implementation evidence: PR #23 merged into `v7-dev` at
+  `b688abb88bf07e7508a806c48f86c27b6e41fa5b`; CI run #82 passed 10/10 required
+  jobs; independent review reported P0/P1/P2 = 0/0/0.
 
 ## Decision boundary
 
 The `6.0.x` line remains LTS, and `main` remains the LTS stability line. This
 RFC freezes the design for the explicitly authorized V7-03 implementation on
-`v7-dev`. The implementation is limited to the approved ten-file allowlist and
-the CLI opt-in described below. It does not change the installed version,
+`v7-dev`. The completed implementation stayed within the approved ten-file
+allowlist and the CLI opt-in described below. It did not change the installed version,
 authorize I02, or authorize a merge to `main`, release, tag, package
 publication, or other deployment or distribution action.
 
 The approved documentation change records the smallest safe path from the
 existing mock generation behavior to one real generated image. That bounded
 implementation received separate approval for the branch
-`feat/v7-03-real-image-delivery`; merge remains conditional on the executed
-validation and review gates in this RFC.
+`feat/v7-03-real-image-delivery` and was merged after the required validation
+and review gates passed (see completion evidence above). Its authorization is
+exhausted; this RFC does not authorize follow-up implementation.
 
 ## Problem
 
@@ -82,8 +85,9 @@ V7-03 does not include:
 
 ### Provider-neutral boundary
 
-The future implementation must introduce or expose one narrow real-generation
-port at the existing durable generation composition boundary. The workflow
+The completed V7-03 implementation introduced or exposed one narrow
+real-generation port at the existing durable generation composition boundary.
+The workflow
 supplies an admitted, immutable request and receives a durable result; it must
 not import an OpenAI SDK type, construct a Provider in a read path, or encode
 Provider-specific state transitions.
@@ -210,8 +214,8 @@ Tests and default workflows must run without credentials or external network.
 
 ## Affected public contracts
 
-RFC acceptance changes no public contract. A later V7-03 implementation must
-be additive and must preserve:
+RFC acceptance changes no public contract. The completed V7-03 implementation
+was additive and preserved:
 
 - v5/v6 Python imports, call forms, return shapes, and exception behavior;
 - CLI commands, arguments, defaults, and exit semantics;
@@ -318,7 +322,7 @@ format is written.
 
 ## Validation plan
 
-The approved implementation must provide executed evidence for:
+The approved implementation provided executed evidence for:
 
 - exact changed-file allowlist review and `git diff --check`;
 - default mock behavior with no credential and no external network;
@@ -348,9 +352,10 @@ The approved implementation must provide executed evidence for:
   dependency change;
 - package and public-contract verification if package contents are affected.
 
-The implementation must remain within its exact ten-file allowlist and pass
-the applicable local, CI, security, package, compatibility, and independent
-read-only review gates with P0 = 0 and P1 = 0 before merge to `v7-dev`.
+The completed implementation remained within its exact ten-file allowlist and
+passed the applicable local, CI, security, package, compatibility, and
+independent read-only review gates before merge to `v7-dev` (see completion
+evidence above).
 
 ## Documentation impact
 
@@ -360,7 +365,7 @@ guides, version metadata, and publication material remain outside this RFC.
 
 ## Acceptance criteria
 
-This RFC is accepted when reviewers confirm that it:
+This RFC was accepted when reviewers confirmed that it:
 
 - selects OpenAI only as the first reference Provider while keeping the
   boundary Provider-neutral;
@@ -380,5 +385,6 @@ This RFC is accepted when reviewers confirm that it:
 - remains independent of I02 and changes no public contract by acceptance;
 - defines compatibility, rollback, security, and executable validation gates;
   and
-- authorizes no implementation, release, version, tag, publication, Settings,
-  branch deletion, force push, or `main` change.
+- records the completed, separately approved V7-03 implementation and does not
+  authorize follow-up implementation, release, version, tag, publication,
+  Settings, branch deletion, force push, or `main` change.

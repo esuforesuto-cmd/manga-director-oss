@@ -4,7 +4,10 @@
 - Target line: v7.0 Discovery (Post-LTS)
 - Related roadmap items: V7-01 Workflow HTTP Adapter and V7-02 Real Local
   Delivery End-to-End Gate
-- Implementation evidence: PR #17 merged into `v7-dev`
+- Implementation evidence: PR #17 merged into `v7-dev` at
+  `097a80d786f494063492eaa871deef6bbf5ab169`; required Python, Windows, Web,
+  security, package, compatibility, and documentation checks passed; independent
+  review reported P0/P1 = 0.
 
 ## Decision boundary
 
@@ -175,7 +178,7 @@ local product objective.
 ## Migration and rollback
 
 No v6 data, public API, or package migration is authorized by this RFC. A
-future implementation must be additive and optional. Existing CLI, MCP, Python,
+completed implementation was additive and optional. Existing CLI, MCP, Python,
 and repository workflows remain the default compatible paths.
 
 Before release, rollback consists of disabling or removing the optional HTTP
@@ -187,7 +190,7 @@ forward and reverse steps.
 
 ## Validation plan
 
-A V7-01 implementation proposal must provide executed evidence for:
+The V7-01 implementation proposal required executed evidence for:
 
 - exact transition-table and invalid-transition regression tests;
 - one-Page execution and `QualityChecked` approval-gate tests;
@@ -207,8 +210,9 @@ A V7-01 implementation proposal must provide executed evidence for:
 - `git diff --check` and exact changed-file review against the authorized
   implementation allowlist.
 
-PR #17 may be used as candidate evidence for these checks. Its evidence must be
-revalidated against the authorized v7 base and scope before any merge decision.
+These checks were revalidated against the authorized v7 base and scope before
+merge. PR #17 is the completed V7-01 implementation evidence on `v7-dev`; it is
+not unmerged candidate evidence, and no merge to `main` was authorized.
 
 ## V7-02 verification continuation
 
@@ -278,7 +282,7 @@ RFC and require separate authorization.
 
 ## Acceptance criteria
 
-This RFC may be accepted when reviewers confirm that it:
+This RFC was accepted when reviewers confirmed that it:
 
 - keeps `6.0.x` and `main` as the LTS stability line;
 - defines v7.0 Discovery as a compatible Post-LTS development line;
@@ -286,4 +290,5 @@ This RFC may be accepted when reviewers confirm that it:
 - preserves all workflow, compatibility, Provider, MCP/CLI, and LocalFile
   authorities listed above;
 - contains no authorization for I02, release, versioning, or publication; and
-- treats PR #17 only as unmerged candidate evidence for V7-01.
+- records PR #17 as the completed V7-01 implementation on `v7-dev` without
+  implying a merge to `main`.
