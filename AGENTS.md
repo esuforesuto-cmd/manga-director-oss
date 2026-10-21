@@ -17,3 +17,5 @@ push、PR作成、merge、branch削除、force push、rulesetやGitHub設定変�
 Workや別スレッドを作成しただけでは「実行中」と扱わない。実際に処理開始を確認してから実行中、結果が出てから完了と報告する。
 
 安全なread-only調査・レビューは積極的に進める。危険操作の直前だけユーザー確認で停止する。
+
+製品方針、ブランド候補、収益化、Provider/LLM、端末優先度、生成節約、Human Approval、成人向けPrivate Validation、Codexモデル運用の正式な長期方針は `docs/PRODUCT_PRINCIPLES.md` を参照する。この文書は現行ロードマップ、凍結RFC、v6 LTS、承認ゲートを上書きせず、明示承認なしにrename、商標出願・外部送信、ロードマップ変更、実装開始を行わない。
