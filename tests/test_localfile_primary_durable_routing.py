@@ -127,6 +127,19 @@ def _agents() -> dict[PageState, RecordingAgent]:
     return {state: RecordingAgent(state) for state in list(PageState)[1:]}
 
 
+def _advance_to_quality_checked(
+    engine: WorkflowEngine, repository: LocalFileRepository
+) -> None:
+    coordinator = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=lambda _project, _page: CountingFence(),
+    )
+    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
+        outcome = coordinator.execute("routing-demo", "1", command)
+        assert outcome.status == "transition_applied_event_published"
+
+
 def test_localfile_route_applies_every_primary_command_with_exact_published_event(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     bus = MemoryEventBus()
@@ -398,8 +411,7 @@ def test_evidence_linked_approval_holds_proof_through_commit_and_releases_before
     agents: dict[PageState, Any] = _agents()
     agents[PageState.APPROVED] = ApprovalAgent()
     engine = _engine(MemoryEventBus(), agents)
-    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
-        _route_localfile_primary(engine, repository, "routing-demo", "1", command, {})
+    _advance_to_quality_checked(engine, repository)
     order: list[str] = []
     fence = _OrderedFence(order)
     gate = _EvidenceGate(order)
@@ -443,22 +455,25 @@ def test_generic_durable_approval_cannot_forge_review_evidence_reference(
     repository = _repository(tmp_path)
     agents = _agents()
     engine = _engine(MemoryEventBus(), agents)
-    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
-        _route_localfile_primary(engine, repository, "routing-demo", "1", command, {})
+    _advance_to_quality_checked(engine, repository)
+    coordinator = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=lambda _project, _page: CountingFence(),
+    )
 
-    with pytest.raises(_DurableRoutingError):
-        _route_localfile_primary(
-            engine,
-            repository,
-            "routing-demo",
-            "1",
-            "approve",
-            {
-                "approved_by": "editor:local",
-                "review_evidence_id": "review:forged",
-            },
-        )
+    receipt = coordinator._execute_with_receipt(
+        "routing-demo",
+        "1",
+        "approve",
+        {
+            "approved_by": "editor:local",
+            "review_evidence_id": "review:forged",
+        },
+    )
 
+    assert receipt.outcome.status == "transition_not_applied"
+    assert receipt.outcome.code == "DURABLE_EXECUTION_FAILED"
     assert repository.load("routing-demo").page(1).state is PageState.QUALITY_CHECKED
 
 
@@ -467,10 +482,7 @@ def test_linked_proof_is_released_after_post_commit_event_failure_without_compen
 ) -> None:
     repository = _repository(tmp_path)
     setup_engine = _engine(MemoryEventBus(), _agents())
-    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
-        _route_localfile_primary(
-            setup_engine, repository, "routing-demo", "1", command, {}
-        )
+    _advance_to_quality_checked(setup_engine, repository)
     order: list[str] = []
     fence = _OrderedFence(order)
     gate = _EvidenceGate(order)
