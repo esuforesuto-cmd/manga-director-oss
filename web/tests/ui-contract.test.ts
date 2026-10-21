@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import type { PageState } from "@/lib/api/types";
@@ -136,5 +138,21 @@ describe("UI workflow contract", () => {
       state: "Approved" as PageState,
       artifacts: { image: { path: "C:/private/image.png" } }
     })).toBe(false);
+  });
+
+  it("offers linked approval only for one explicitly displayed ready QualityChecked record", () => {
+    const source = readFileSync(
+      new URL("../components/human-visual-review-evidence-history.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain('pageState === "QualityChecked"');
+    expect(source).toContain('record.pageState === "QualityChecked"');
+    expect(source).toContain('record.status === "ready"');
+    expect(source).toContain("record.ready");
+    expect(source).toContain("record.findings.length === 0");
+    expect(source).toContain("record.missingPrerequisites.length === 0");
+    expect(source).toContain("setSelectedReviewId(record.reviewId)");
+    expect(source).not.toContain("setApprovedBy(record.reviewerId)");
   });
 });

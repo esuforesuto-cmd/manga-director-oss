@@ -76,8 +76,14 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   expect(await reviewEvidenceCount()).toBe(1);
   expect(await reviewEvidenceHistoryReadCount()).toBe(2);
 
-  await page.getByLabel("Approved by").fill("editor:local");
-  await page.getByRole("button", { name: "Approve page" }).click();
+  await expect(page.getByRole("heading", { name: "Human approval" })).toBeVisible();
+  const refreshedHistory = page.getByRole("region", { name: "Human visual review evidence history" });
+  await refreshedHistory.getByRole("button", { name: "Show review evidence history" }).click();
+  await refreshedHistory.getByRole("button", { name: "Link this review to approval" }).click();
+  const linkedApproval = page.getByRole("form", { name: "Evidence-linked approval" });
+  await expect(linkedApproval.getByLabel("Approved by")).toHaveValue("");
+  await linkedApproval.getByLabel("Approved by").fill("editor:local");
+  await linkedApproval.getByRole("button", { name: "Approve with this review" }).click();
   const downloadLink = page.getByRole("link", { name: "Download approved PNG" });
   await expect(downloadLink).toBeVisible();
   await expect(downloadLink).toHaveAttribute(
@@ -89,7 +95,12 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   await approvedHistory.getByRole("button", { name: "Show review evidence history" }).click();
   await expect(approvedHistory.getByText("Advisory status: ready")).toBeVisible();
   await expect(page.getByLabel("Approved by")).toHaveCount(0);
-  expect(await reviewEvidenceHistoryReadCount()).toBe(3);
+  expect(await reviewEvidenceHistoryReadCount()).toBe(4);
+  const approvedPage = await request.get("http://127.0.0.1:4010/projects/demo/pages/1");
+  expect((await approvedPage.json()).artifacts.approval).toEqual({
+    approved_by: "editor:local",
+    review_evidence_id: "review:demo:001"
+  });
   const downloadPromise = page.waitForEvent("download");
   await downloadLink.click();
   const download = await downloadPromise;

@@ -18,6 +18,10 @@ from manga_director.application.approved_asset_download import (
     ApprovedAssetDownloadUnavailable,
     approved_asset_download_for,
 )
+from manga_director.application.evidence_linked_approval import (
+    EvidenceLinkedApprovalUnavailable,
+    evidence_linked_approval_for,
+)
 from manga_director.application.generated_asset_presentation import (
     GeneratedAssetPresentationUnavailable,
     generated_asset_presentation_for,
@@ -76,9 +80,11 @@ _VISUAL_REVIEW_HEADERS = {
 }
 _VISUAL_REVIEW_SUFFIX = "/visual-review-readiness"
 _VISUAL_REVIEW_EVIDENCE_SUFFIX = "/visual-review-evidence"
+_EVIDENCE_LINKED_APPROVAL_SUFFIX = "/evidence-linked-approval"
 _VISUAL_REVIEW_SUFFIXES = (
     _VISUAL_REVIEW_SUFFIX,
     _VISUAL_REVIEW_EVIDENCE_SUFFIX,
+    _EVIDENCE_LINKED_APPROVAL_SUFFIX,
 )
 _VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
 _VISUAL_REVIEW_HISTORY_MAX_RESPONSE_BYTES = 1_048_576
@@ -223,6 +229,26 @@ class CreateProjectRequest(_HttpModel):
 class PageActionRequest(_HttpModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     approved_by: str | None = Field(default=None, min_length=1, alias="approvedBy")
+
+
+class EvidenceLinkedApprovalRequest(_ClosedHttpRequestModel):
+    approved_by: str = Field(min_length=1, max_length=200, alias="approvedBy")
+    review_id: str = Field(min_length=1, max_length=200, alias="reviewId")
+
+    @field_validator("approved_by", "review_id")
+    @classmethod
+    def _validate_reference(cls, value: str) -> str:
+        if (
+            value != value.strip()
+            or any(character.isspace() or ord(character) < 32 for character in value)
+            or value.startswith(("/", "\\"))
+            or "/" in value
+            or "\\" in value
+            or "://" in value
+            or "@" in value
+        ):
+            raise ValueError("approval references must be bounded logical references")
+        return value
 
 
 class VisualReviewChecklistItemRequest(_ClosedHttpRequestModel):
@@ -374,19 +400,50 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
 
 def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> None:
     async def reject_unbounded_visual_review_request(request: Any, call_next: Any) -> Any:
+        evidence_linked_approval = (
+            request.method == "POST"
+            and request.url.path.endswith(_EVIDENCE_LINKED_APPROVAL_SUFFIX)
+        )
+        content_length = (
+            _single_request_header(request, "content-length")
+            if evidence_linked_approval
+            else request.headers.get("content-length")
+        )
         if (
             request.method == "POST"
             and request.url.path.endswith(_VISUAL_REVIEW_SUFFIXES)
             and (
                 request.query_params
                 or "transfer-encoding" in request.headers
-                or not _bounded_content_length(request.headers.get("content-length"))
+                or not _bounded_content_length(content_length)
             )
         ):
             return _visual_review_error(json_response, 422, "invalid_input")
+        if evidence_linked_approval:
+            try:
+                value = json.loads(
+                    await request.body(),
+                    object_pairs_hook=_closed_json_members,
+                    parse_constant=lambda _value: (_ for _ in ()).throw(
+                        ValueError("non-finite JSON value")
+                    ),
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                return _visual_review_error(json_response, 422, "invalid_input")
+            if not isinstance(value, dict):
+                return _visual_review_error(json_response, 422, "invalid_input")
         return await call_next(request)
 
     app.middleware("http")(reject_unbounded_visual_review_request)
+
+
+def _closed_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
 
 
 def _register_error_handlers(
@@ -563,6 +620,11 @@ def _register_routes(
         request_type=request_type,
         json_response=json_response,
     )
+    approve_with_evidence = _evidence_linked_approval_route(
+        application,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -614,8 +676,69 @@ def _register_routes(
         response_model=VisualReviewEvidenceHistoryResponse,
     )(read_visual_review_evidence_history)
     app.post(
+        "/projects/{project_id}/pages/{page_number}/evidence-linked-approval",
+        response_model=PageDetailDTO,
+    )(approve_with_evidence)
+    app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
+
+
+def _evidence_linked_approval_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def approve_with_evidence(
+        project_id: str,
+        page_number: str,
+        body: EvidenceLinkedApprovalRequest,
+        request: Any,
+    ) -> Any:
+        content_length = _single_request_header(request, "content-length")
+        if (
+            request.query_params
+            or "transfer-encoding" in request.headers
+            or not _bounded_content_length(content_length)
+            or any(
+                name in request.headers
+                for name in _VISUAL_REVIEW_HISTORY_REJECTED_HEADERS
+            )
+            or not _evidence_linked_approval_admission(request)
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            raw_page_number = _raw_evidence_linked_approval_page_number(
+                request,
+                project_id,
+                page_number,
+            )
+            validated_page_number = _validated_download_page_number(raw_page_number)
+        except ValidationError:
+            return _visual_review_error(json_response, 422, "invalid_input")
+        service = evidence_linked_approval_for(application)
+        if service is None:
+            return _visual_review_error(json_response, 404, "not_found")
+        try:
+            service.approve(
+                project_id,
+                validated_page_number,
+                approved_by=body.approved_by,
+                review_id=body.review_id,
+            )
+        except EvidenceLinkedApprovalUnavailable:
+            return _visual_review_error(json_response, 409, "approval_unavailable")
+        detail = _page_detail(application, project_id, validated_page_number)
+        return json_response(
+            status_code=200,
+            content=detail.model_dump(mode="json", by_alias=True),
+            headers=_VISUAL_REVIEW_HEADERS,
+        )
+
+    approve_with_evidence.__annotations__["request"] = request_type
+    return approve_with_evidence
 
 
 def _visual_review_readiness_route(
@@ -1105,6 +1228,36 @@ def _visual_review_evidence_history_admission(request: Any) -> bool:
     )
 
 
+def _evidence_linked_approval_admission(request: Any) -> bool:
+    content_type = _single_request_header(request, "content-type")
+    accept = _single_request_header(request, "accept")
+    origin = _single_request_header(request, "origin")
+    referer = _single_request_header(request, "referer")
+    if (
+        content_type is None
+        or content_type.split(";", 1)[0].strip().lower() != "application/json"
+        or accept is None
+        or not any(
+            item.split(";", 1)[0].strip().lower() == "application/json"
+            for item in accept.split(",")
+        )
+        or origin is None
+        or not _allowed_local_origin(origin)
+        or referer is None
+        or not _allowed_local_referer(referer)
+        or _referer_origin(referer) != origin
+    ):
+        return False
+    return all(
+        _single_request_header(request, name) == value
+        for name, value in (
+            ("sec-fetch-site", "same-origin"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "empty"),
+        )
+    )
+
+
 def _allowed_local_origin(value: str) -> bool:
     try:
         parsed = urlsplit(value)
@@ -1139,6 +1292,17 @@ def _allowed_local_referer(value: str) -> bool:
     except ValueError:
         return False
     return f"http://{parsed.hostname}:{port}" in LOCAL_WEB_ORIGINS
+
+
+def _referer_origin(value: str) -> str | None:
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme != "http" or parsed.hostname is None:
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    return f"http://{parsed.hostname}:{port}"
 
 
 def _raw_download_page_number(
@@ -1186,6 +1350,32 @@ def _raw_visual_review_evidence_page_number(
         or parts[1] != b"projects"
         or parts[3] != b"pages"
         or parts[5] != b"visual-review-evidence"
+        or raw_project_id != project_id
+        or raw_page_number != page_number
+    ):
+        raise ValidationError("pageNumber is invalid.")
+    return raw_page_number
+
+
+def _raw_evidence_linked_approval_page_number(
+    request: Any,
+    project_id: str,
+    page_number: str,
+) -> str:
+    raw_path = request.scope.get("raw_path")
+    if not isinstance(raw_path, bytes):
+        raise ValidationError("pageNumber is invalid.")
+    parts = raw_path.split(b"/")
+    try:
+        raw_project_id = parts[2].decode("ascii")
+        raw_page_number = parts[4].decode("ascii")
+    except (IndexError, UnicodeDecodeError) as error:
+        raise ValidationError("pageNumber is invalid.") from error
+    if (
+        len(parts) != 6
+        or parts[1] != b"projects"
+        or parts[3] != b"pages"
+        or parts[5] != b"evidence-linked-approval"
         or raw_project_id != project_id
         or raw_page_number != page_number
     ):

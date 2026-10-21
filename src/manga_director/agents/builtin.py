@@ -10,6 +10,7 @@ from manga_director.agents.llm_support import LLMAssistance
 from manga_director.domain.state_machine import PageState
 from manga_director.prompting import PromptPipeline
 from manga_director.workflow.contracts import AgentResult, WorkflowContext
+from manga_director.workflow.durable_execution import _EvidenceLinkedApprovalAuthority
 
 
 def _artifact(context: WorkflowContext, state: PageState) -> dict[str, Any]:
@@ -253,7 +254,18 @@ class ApprovalAgent(BaseAgent):
         approved_by = context.metadata.get("approved_by")
         if not isinstance(approved_by, str) or not approved_by.strip():
             raise ValueError("ApprovalAgent requires human metadata 'approved_by'.")
+        review_id = context.metadata.get("review_evidence_id")
+        authority = context.metadata.get("_evidence_linked_approval_authority")
+        payload = {"approved_by": approved_by.strip()}
+        if review_id is not None or authority is not None:
+            if (
+                not isinstance(review_id, str)
+                or type(authority) is not _EvidenceLinkedApprovalAuthority
+                or authority.review_id != review_id
+            ):
+                raise ValueError("ApprovalAgent requires validated evidence-link authority.")
+            payload["review_evidence_id"] = review_id
         return self.result(
-            payload={"approved_by": approved_by.strip()},
+            payload=payload,
             messages=["Human approval recorded."],
         )

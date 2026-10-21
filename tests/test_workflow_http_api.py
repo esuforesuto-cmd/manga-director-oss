@@ -11,6 +11,9 @@ from manga_director.api import workflow as workflow_api
 from manga_director.api.composition import build_workflow_app as build_http_workflow_app
 from manga_director.api.workflow import LOCAL_WEB_ORIGINS, create_workflow_app
 from manga_director.application import WorkflowApplicationService, build_workflow_application
+from manga_director.application.evidence_linked_approval import (
+    EvidenceLinkedApprovalUnavailable,
+)
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
@@ -286,3 +289,152 @@ def test_localfile_http_composition_missing_sidecars_creates_nothing(tmp_path: P
     assert response.json() == {"code": "not_found", "message": "Not found."}
     assert response.headers["cache-control"] == "no-store"
     assert after == before
+
+
+def _linked_approval_headers() -> dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": LOCAL_WEB_ORIGINS[0],
+        "Referer": f"{LOCAL_WEB_ORIGINS[0]}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+
+
+def test_evidence_linked_approval_route_requires_explicit_closed_local_request(
+    monkeypatch,
+) -> None:
+    application, _agents = _application()
+    application.create_project("demo", "Demo", 1, {})
+    application.run_project("demo")
+    calls: list[tuple[str, int, str, str]] = []
+
+    class Service:
+        def approve(
+            self,
+            project_id: str,
+            page_number: int,
+            *,
+            approved_by: str,
+            review_id: str,
+        ) -> None:
+            calls.append((project_id, page_number, approved_by, review_id))
+            application.approve_page(project_id, page_number, approved_by, {})
+
+    monkeypatch.setattr(
+        workflow_api,
+        "evidence_linked_approval_for",
+        lambda _application: Service(),
+    )
+    client = TestClient(create_workflow_app(application))
+
+    response = client.post(
+        "/projects/demo/pages/1/evidence-linked-approval",
+        headers=_linked_approval_headers(),
+        json={"approvedBy": "editor:local", "reviewId": "review:exact:001"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "Approved"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert calls == [("demo", 1, "editor:local", "review:exact:001")]
+
+
+def test_evidence_linked_approval_rejects_admission_body_and_path_variants_before_service(
+    monkeypatch,
+) -> None:
+    application, _agents = _application()
+    calls = 0
+
+    class Service:
+        def approve(self, *args, **kwargs) -> None:
+            nonlocal calls
+            calls += 1
+
+    monkeypatch.setattr(
+        workflow_api,
+        "evidence_linked_approval_for",
+        lambda _application: Service(),
+    )
+    client = TestClient(create_workflow_app(application))
+    route = "/projects/demo/pages/1/evidence-linked-approval"
+    body = '{"approvedBy":"editor","reviewId":"review:001"}'
+    duplicate_content_length_headers = list(_linked_approval_headers().items()) + [
+        ("Content-Length", str(len(body))),
+        ("Content-Length", str(len(body))),
+    ]
+    invalid = [
+        client.post(route, content=body, headers={"Content-Type": "application/json"}),
+        client.post(
+            f"{route}?reviewId=other",
+            content=body,
+            headers=_linked_approval_headers(),
+        ),
+        client.post(
+            "/projects/demo/pages/01/evidence-linked-approval",
+            content=body,
+            headers=_linked_approval_headers(),
+        ),
+        client.post(
+            route,
+            content=body,
+            headers={**_linked_approval_headers(), "Referer": "http://localhost:3000/"},
+        ),
+        client.post(
+            route,
+            content=(
+                '{"approvedBy":"editor","reviewId":"review:001",'
+                '"reviewId":"review:other"}'
+            ),
+            headers=_linked_approval_headers(),
+        ),
+        client.post(
+            route,
+            content=body,
+            headers=duplicate_content_length_headers,
+        ),
+        client.post(
+            route,
+            headers=_linked_approval_headers(),
+            json={
+                "approvedBy": "editor",
+                "reviewId": "review:001",
+                "metadata": {},
+            },
+        ),
+    ]
+
+    assert all(response.status_code == 422 for response in invalid)
+    assert all(response.headers["cache-control"] == "no-store" for response in invalid)
+    assert calls == 0
+
+
+def test_evidence_linked_approval_failure_is_redacted_and_does_not_claim_success(
+    monkeypatch,
+) -> None:
+    application, _agents = _application()
+
+    class Service:
+        def approve(self, *args, **kwargs) -> None:
+            raise EvidenceLinkedApprovalUnavailable("secret C:/private/evidence.sqlite3")
+
+    monkeypatch.setattr(
+        workflow_api,
+        "evidence_linked_approval_for",
+        lambda _application: Service(),
+    )
+    response = TestClient(create_workflow_app(application)).post(
+        "/projects/demo/pages/1/evidence-linked-approval",
+        headers=_linked_approval_headers(),
+        json={"approvedBy": "editor:local", "reviewId": "review:exact:001"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "approval_unavailable",
+        "message": "Request validation failed.",
+    }
+    assert "secret" not in response.text

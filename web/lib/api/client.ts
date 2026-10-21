@@ -1,6 +1,7 @@
 import type {
   ApiError,
   ChapterDetail,
+  EvidenceLinkedApprovalRequest,
   PageAction,
   PageDetail,
   ProjectDetail,
@@ -136,6 +137,20 @@ export const api = {
       request<VisualReviewEvidenceHistoryResponse>(
         `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/visual-review-evidence`,
         { method: "GET" },
+        loopbackApiBaseUrl()
+      ),
+    approveWithReviewEvidence: (
+      projectId: string,
+      pageNumber: number,
+      body: EvidenceLinkedApprovalRequest
+    ) =>
+      request<PageDetail>(
+        `/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/evidence-linked-approval`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+          headers: { "Content-Type": "application/json" }
+        },
         loopbackApiBaseUrl()
       ),
     execute: (projectId: string, pageNumber: number, action: PageAction, metadata: Record<string, unknown> = {}) =>

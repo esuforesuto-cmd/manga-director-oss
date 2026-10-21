@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from manga_director.agents.builtin import ApprovalAgent
 from manga_director.cli import app as cli_app
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
@@ -72,6 +73,44 @@ class CountingFence:
 
     def release(self) -> None:
         self.release_calls += 1
+
+
+class _OrderedFence(CountingFence):
+    def __init__(self, order: list[str]) -> None:
+        super().__init__()
+        self._order = order
+
+    def acquire(self) -> None:
+        super().acquire()
+        self._order.append("fence-acquired")
+
+    def release(self) -> None:
+        self._order.append("fence-released")
+        super().release()
+
+
+class _EvidenceProof:
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+
+    def release(self) -> None:
+        self._order.append("proof-released")
+
+
+class _EvidenceGate:
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+        self.review_ids: list[str] = []
+
+    def _prove_under_fence(
+        self, snapshot, context, project_id: str, page_id: str, review_id: str
+    ) -> _EvidenceProof:
+        assert snapshot.project.id == project_id == "routing-demo"
+        assert context.state is PageState.QUALITY_CHECKED
+        assert page_id == "1"
+        self.review_ids.append(review_id)
+        self._order.append("proof-created")
+        return _EvidenceProof(self._order)
 
 
 def _repository(tmp_path: Path) -> LocalFileRepository:
@@ -350,3 +389,118 @@ def test_logical_output_asset_blocks_run_before_quality_agent(tmp_path: Path) ->
 
     assert agents[PageState.QUALITY_CHECKED].calls == 0
     assert repository.load("routing-demo").page(1).state == PageState.GENERATED
+
+
+def test_evidence_linked_approval_holds_proof_through_commit_and_releases_before_fence(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    agents: dict[PageState, Any] = _agents()
+    agents[PageState.APPROVED] = ApprovalAgent()
+    engine = _engine(MemoryEventBus(), agents)
+    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
+        _route_localfile_primary(engine, repository, "routing-demo", "1", command, {})
+    order: list[str] = []
+    fence = _OrderedFence(order)
+    gate = _EvidenceGate(order)
+    coordinator = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=lambda _project, _page: fence,
+    )
+
+    receipt = coordinator._execute_with_receipt(
+        "routing-demo",
+        "1",
+        "approve",
+        {
+            "approved_by": "editor:local",
+            "review_evidence_id": "review:exact:001",
+        },
+        evidence_linked_approval_gate=gate,
+    )
+
+    page = repository.load("routing-demo").page(1)
+    assert receipt.outcome.status == "transition_applied_event_published"
+    assert gate.review_ids == ["review:exact:001"]
+    assert page.approval == {
+        "approved_by": "editor:local",
+        "review_evidence_id": "review:exact:001",
+    }
+    assert "review_evidence_id" not in page.metadata
+    assert "_evidence_linked_approval_authority" not in page.metadata
+    assert order == [
+        "fence-acquired",
+        "proof-created",
+        "proof-released",
+        "fence-released",
+    ]
+
+
+def test_generic_durable_approval_cannot_forge_review_evidence_reference(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    agents = _agents()
+    engine = _engine(MemoryEventBus(), agents)
+    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
+        _route_localfile_primary(engine, repository, "routing-demo", "1", command, {})
+
+    with pytest.raises(_DurableRoutingError):
+        _route_localfile_primary(
+            engine,
+            repository,
+            "routing-demo",
+            "1",
+            "approve",
+            {
+                "approved_by": "editor:local",
+                "review_evidence_id": "review:forged",
+            },
+        )
+
+    assert repository.load("routing-demo").page(1).state is PageState.QUALITY_CHECKED
+
+
+def test_linked_proof_is_released_after_post_commit_event_failure_without_compensation(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    setup_engine = _engine(MemoryEventBus(), _agents())
+    for command in ("design", "review", "storyboard", "prompt", "generate", "quality"):
+        _route_localfile_primary(
+            setup_engine, repository, "routing-demo", "1", command, {}
+        )
+    order: list[str] = []
+    fence = _OrderedFence(order)
+    gate = _EvidenceGate(order)
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=FailingEventBus(),
+        agents={PageState.APPROVED: ApprovalAgent()},
+    )
+    coordinator = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=lambda _project, _page: fence,
+    )
+
+    receipt = coordinator._execute_with_receipt(
+        "routing-demo",
+        "1",
+        "approve",
+        {
+            "approved_by": "editor:local",
+            "review_evidence_id": "review:exact:001",
+        },
+        evidence_linked_approval_gate=gate,
+    )
+
+    page = repository.load("routing-demo").page(1)
+    assert receipt.outcome.status == "transition_applied_event_failed"
+    assert page.state is PageState.APPROVED
+    assert page.approval == {
+        "approved_by": "editor:local",
+        "review_evidence_id": "review:exact:001",
+    }
+    assert order[-2:] == ["proof-released", "fence-released"]

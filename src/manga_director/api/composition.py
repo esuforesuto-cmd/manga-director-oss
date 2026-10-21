@@ -10,6 +10,10 @@ from manga_director.application.approved_asset_download import (
     attach_approved_asset_download,
     build_approved_asset_download,
 )
+from manga_director.application.evidence_linked_approval import (
+    attach_evidence_linked_approval,
+    build_evidence_linked_approval,
+)
 from manga_director.application.generated_asset_presentation import (
     attach_generated_asset_presentation,
     build_generated_asset_presentation,
@@ -72,5 +76,13 @@ def build_workflow_app(
         attach_human_visual_review_evidence_history(
             application,
             build_human_visual_review_evidence_history(repository),
+        )
+        attach_evidence_linked_approval(
+            application,
+            build_evidence_linked_approval(
+                repository,
+                application,
+                human_visual_review_readiness,
+            ),
         )
     return create_workflow_app(application)

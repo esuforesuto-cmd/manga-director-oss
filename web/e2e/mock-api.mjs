@@ -6,6 +6,7 @@ let pageState = "Draft";
 let reviewEvidenceRecordCount = 0;
 let reviewEvidenceHistoryReadCount = 0;
 let reviewEvidenceRecord = null;
+let approvalArtifact = null;
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 const nextState = {
@@ -40,7 +41,8 @@ function page() {
       storyboard: pageState === "Draft" ? null : { persisted: true },
       ...(pageState === "Generated" || pageState === "QualityChecked" || pageState === "Approved"
         ? { image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:demo:001" } }
-        : {})
+        : {}),
+      ...(approvalArtifact ? { approval: approvalArtifact } : {})
     },
     messages: [],
     errors: [],
@@ -98,6 +100,7 @@ createServer(async (request, response) => {
     reviewEvidenceRecordCount = 0;
     reviewEvidenceHistoryReadCount = 0;
     reviewEvidenceRecord = null;
+    approvalArtifact = null;
     return json(response, 201, project());
   }
   if (request.method === "GET" && pathname === "/projects/demo") return json(response, 200, project());
@@ -217,12 +220,38 @@ createServer(async (request, response) => {
       "x-content-type-options": "nosniff"
     });
   }
+  if (request.method === "POST" && pathname === "/projects/demo/pages/1/evidence-linked-approval") {
+    const body = await requestBody(request);
+    if (
+      pageState !== "QualityChecked"
+      || !reviewEvidenceRecord
+      || reviewEvidenceRecord.status !== "ready"
+      || reviewEvidenceRecord.reviewId !== body.reviewId
+      || !body.approvedBy
+      || Object.keys(body).sort().join(",") !== "approvedBy,reviewId"
+    ) {
+      return json(response, 409, {
+        code: "approval_unavailable",
+        message: "Request validation failed."
+      });
+    }
+    pageState = "Approved";
+    approvalArtifact = {
+      approved_by: body.approvedBy,
+      review_evidence_id: body.reviewId
+    };
+    return json(response, 200, page());
+  }
 
   const action = pathname.match(/^\/projects\/demo\/pages\/1\/([a-z_]+)$/)?.[1];
   if (request.method === "POST" && action) {
     const target = nextState[pageState]?.[action];
     if (!target) return json(response, 409, { code: "invalid_state", message: "Invalid workflow action." });
     pageState = target;
+    if (action === "approve") {
+      const body = await requestBody(request);
+      approvalArtifact = { approved_by: body.approvedBy };
+    }
     return json(response, 200, page());
   }
   return json(response, 404, { code: "not_found", message: "Not found." });

@@ -19,6 +19,7 @@ from manga_director.agents import (
 )
 from manga_director.domain.state_machine import PageState
 from manga_director.workflow import WorkflowContext
+from manga_director.workflow.durable_execution import _EvidenceLinkedApprovalAuthority
 
 
 @dataclass
@@ -182,3 +183,49 @@ def test_continuity_agent_reports_differences_and_approval_requires_a_human() ->
 def test_approval_agent_rejects_missing_human_identity() -> None:
     with pytest.raises(ValueError, match="approved_by"):
         ApprovalAgent().execute(WorkflowContext())
+
+
+def test_approval_agent_records_only_a_privately_validated_evidence_reference() -> None:
+    review_id = "review:exact:001"
+    result = ApprovalAgent().execute(
+        WorkflowContext(
+            metadata={
+                "approved_by": "editor:local",
+                "review_evidence_id": review_id,
+                "_evidence_linked_approval_authority": (
+                    _EvidenceLinkedApprovalAuthority(review_id)
+                ),
+            }
+        )
+    )
+
+    assert result.payload == {
+        "approved_by": "editor:local",
+        "review_evidence_id": review_id,
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {"approved_by": "editor", "review_evidence_id": "review:forged"},
+        {
+            "approved_by": "editor",
+            "_evidence_linked_approval_authority": (
+                _EvidenceLinkedApprovalAuthority("review:forged")
+            ),
+        },
+        {
+            "approved_by": "editor",
+            "review_evidence_id": "review:other",
+            "_evidence_linked_approval_authority": (
+                _EvidenceLinkedApprovalAuthority("review:forged")
+            ),
+        },
+    ),
+)
+def test_approval_agent_rejects_forged_or_mismatched_evidence_authority(
+    metadata: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="validated evidence-link authority"):
+        ApprovalAgent().execute(WorkflowContext(metadata=metadata))

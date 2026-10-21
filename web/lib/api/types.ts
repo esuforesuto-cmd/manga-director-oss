@@ -176,3 +176,8 @@ export interface VisualReviewEvidenceHistoryResponse {
   analysisOnly: true;
   records: VisualReviewHistoryRecord[];
 }
+
+export interface EvidenceLinkedApprovalRequest {
+  approvedBy: string;
+  reviewId: string;
+}
