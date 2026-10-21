@@ -199,16 +199,27 @@ adult-content generation.
 
 ## Codex model operating policy
 
-- Use **GPT-5.6 Terra** by default for routine, lightweight work, including
+- When the specified model is available in the current Codex environment, use
+  **GPT-6 Luna High** by default for routine, lightweight work, including
   documentation-only implementation and organization.
-- Use **GPT-5.6 Sol** by default for architecture, complex implementation,
-  security, compatibility, and the final independent read-only review.
+- Use **GPT-5.6 Sol High** for important decisions involving frozen
+  specifications, public APIs, compatibility, or architecture; complex
+  implementation; P0/P1 work; security work; and the final independent
+  read-only review.
+- After an important stage is complete, return to **GPT-6 Luna High** for the
+  next routine stage, when it is available in the current Codex environment.
+- Treat **GPT-6.1 Sol** only as a candidate for isolated comparative
+  evaluation. Do not adopt it automatically as the default or insert it into
+  an approved mainline workflow.
 - When practical, use different models for implementation and final review.
 - State the intended model explicitly in Codex prompts so the execution and
   review roles are auditable.
-- Model selection does not relax file allowlists, approval gates, validation,
-  privacy restrictions, or release controls.
+- If a specified model is unavailable in the current Codex environment, stop
+  before starting the stage that requires it, report the unavailability, and
+  require explicit approval before using a substitute.
+- Model selection does not relax file allowlists, approval gates, the existing
+  safe read-only progress boundary, validation, privacy restrictions, v6 LTS
+  scope, or release controls.
 
-Model availability may change, but any substitution must preserve the role
-separation and review rigor above and must be reported rather than silently
-claimed as the named model.
+Model availability may change. Never claim a substitute was the specified
+model, and preserve the role separation and review rigor above.
