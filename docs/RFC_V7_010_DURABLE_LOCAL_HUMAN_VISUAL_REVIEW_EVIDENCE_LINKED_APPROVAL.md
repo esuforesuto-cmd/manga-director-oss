@@ -1,16 +1,36 @@
 # RFC-V7-010: Durable Local Human Visual Review Evidence-Linked Approval
 
-- Status: Design approved; implementation and execution are not authorized
+- Status: Complete and verified
 - Target line: v7.0 Discovery (Post-LTS)
 - Roadmap item: V7-12 Durable Local Human Visual Review Evidence-Linked Approval
-- Delivery scope: docs-only design
+- Delivery scope: completed exact twenty-one-file implementation
 - Decision owner: an explicit local human approver
+
+## Completion evidence
+
+The exact twenty-one-file V7-12 implementation was completed in PR #48. Final
+head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` was merged into `v7-dev` at
+`a02eedf38cd79c43c2add68ac08c332dab5eefb8`.
+
+Full pytest passed with 3238 tests and 16 skips. Focused V7-12 and V6
+public/LTS compatibility tests, Ruff, Windows/Linux mypy, Web
+lint/typecheck/unit/build, mock and real-boundary browser E2E, security/audit,
+package, clean-install, CLI/MCP/Plugin smoke, migration, whitespace, and
+exact-allowlist checks passed. PR CI run #166 passed 10/10 jobs and PR CodeQL
+run #65 passed 3/3 jobs. Post-merge CI run #167 passed 10/10 jobs and CodeQL
+run #66 passed 3/3 jobs. Independent read-only review reported P0/P1/P2 =
+0/0/0.
+
+The feature branch remains retained. `main` remains unchanged at
+`b0291437af05fe53454843ba95fdf88216700f7c`, and I02 remains out of scope. This
+RFC remains the frozen design and completion record; completion grants no new
+runtime, approval, workflow, release, or publication authority.
 
 ## Decision boundary
 
-This RFC freezes the smallest loopback-only boundary that lets a local human
-explicitly approve one authoritative `QualityChecked` Page while naming one
-exact immutable V7-10 human visual review evidence record.
+This RFC records the implemented smallest loopback-only boundary that lets a
+local human explicitly approve one authoritative `QualityChecked` Page while
+naming one exact immutable V7-10 human visual review evidence record.
 
 The operation is additive. Existing ordinary approval remains available and
 unchanged for compatibility. Evidence-linked approval never chooses a review,
@@ -25,8 +45,10 @@ the same readiness result from the current exact generated asset while
 retaining its safe file lease. Only an exact match may continue through the
 existing `WorkflowEngine` and `StateMachine`.
 
-This RFC creates no route, service, artifact, database, source code, test,
-dependency, migration, transition, or runtime behavior. It authorizes none.
+The implementation added only the separately approved route, private service,
+approval artifact reference, V7-09 closed-shape compatibility, explicit Web
+action, and related tests. It added no database, dependency, migration,
+StateMachine or WorkflowEngine change, or unrelated runtime authority.
 
 ## Problem
 
@@ -62,8 +84,8 @@ workflow owners.
   transition, with an additive evidence reference in the approval artifact; or
   one redacted fail-closed response with no Page or evidence mutation.
 - **Dependencies:** Completed V7-07 through V7-11 and their frozen contracts.
-- **Estimated complexity:** High for a separately approved implementation;
-  Low for this docs-only design.
+- **Estimated complexity:** High for the completed separately approved
+  implementation; Low for the original docs-only design.
 - **Architecture notes:** The V7-10 owner reads exact evidence, V7-08 re-proves
   current readiness, a private Application service coordinates the lease and
   approval command, and existing workflow owners retain transition authority.
@@ -120,7 +142,7 @@ workflow owners.
 
 ## Source contracts
 
-The future implementation may compose only these existing owners:
+The implemented feature composes only these existing owners:
 
 - the authoritative LocalFile Project supplies the exact Page identity, current
   `QualityChecked` state, current workflow artifacts, and durable save boundary;
@@ -148,7 +170,7 @@ reference independently authorizes approval.
 
 ### Explicit evidence-linked approval operation
 
-The separately approvable implementation may add exactly one logical operation:
+The separately approved implementation added exactly one logical operation:
 
 `POST /projects/{project_id}/pages/{page_number}/evidence-linked-approval`
 
@@ -415,8 +437,9 @@ automatic retry, repair, migration, state override, or direct Page save.
 
 ## Public contract compatibility
 
-The future feature is one additive local HTTP/Web operation and one additive
-optional field in the approval artifact created only by that operation.
+The implemented feature is one additive local HTTP/Web operation and one
+additive optional field in the approval artifact created only by that
+operation.
 
 Existing ordinary approval inputs and outputs, V6 public imports, CLI, MCP,
 SDK, Plugin, Provider, Repository protocols, LocalFile serialized model schema,
@@ -425,17 +448,17 @@ and legacy persisted Pages remain unchanged. No new package export is permitted.
 
 ## Docs allowlist
 
-This approved design is limited to exactly two files:
+This completion-state update is limited to exactly two files:
 
-1. `docs/RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md` (new)
+1. `docs/RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md`
 2. `docs/ROADMAP_V7.md`
 
 A third docs file is a scope expansion and requires explicit approval.
 
-## Candidate implementation allowlist
+## Implementation allowlist
 
-Implementation is not authorized. If separately approved without design
-changes, the exact candidate allowlist is:
+The implementation was completed within the separately approved exact
+twenty-one files:
 
 1. `src/manga_director/application/evidence_linked_approval.py` (new)
 2. `src/manga_director/application/workflow.py`
@@ -462,12 +485,12 @@ changes, the exact candidate allowlist is:
 The V7-10 store, V7-08 readiness service, V7-10 evidence writer, V7-11 history
 service, Page/Project models, repositories, StateMachine, WorkflowEngine,
 dependencies, lockfiles, package metadata, Provider, generation, CLI, MCP, SDK,
-Plugin, and I02 are excluded. A twenty-second implementation file is a scope
-expansion.
+Plugin, and I02 are excluded. No twenty-second file was required. Any future
+twenty-second implementation file is a scope expansion.
 
 ## Validation plan
 
-The docs-only design requires:
+This completion-state update requires:
 
 - exact two-file docs allowlist verification;
 - Markdown link resolution and `git diff --check`;
@@ -477,7 +500,7 @@ The docs-only design requires:
   privacy, V7-09 compatibility, public-contract, and V6 LTS review; and
 - independent read-only review with P0 = 0 and P1 = 0.
 
-A separately authorized implementation must add focused tests for:
+The completed implementation passed focused tests for:
 
 - exact explicit `reviewId` selection and no default/latest/best behavior;
 - closed local write admission and closed request DTO behavior;
@@ -508,6 +531,8 @@ A separately authorized implementation must add focused tests for:
 
 ## Acceptance criteria
 
+V7-12 is complete and verified because:
+
 1. One explicit local request supplies one exact review ID and one separate
    explicit approver reference.
 2. No review is selected automatically or inferred from history.
@@ -530,8 +555,11 @@ A separately authorized implementation must add focused tests for:
 11. Project/Page model schemas, repositories, public Python, CLI, MCP, SDK,
     Plugin, Provider, generation, dependencies, I02, v5, and v6 remain
     unchanged.
-12. The docs-only diff stays within the exact two-file allowlist and independent
-    review reports no P0/P1 issue.
+12. The implementation stayed within its approved exact twenty-one-file
+    allowlist and passed focused/full regression, Web, security, package, CI,
+    CodeQL, and post-merge gates with no blocking failure.
+13. This completion-state diff stays within the exact two-file docs allowlist
+    and independent review reports no P0/P1 issue.
 
 ## STOP conditions
 
@@ -555,8 +583,10 @@ Any follow-up must stop on any of the following:
 
 ## Authorization gate
 
-V7-12 docs-only design is approved. Source implementation, tests, dependency
-changes, commit, push, PR creation, merge, release, publication, Settings,
-`main`, I02, branch deletion, force push, and history rewriting remain
-unauthorized. Implementation requires a new explicit approval of the exact
-twenty-one-file allowlist and validation plan.
+V7-12 is complete. Its separately approved exact twenty-one-file
+implementation authorization was exhausted by PR #48. It does not authorize a
+twenty-second file, another route or Web change, evidence-store or schema
+change, another approval behavior, V7-09 eligibility change, StateMachine or
+WorkflowEngine change, Provider, generation, I02, dependencies, `main`,
+versioning, release, tag, publication, Settings, branch deletion, force push,
+or history rewriting.
