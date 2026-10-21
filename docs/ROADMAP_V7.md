@@ -1470,11 +1470,16 @@ deletion, force push, or history rewriting.
 
 Docs-only design approved and frozen by
 [RFC-V7-010: Durable Local Human Visual Review Evidence-Linked Approval](RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md).
-Implementation and execution are not authorized.
+The exact twenty-one-file V7-12 implementation is complete and verified. PR
+#48 final head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` was merged into
+`v7-dev` at `a02eedf38cd79c43c2add68ac08c332dab5eefb8`. PR CI run #166 passed
+10/10 jobs and PR CodeQL run #65 passed 3/3 jobs; post-merge CI run #167
+passed 10/10 jobs and CodeQL run #66 passed 3/3 jobs; independent read-only
+review reported P0/P1/P2 = 0/0/0.
 
-The approved design docs allowlist is exactly:
+The approved design docs allowlist was exactly:
 
-1. `docs/RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md` (new)
+1. `docs/RFC_V7_010_DURABLE_LOCAL_HUMAN_VISUAL_REVIEW_EVIDENCE_LINKED_APPROVAL.md`
 2. `docs/ROADMAP_V7.md`
 
 ### Objective
@@ -1583,10 +1588,9 @@ No dependency, lockfile, package metadata, version, release, tag, publication,
 Settings, `main`, I02, branch-deletion, force-push, or history-rewrite change is
 permitted.
 
-### Candidate implementation allowlist
+### Implementation allowlist
 
-Implementation is not authorized. A later explicit approval may authorize only
-this exact twenty-one-file candidate allowlist:
+The implementation was completed within the approved exact twenty-one files:
 
 1. `src/manga_director/application/evidence_linked_approval.py` (new)
 2. `src/manga_director/application/workflow.py`
@@ -1613,7 +1617,8 @@ this exact twenty-one-file candidate allowlist:
 The V7-10 store and writer, V7-08 readiness service, V7-11 history service,
 Page/Project models, repositories, StateMachine, WorkflowEngine, dependencies,
 lockfiles, Provider, generation, CLI, MCP, SDK, Plugin, and I02 are excluded. A
-twenty-second implementation file is a scope expansion.
+twenty-second implementation file was not required. Any future twenty-second
+implementation file is a scope expansion.
 
 ### Acceptance criteria
 
@@ -1635,8 +1640,11 @@ twenty-second implementation file is a scope expansion.
 - V7-10/V7-11 evidence remains unchanged on success and failure;
 - Project/Page model schemas, repositories, public APIs, Provider, generation,
   dependencies, I02, v5, and v6 remain unchanged; and
-- the design diff stays within its exact two-file allowlist and independent
-  review reports no P0/P1 issue.
+- the implementation stayed within its approved exact twenty-one-file
+  allowlist and passed focused/full regression, Web, security, package, CI,
+  CodeQL, and post-merge gates with no blocking failure; and
+- this completion-state diff stays within the exact two-file docs allowlist
+  and independent review reports no P0/P1 issue.
 
 ### Validation
 
@@ -1647,12 +1655,12 @@ twenty-second implementation file is a scope expansion.
   review; and
 - independent read-only review with P0 = 0 and P1 = 0.
 
-A separately approved implementation must run focused stored/current binding,
+The completed implementation passed focused stored/current binding,
 ready/non-ready, fresh-revision in-fence validation, pre-fence and concurrent
 change rejection, anti-forgery, lease/fence release ordering, rollback,
 persistence, post-commit verification/event failure and authoritative reload,
 restart, ordinary approval compatibility, V7-09 parity, Web explicit-action,
-redaction, and no-evidence-mutation tests plus the full Python, Ruff,
+redaction, and no-evidence-mutation tests together with the full Python, Ruff,
 Windows/Linux mypy, Web, browser-E2E, security/audit, package, compatibility,
 exact-allowlist, CI, and CodeQL gates defined by RFC-V7-010.
 
@@ -1669,10 +1677,12 @@ or scope drift requires a new explicit decision.
 
 ### Authorization gate
 
-V7-12 docs-only design is approved. Implementation, tests, commit, push, PR
-creation, merge, release, publication, Settings, `main`, I02, branch deletion,
-force push, and history rewriting remain unauthorized. Implementation requires
-new explicit approval of the exact twenty-one-file allowlist and validation plan.
+V7-12 is complete. Its exact twenty-one-file implementation authorization was
+exhausted by PR #48 and does not authorize a twenty-second file, another route
+or Web change, evidence-store or schema change, another approval behavior,
+V7-09 eligibility change, StateMachine or WorkflowEngine change, Provider,
+generation, I02, dependencies, `main`, versioning, release, tag, publication,
+Settings, branch deletion, force push, or history rewriting.
 
 ## Epic 1 sequencing
 
@@ -1688,7 +1698,7 @@ new explicit approval of the exact twenty-one-file allowlist and validation plan
 | V7-09 Safe Local Approved Asset Download | Complete and verified | Completed V7-07 and V7-08, accepted RFC-V7-007, and explicit approval of the exact twelve-file implementation package | PR #39 final head `28f5cc0b10feb4d88f8d35d0c7ffd0b75d4fbc8f` merged into `v7-dev` at `547ab20bf2d92083bc800cf294087cf3ddf4efcb`; pre-merge checks passed 24/24 after one approved Windows 3.12 rerun; post-merge checks passed 13/13 with CodeQL 3/3; independent review P0/P1/P2 = 0; exact twelve-file allowlist; feature branch retained; `main` unchanged |
 | V7-10 Durable Local Human Visual Review Evidence | Complete and verified | Completed V7-06 through V7-09, accepted RFC-V7-008, and explicit approval of the exact fourteen-file implementation package | PR #42 final head `ac4d09c1fb9c5ab5dcaf4d96e475bd1044c3f048` merged into `v7-dev` at `3c83a067ece1a1b3d45f89d4816ffb47153f81d8`; full pytest passed (3190 passed / 20 skipped); PR checks passed 10/10 with CodeQL 3/3; post-merge checks passed 10/10 with CodeQL 3/3; independent review P0/P1/P2 = 0/0/0; exact fourteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-11 Safe Local Human Visual Review Evidence History | Complete and verified | Completed V7-08 through V7-10, accepted RFC-V7-009, and explicit approval of the exact fifteen-file implementation package | PR #45 final head `32a0386dce4101606fd1c66e748eef3ffa213e62` merged into `v7-dev` at `7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`; full pytest passed (3215 passed / 20 skipped); PR checks passed 24/24; post-merge CI run #156 passed 10/10 with CodeQL run #59 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact fifteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
-| V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Design approved; implementation not authorized | Completed V7-07 through V7-11, accepted RFC-V7-010, and a separate explicit implementation approval | Docs-only design is frozen in RFC-V7-010; exact two-file docs allowlist; candidate twenty-one-file implementation allowlist; no implementation, runtime, approval, V7-09 eligibility, dependency, `main`, or I02 authority granted |
+| V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Complete and verified | Completed V7-07 through V7-11, accepted RFC-V7-010, and explicit approval of the exact twenty-one-file implementation package | PR #48 final head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` merged into `v7-dev` at `a02eedf38cd79c43c2add68ac08c332dab5eefb8`; full pytest passed (3238 passed / 16 skipped); PR CI run #166 passed 10/10 with CodeQL run #65 passing 3/3; post-merge CI run #167 passed 10/10 with CodeQL run #66 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact twenty-one-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
