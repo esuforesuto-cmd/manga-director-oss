@@ -78,6 +78,35 @@ def decode_png(
         or not data.startswith(PNG_SIGNATURE)
     ):
         raise CompositeInputError("invalid_png")
+    header, idat_parts = _collect_png_chunks(data)
+    if header is None or not idat_parts:
+        raise CompositeInputError("invalid_png_structure")
+    if len(header) != 13:
+        raise CompositeInputError("invalid_ihdr")
+    width, height, depth, color, compression, filtering, interlace = struct.unpack(
+        ">IIBBBBB", header
+    )
+    if not width or not height or width > 4096 or height > 4096:
+        raise CompositeInputError("png_dimensions_out_of_bounds")
+    if depth != 8 or color not in (2, 6) or compression or filtering or interlace:
+        raise CompositeInputError("unsupported_png_format")
+    compressed_size = sum(map(len, idat_parts))
+    if not compressed_size:
+        raise CompositeInputError("invalid_png_deflate_stream")
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    expected_length = height * (stride + 1)
+    if expected_length + compressed_size * 2 > memory_budget:
+        raise CompositeInputError("decoded_memory_limit")
+    return DecodedPNG(
+        width,
+        height,
+        channels,
+        _decode_scanlines(idat_parts, width, height, channels),
+    )
+
+
+def _collect_png_chunks(data: bytes) -> tuple[bytes | None, list[bytes]]:
     offset = len(PNG_SIGNATURE)
     header: bytes | None = None
     idat_parts: list[bytes] = []
@@ -124,31 +153,9 @@ def decode_png(
             if saw_idat:
                 idat_ended = True
         offset = end
-    if not ended or header is None or not saw_idat:
+    if not ended or not saw_idat:
         raise CompositeInputError("invalid_png_structure")
-    if len(header) != 13:
-        raise CompositeInputError("invalid_ihdr")
-    width, height, depth, color, compression, filtering, interlace = struct.unpack(
-        ">IIBBBBB", header
-    )
-    if not width or not height or width > 4096 or height > 4096:
-        raise CompositeInputError("png_dimensions_out_of_bounds")
-    if depth != 8 or color not in (2, 6) or compression or filtering or interlace:
-        raise CompositeInputError("unsupported_png_format")
-    compressed_size = sum(map(len, idat_parts))
-    if not compressed_size:
-        raise CompositeInputError("invalid_png_deflate_stream")
-    channels = 3 if color == 2 else 4
-    stride = width * channels
-    expected_length = height * (stride + 1)
-    if expected_length + compressed_size * 2 > memory_budget:
-        raise CompositeInputError("decoded_memory_limit")
-    return DecodedPNG(
-        width,
-        height,
-        channels,
-        _decode_scanlines(idat_parts, width, height, channels),
-    )
+    return header, idat_parts
 
 
 def encode_rgb_png(width: int, height: int, pixels: bytes) -> bytes:
@@ -238,7 +245,7 @@ def _draw_cover_center(
 
 def _decode_scanlines(
     compressed_parts: list[bytes], width: int, height: int, channels: int
-) -> bytes:
+) -> bytes:  # noqa: C901
     stride = width * channels
     row_length = stride + 1
     pixels = bytearray(height * stride)

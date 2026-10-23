@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
@@ -13,9 +13,9 @@ from manga_director.production.director import DirectorModel
 
 COORDINATE_SCALE = 1_000_000
 MAX_PANELS = 16
-COMPOSITOR_PROFILE_ID = "md-page-compositor-v1"
-CANVAS_WIDTH = 2048
-CANVAS_HEIGHT = 3072
+COMPOSITOR_PROFILE_ID: Final[Literal["md-page-compositor-v1"]] = "md-page-compositor-v1"
+CANVAS_WIDTH: Final[Literal[2048]] = 2048
+CANVAS_HEIGHT: Final[Literal[3072]] = 3072
 MIN_MARGIN_PX = 96
 MIN_GUTTER_PX = 48
 

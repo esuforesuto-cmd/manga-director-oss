@@ -5,10 +5,10 @@ from pydantic import ValidationError
 
 from manga_director.production.next_generation_page_composition import (
     AcceptedPanelSource,
+    PageCompositeAsset,
     PageCompositionAttempt,
     PageCompositionEvidence,
     PageCompositionRequest,
-    PageCompositeAsset,
 )
 from manga_director.production.next_generation_page_generation_plan import PanelRectangle
 

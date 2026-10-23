@@ -124,7 +124,7 @@ def test_plan_rejects_overlap_and_duplicate_ids() -> None:
 
 
 def test_plan_rejects_changed_fingerprint() -> None:
-    plan = _plan()
+    _plan()
     with pytest.raises(ValidationError):
         _plan(plan_fingerprint="c" * 64)
 
