@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+import stat
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -333,3 +339,449 @@ def _validate_source_manifest(sources: tuple[AcceptedPanelSource, ...]) -> None:
         resolved = tuple(values)
         if len(set(resolved)) != len(resolved):
             raise ValueError(f"source {label} must be unique")
+
+
+CompositionAuthorityOutcome = Literal[
+    "created", "updated", "confirmed", "missing", "conflict", "corrupt", "failed"
+]
+
+_COMPOSITION_DATABASE = "page-composition-authority.sqlite3"
+_COMPOSITION_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class PageCompositionAuthorityResult:
+    composition_attempt_id: str
+    outcome: CompositionAuthorityOutcome
+    attempt: PageCompositionAttempt | None = field(default=None, repr=False)
+    evidence: PageCompositionEvidence | None = field(default=None, repr=False)
+
+
+class LocalPageCompositionAuthority:
+    """Private versioned store for deterministic attempts and immutable evidence."""
+
+    def __init__(self, owner_root: Path) -> None:
+        self._root = _prepare_composition_root(owner_root)
+        self._database_path = _prepare_composition_database(self._root)
+        self._initialize_schema()
+
+    def reserve(
+        self, request: PageCompositionRequest
+    ) -> PageCompositionAuthorityResult:
+        attempt = PageCompositionAttempt(
+            composition_attempt_id=request.composition_attempt_id,
+            request_fingerprint=request.request_fingerprint or "",
+            plan_id=request.plan_id,
+            plan_fingerprint=request.plan_fingerprint,
+            project_id=request.project_id,
+            page_id=request.page_id,
+            explicit_authorization_reference=request.explicit_authorization_reference,
+            composition_provenance_reference=request.composition_provenance_reference,
+            compositor_profile_id=request.compositor_profile_id,
+            compositor_profile_version=request.compositor_profile_version,
+            ordered_source_asset_ids=tuple(source.asset_id for source in request.sources),
+            ordered_source_hashes=tuple(source.content_sha256 for source in request.sources),
+        )
+        payload = _composition_json(attempt)
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT composition_attempt_id, project_id, page_id, plan_id, outcome, "
+                "payload_json, payload_digest FROM composition_attempts "
+                "WHERE composition_attempt_id = ?",
+                (attempt.composition_attempt_id,),
+            ).fetchone()
+            if row is not None:
+                connection.rollback()
+                existing = _validated_attempt(row)
+                if existing is None:
+                    return _composition_result(attempt, "corrupt")
+                return _composition_result(
+                    existing, "confirmed" if existing == attempt else "conflict"
+                )
+            active = connection.execute(
+                "SELECT composition_attempt_id, project_id, page_id, plan_id, outcome, "
+                "payload_json, payload_digest FROM composition_attempts",
+            ).fetchall()
+            verified = tuple(_validated_attempt(item) for item in active)
+            if any(item is None for item in verified):
+                connection.rollback()
+                return _composition_result(attempt, "corrupt")
+            if any(
+                item is not None
+                and item.project_id == attempt.project_id
+                and item.page_id == attempt.page_id
+                and (
+                    item.plan_id != attempt.plan_id
+                    or item.plan_fingerprint != attempt.plan_fingerprint
+                )
+                for item in verified
+            ):
+                connection.rollback()
+                return _composition_result(attempt, "conflict")
+            if any(
+                item is not None
+                and item.project_id == attempt.project_id
+                and item.page_id == attempt.page_id
+                and item.outcome in {"reserved", "recovery_required"}
+                for item in verified
+            ):
+                connection.rollback()
+                return _composition_result(attempt, "conflict")
+            connection.execute(
+                "INSERT INTO composition_attempts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attempt.composition_attempt_id,
+                    attempt.project_id,
+                    attempt.page_id,
+                    attempt.plan_id,
+                    attempt.outcome,
+                    payload,
+                    _composition_digest(payload),
+                ),
+            )
+            connection.commit()
+            return _composition_result(attempt, "created")
+        except sqlite3.IntegrityError:
+            if connection is not None:
+                _composition_rollback(connection)
+            return _composition_result(attempt, "conflict")
+        except Exception:
+            if connection is not None:
+                _composition_rollback(connection)
+            return _composition_result(attempt, "failed")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def commit_evidence(
+        self, evidence: PageCompositionEvidence
+    ) -> PageCompositionAuthorityResult:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT composition_attempt_id, project_id, page_id, plan_id, outcome, "
+                "payload_json, payload_digest FROM composition_attempts "
+                "WHERE composition_attempt_id = ?",
+                (evidence.composition_attempt_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                return PageCompositionAuthorityResult(
+                    evidence.composition_attempt_id, "missing"
+                )
+            attempt = _validated_attempt(row)
+            if attempt is None:
+                connection.rollback()
+                return PageCompositionAuthorityResult(
+                    evidence.composition_attempt_id, "corrupt"
+                )
+            if not _composition_evidence_matches(attempt, evidence):
+                connection.rollback()
+                return _composition_result(attempt, "conflict")
+            existing_row = connection.execute(
+                "SELECT composition_attempt_id, evidence_id, payload_json, payload_digest "
+                "FROM composition_evidence "
+                "WHERE composition_attempt_id = ?",
+                (evidence.composition_attempt_id,),
+            ).fetchone()
+            if existing_row is not None:
+                connection.rollback()
+                existing_evidence = _validated_composition_evidence(existing_row)
+                if existing_evidence is None:
+                    return _composition_result(attempt, "corrupt")
+                if existing_evidence == evidence:
+                    return PageCompositionAuthorityResult(
+                        attempt.composition_attempt_id,
+                        "confirmed",
+                        attempt,
+                        existing_evidence,
+                    )
+                return _composition_result(attempt, "conflict")
+            if attempt.outcome != "reserved":
+                connection.rollback()
+                return _composition_result(attempt, "conflict")
+            target = {
+                "completed": "completed",
+                "failed": "failed",
+                "recovery_required": "recovery_required",
+            }[evidence.outcome]
+            final_attempt = attempt.model_copy(update={"outcome": target})
+            evidence_payload = _composition_json(evidence)
+            attempt_payload = _composition_json(final_attempt)
+            connection.execute(
+                "INSERT INTO composition_evidence VALUES (?, ?, ?, ?)",
+                (
+                    evidence.composition_attempt_id,
+                    evidence.evidence_id,
+                    evidence_payload,
+                    _composition_digest(evidence_payload),
+                ),
+            )
+            connection.execute(
+                "UPDATE composition_attempts SET outcome = ?, payload_json = ?, payload_digest = ? "
+                "WHERE composition_attempt_id = ?",
+                (
+                    final_attempt.outcome,
+                    attempt_payload,
+                    _composition_digest(attempt_payload),
+                    final_attempt.composition_attempt_id,
+                ),
+            )
+            connection.commit()
+            return PageCompositionAuthorityResult(
+                final_attempt.composition_attempt_id,
+                "updated",
+                final_attempt,
+                evidence,
+            )
+        except Exception:
+            if connection is not None:
+                _composition_rollback(connection)
+            return PageCompositionAuthorityResult(
+                evidence.composition_attempt_id, "failed"
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def lookup(self, composition_attempt_id: str) -> PageCompositionAuthorityResult:
+        try:
+            resolved = logical_reference(composition_attempt_id, "composition attempt")
+        except ValueError:
+            return PageCompositionAuthorityResult("", "corrupt")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            attempt_row = connection.execute(
+                "SELECT composition_attempt_id, project_id, page_id, plan_id, outcome, "
+                "payload_json, payload_digest FROM composition_attempts "
+                "WHERE composition_attempt_id = ?",
+                (resolved,),
+            ).fetchone()
+            if attempt_row is None:
+                return PageCompositionAuthorityResult(resolved, "missing")
+            attempt = _validated_attempt(attempt_row)
+            if attempt is None or attempt.composition_attempt_id != resolved:
+                return PageCompositionAuthorityResult(resolved, "corrupt")
+            evidence_row = connection.execute(
+                "SELECT composition_attempt_id, evidence_id, payload_json, payload_digest "
+                "FROM composition_evidence "
+                "WHERE composition_attempt_id = ?",
+                (resolved,),
+            ).fetchone()
+            evidence = (
+                None
+                if evidence_row is None
+                else _validated_composition_evidence(evidence_row)
+            )
+            if evidence_row is not None and evidence is None:
+                return PageCompositionAuthorityResult(resolved, "corrupt")
+            if evidence is not None and not _composition_evidence_matches(attempt, evidence):
+                return PageCompositionAuthorityResult(resolved, "corrupt")
+            if (attempt.outcome == "reserved") != (evidence is None):
+                return PageCompositionAuthorityResult(resolved, "corrupt")
+            return PageCompositionAuthorityResult(
+                resolved, "confirmed", attempt, evidence
+            )
+        except Exception:
+            return PageCompositionAuthorityResult(resolved, "corrupt")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _initialize_schema(self) -> None:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            if version == 0 and not tables:
+                connection.execute(
+                    "CREATE TABLE composition_attempts (composition_attempt_id TEXT PRIMARY KEY, "
+                    "project_id TEXT NOT NULL, page_id TEXT NOT NULL, plan_id TEXT NOT NULL, "
+                    "outcome TEXT NOT NULL, payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX one_reserved_composition ON composition_attempts(project_id, page_id) "
+                    "WHERE outcome IN ('reserved', 'recovery_required')"
+                )
+                connection.execute(
+                    "CREATE TABLE composition_evidence (composition_attempt_id TEXT PRIMARY KEY, "
+                    "evidence_id TEXT UNIQUE NOT NULL, payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL)"
+                )
+                connection.execute(f"PRAGMA user_version = {_COMPOSITION_SCHEMA_VERSION}")
+                connection.commit()
+                return
+            if version != _COMPOSITION_SCHEMA_VERSION or tables != {
+                "composition_attempts", "composition_evidence"
+            }:
+                raise ValueError("composition authority is unavailable")
+            connection.commit()
+        except Exception as error:
+            if connection is not None:
+                _composition_rollback(connection)
+            raise ValueError("composition authority is unavailable") from error
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._database_path, timeout=5.0, isolation_level=None)
+        mode = str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
+        if mode != "delete":
+            connection.close()
+            raise ValueError("composition authority is unavailable")
+        connection.execute("PRAGMA synchronous = FULL")
+        return connection
+
+
+def _composition_evidence_matches(
+    attempt: PageCompositionAttempt, evidence: PageCompositionEvidence
+) -> bool:
+    return (
+        attempt.composition_attempt_id,
+        attempt.request_fingerprint,
+        attempt.plan_id,
+        attempt.plan_fingerprint,
+        attempt.project_id,
+        attempt.page_id,
+        attempt.composition_provenance_reference,
+        attempt.compositor_profile_id,
+        attempt.compositor_profile_version,
+        attempt.ordered_source_asset_ids,
+        attempt.ordered_source_hashes,
+    ) == (
+        evidence.composition_attempt_id,
+        evidence.request_fingerprint,
+        evidence.plan_id,
+        evidence.plan_fingerprint,
+        evidence.project_id,
+        evidence.page_id,
+        evidence.composition_provenance_reference,
+        evidence.compositor_profile_id,
+        evidence.compositor_profile_version,
+        tuple(source.asset_id for source in evidence.ordered_sources),
+        tuple(source.content_sha256 for source in evidence.ordered_sources),
+    )
+
+
+def _composition_result(
+    attempt: PageCompositionAttempt, outcome: CompositionAuthorityOutcome
+) -> PageCompositionAuthorityResult:
+    return PageCompositionAuthorityResult(
+        attempt.composition_attempt_id, outcome, attempt
+    )
+
+
+def _validated_attempt(row: object) -> PageCompositionAttempt | None:
+    if not isinstance(row, tuple) or len(row) != 7:
+        return None
+    attempt_id, project_id, page_id, plan_id, outcome, payload, digest = row
+    payload = _validated_composition_payload((payload, digest))
+    if payload is None:
+        return None
+    try:
+        attempt = PageCompositionAttempt.model_validate_json(payload)
+    except Exception:
+        return None
+    if (
+        attempt.composition_attempt_id != attempt_id
+        or attempt.project_id != project_id
+        or attempt.page_id != page_id
+        or attempt.plan_id != plan_id
+        or attempt.outcome != outcome
+    ):
+        return None
+    return attempt
+
+
+def _validated_composition_evidence(row: object) -> PageCompositionEvidence | None:
+    if not isinstance(row, tuple) or len(row) != 4:
+        return None
+    attempt_id, evidence_id, payload, digest = row
+    payload = _validated_composition_payload((payload, digest))
+    if payload is None:
+        return None
+    try:
+        evidence = PageCompositionEvidence.model_validate_json(payload)
+    except Exception:
+        return None
+    if (
+        evidence.composition_attempt_id != attempt_id
+        or evidence.evidence_id != evidence_id
+    ):
+        return None
+    return evidence
+
+
+def _validated_composition_payload(row: object) -> str | None:
+    if not isinstance(row, tuple) or len(row) != 2:
+        return None
+    payload, digest = row
+    if (
+        not isinstance(payload, str)
+        or not isinstance(digest, str)
+        or _composition_digest(payload) != digest
+    ):
+        return None
+    return payload
+
+
+def _composition_json(model: _CompositionModel) -> str:
+    return json.dumps(
+        model.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+
+
+def _composition_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _prepare_composition_root(root: Path) -> Path:
+    if not isinstance(root, Path) or root.is_symlink() or _composition_reparse(root):
+        raise ValueError("composition authority root is unavailable")
+    root.mkdir(parents=True, exist_ok=True)
+    resolved = root.resolve(strict=True)
+    if not resolved.is_dir() or resolved.is_symlink() or _composition_reparse(resolved):
+        raise ValueError("composition authority root is unavailable")
+    return resolved
+
+
+def _prepare_composition_database(root: Path) -> Path:
+    path = root / _COMPOSITION_DATABASE
+    if path.exists() and (
+        not path.is_file() or path.is_symlink() or _composition_reparse(path)
+    ):
+        raise ValueError("composition authority is unavailable")
+    if path.resolve(strict=False).parent != root:
+        raise ValueError("composition authority is unavailable")
+    return path
+
+
+def _composition_reparse(path: Path) -> bool:
+    try:
+        attributes = path.lstat()
+        return bool(
+            getattr(attributes, "st_file_attributes", 0)
+            & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        )
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _composition_rollback(connection: sqlite3.Connection) -> None:
+    try:
+        connection.rollback()
+    except sqlite3.Error:
+        pass

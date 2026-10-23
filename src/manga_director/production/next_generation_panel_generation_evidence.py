@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+import stat
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -10,6 +16,26 @@ from manga_director.production.director import DirectorModel
 from manga_director.production.next_generation_page_generation_plan import (
     logical_reference,
     sha256_digest,
+)
+from manga_director.production.next_generation_panel_execution_attempt import (
+    PanelAttemptRecord,
+    PanelAttemptReservation,
+    PanelAttemptState,
+)
+
+PanelAuthorityOutcome = Literal[
+    "created", "updated", "confirmed", "missing", "conflict", "corrupt", "failed"
+]
+
+_AUTHORITY_DATABASE = "panel-generation-authority.sqlite3"
+_AUTHORITY_SCHEMA_VERSION = 1
+_NON_TERMINAL_STATES = (
+    "RESERVED",
+    "PROVIDER_STARTED",
+    "PROVIDER_COMPLETED",
+    "ASSET_REGISTERED",
+    "EVIDENCE_COMMITTED",
+    "RECOVERY_REQUIRED",
 )
 
 
@@ -131,3 +157,522 @@ class PanelGenerationEvidence(_PanelEvidenceModel):
         if self.outcome != "accepted" and any(value is not None for value in output_fields):
             raise ValueError("non-success Panel evidence cannot name an accepted output")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class PanelGenerationAuthorityResult:
+    attempt_id: str
+    outcome: PanelAuthorityOutcome
+    record: PanelAttemptRecord | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PanelGenerationEvidenceLookupResult:
+    attempt_id: str
+    outcome: Literal["found", "missing", "corrupt"]
+    evidence: PanelGenerationEvidence | None = field(default=None, repr=False)
+
+
+class LocalPanelGenerationAuthority:
+    """Private Panel-keyed attempt and immutable evidence sidecar."""
+
+    def __init__(self, owner_root: Path) -> None:
+        self._root = _prepare_authority_root(owner_root)
+        self._database_path = _prepare_authority_database(self._root)
+        self._initialize_schema()
+
+    def reserve(self, reservation: PanelAttemptReservation) -> PanelGenerationAuthorityResult:
+        record = PanelAttemptRecord(
+            reservation=reservation, state="RESERVED", provider_start_consumed=False
+        )
+        return self._create_or_confirm(record)
+
+    def start_provider(
+        self, reservation: PanelAttemptReservation
+    ) -> PanelGenerationAuthorityResult:
+        return self._transition(reservation, {"RESERVED"}, "PROVIDER_STARTED")
+
+    def record_provider_completed(
+        self, reservation: PanelAttemptReservation
+    ) -> PanelGenerationAuthorityResult:
+        return self._transition(
+            reservation, {"PROVIDER_STARTED"}, "PROVIDER_COMPLETED"
+        )
+
+    def record_asset_registered(
+        self, reservation: PanelAttemptReservation, output_asset_id: str
+    ) -> PanelGenerationAuthorityResult:
+        try:
+            asset_id = logical_reference(output_asset_id, "Panel output asset")
+        except ValueError:
+            return PanelGenerationAuthorityResult(reservation.attempt_id, "failed")
+        return self._transition(
+            reservation,
+            {"PROVIDER_COMPLETED"},
+            "ASSET_REGISTERED",
+            output_asset_id=asset_id,
+        )
+
+    def commit_evidence(
+        self, reservation: PanelAttemptReservation, evidence: PanelGenerationEvidence
+    ) -> PanelGenerationAuthorityResult:
+        if not _evidence_matches_reservation(evidence, reservation):
+            return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._read_record(connection, reservation.attempt_id)
+            if current is None:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "missing")
+            if current.reservation != reservation:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            existing = self._read_evidence(connection, reservation.attempt_id)
+            if isinstance(existing, str):
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "corrupt")
+            if existing is not None:
+                connection.rollback()
+                if existing == evidence and current.evidence_id == evidence.evidence_id:
+                    return PanelGenerationAuthorityResult(
+                        reservation.attempt_id, "confirmed", current
+                    )
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            if current.state not in {"ASSET_REGISTERED", "RECOVERY_REQUIRED"}:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            if evidence.output_asset_id != current.output_asset_id:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            next_record = current.model_copy(
+                update={"state": "EVIDENCE_COMMITTED", "evidence_id": evidence.evidence_id}
+            )
+            self._insert_evidence(connection, evidence)
+            self._replace_record(connection, next_record)
+            connection.commit()
+            return PanelGenerationAuthorityResult(
+                reservation.attempt_id, "updated", next_record
+            )
+        except Exception:
+            if connection is not None:
+                _rollback_authority(connection)
+            return PanelGenerationAuthorityResult(reservation.attempt_id, "failed")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def accept_panel(
+        self, reservation: PanelAttemptReservation
+    ) -> PanelGenerationAuthorityResult:
+        current = self.lookup_attempt(reservation.attempt_id)
+        accepted_asset_id = current.record.output_asset_id if current.record is not None else None
+        return self._transition(
+            reservation,
+            {"EVIDENCE_COMMITTED"},
+            "PANEL_ACCEPTED",
+            accepted_asset_id=accepted_asset_id,
+        )
+
+    def declare_failure(
+        self, reservation: PanelAttemptReservation
+    ) -> PanelGenerationAuthorityResult:
+        return self._transition(
+            reservation,
+            {"PROVIDER_STARTED", "PROVIDER_COMPLETED"},
+            "DECLARED_FAILURE",
+        )
+
+    def require_recovery(
+        self, reservation: PanelAttemptReservation
+    ) -> PanelGenerationAuthorityResult:
+        return self._transition(
+            reservation,
+            {"PROVIDER_STARTED", "PROVIDER_COMPLETED", "ASSET_REGISTERED"},
+            "RECOVERY_REQUIRED",
+        )
+
+    def lookup_attempt(self, attempt_id: str) -> PanelGenerationAuthorityResult:
+        try:
+            resolved = logical_reference(attempt_id, "Panel attempt")
+        except ValueError:
+            return PanelGenerationAuthorityResult("", "corrupt")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            row = connection.execute(
+                "SELECT project_id, page_id, plan_id, panel_id, state, payload_json, "
+                "payload_digest FROM panel_attempts WHERE attempt_id = ?",
+                (resolved,),
+            ).fetchone()
+            if row is None:
+                return PanelGenerationAuthorityResult(resolved, "missing")
+            record = _validated_record(row)
+            if record is None or record.reservation.attempt_id != resolved:
+                return PanelGenerationAuthorityResult(resolved, "corrupt")
+            return PanelGenerationAuthorityResult(resolved, "confirmed", record)
+        except Exception:
+            return PanelGenerationAuthorityResult(resolved, "corrupt")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def lookup_evidence(self, attempt_id: str) -> PanelGenerationEvidenceLookupResult:
+        connection: sqlite3.Connection | None = None
+        try:
+            resolved = logical_reference(attempt_id, "Panel attempt")
+            connection = self._connect()
+            evidence = self._read_evidence(connection, resolved)
+            if isinstance(evidence, str):
+                return PanelGenerationEvidenceLookupResult(resolved, "corrupt")
+            if evidence is None:
+                return PanelGenerationEvidenceLookupResult(resolved, "missing")
+            return PanelGenerationEvidenceLookupResult(resolved, "found", evidence)
+        except Exception:
+            return PanelGenerationEvidenceLookupResult(attempt_id, "corrupt")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _create_or_confirm(
+        self, record: PanelAttemptRecord
+    ) -> PanelGenerationAuthorityResult:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._read_record(connection, record.reservation.attempt_id)
+            if existing is not None:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(
+                    record.reservation.attempt_id,
+                    "confirmed" if existing == record else "conflict",
+                    existing,
+                )
+            active = connection.execute(
+                "SELECT project_id, page_id, plan_id, panel_id, state, payload_json, payload_digest "
+                "FROM panel_attempts",
+            ).fetchall()
+            verified = tuple(_validated_record(row) for row in active)
+            if any(item is None for item in verified):
+                connection.rollback()
+                return PanelGenerationAuthorityResult(record.reservation.attempt_id, "corrupt")
+            if any(
+                item is not None
+                and item.reservation.project_id == record.reservation.project_id
+                and item.reservation.page_id == record.reservation.page_id
+                and item.reservation.panel_id == record.reservation.panel_id
+                and item.reservation.plan_id != record.reservation.plan_id
+                for item in verified
+            ):
+                connection.rollback()
+                return PanelGenerationAuthorityResult(record.reservation.attempt_id, "conflict")
+            if any(
+                item is not None
+                and item.reservation.project_id == record.reservation.project_id
+                and item.reservation.page_id == record.reservation.page_id
+                and item.reservation.panel_id == record.reservation.panel_id
+                and item.state in _NON_TERMINAL_STATES
+                for item in verified
+            ):
+                connection.rollback()
+                return PanelGenerationAuthorityResult(record.reservation.attempt_id, "conflict")
+            self._insert_record(connection, record)
+            connection.commit()
+            return PanelGenerationAuthorityResult(
+                record.reservation.attempt_id, "created", record
+            )
+        except sqlite3.IntegrityError:
+            if connection is not None:
+                _rollback_authority(connection)
+            return PanelGenerationAuthorityResult(record.reservation.attempt_id, "conflict")
+        except Exception:
+            if connection is not None:
+                _rollback_authority(connection)
+            return PanelGenerationAuthorityResult(record.reservation.attempt_id, "failed")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _transition(
+        self,
+        reservation: PanelAttemptReservation,
+        expected: set[PanelAttemptState],
+        target: PanelAttemptState,
+        *,
+        output_asset_id: str | None = None,
+        accepted_asset_id: str | None = None,
+    ) -> PanelGenerationAuthorityResult:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._read_record(connection, reservation.attempt_id)
+            if current is None:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "missing")
+            if current.reservation != reservation:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            if current.state == target:
+                connection.rollback()
+                if (
+                    (output_asset_id is None or current.output_asset_id == output_asset_id)
+                    and (
+                        accepted_asset_id is None
+                        or current.accepted_asset_id == accepted_asset_id
+                    )
+                ):
+                    return PanelGenerationAuthorityResult(
+                        reservation.attempt_id, "confirmed", current
+                    )
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            if current.state not in expected:
+                connection.rollback()
+                return PanelGenerationAuthorityResult(reservation.attempt_id, "conflict")
+            next_record = current.model_copy(
+                update={
+                    "state": target,
+                    "provider_start_consumed": target != "RESERVED",
+                    "output_asset_id": output_asset_id or current.output_asset_id,
+                    "accepted_asset_id": accepted_asset_id,
+                }
+            )
+            self._replace_record(connection, next_record)
+            connection.commit()
+            return PanelGenerationAuthorityResult(
+                reservation.attempt_id, "updated", next_record
+            )
+        except Exception:
+            if connection is not None:
+                _rollback_authority(connection)
+            return PanelGenerationAuthorityResult(reservation.attempt_id, "failed")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _initialize_schema(self) -> None:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            if version == 0 and not tables:
+                connection.execute(
+                    "CREATE TABLE panel_attempts (attempt_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+                    "page_id TEXT NOT NULL, plan_id TEXT NOT NULL, panel_id TEXT NOT NULL, "
+                    "state TEXT NOT NULL, payload_json TEXT NOT NULL, "
+                    "payload_digest TEXT NOT NULL)"
+                )
+                states = ",".join(f"'{value}'" for value in _NON_TERMINAL_STATES)
+                connection.execute(
+                    "CREATE UNIQUE INDEX one_nonterminal_panel_attempt "
+                    "ON panel_attempts(project_id, page_id, panel_id) "
+                    f"WHERE state IN ({states})"
+                )
+                connection.execute(
+                    "CREATE TABLE panel_evidence (attempt_id TEXT PRIMARY KEY, evidence_id TEXT UNIQUE NOT NULL, "
+                    "payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL)"
+                )
+                connection.execute(f"PRAGMA user_version = {_AUTHORITY_SCHEMA_VERSION}")
+                connection.commit()
+                return
+            if version != _AUTHORITY_SCHEMA_VERSION or tables != {
+                "panel_attempts", "panel_evidence"
+            }:
+                raise ValueError("Panel generation authority is unavailable")
+            connection.commit()
+        except Exception as error:
+            if connection is not None:
+                _rollback_authority(connection)
+            raise ValueError("Panel generation authority is unavailable") from error
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._database_path, timeout=5.0, isolation_level=None)
+        mode = str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
+        if mode != "delete":
+            connection.close()
+            raise ValueError("Panel generation authority is unavailable")
+        connection.execute("PRAGMA synchronous = FULL")
+        return connection
+
+    @staticmethod
+    def _read_record(
+        connection: sqlite3.Connection, attempt_id: str
+    ) -> PanelAttemptRecord | None:
+        row = connection.execute(
+            "SELECT project_id, page_id, plan_id, panel_id, state, payload_json, payload_digest "
+            "FROM panel_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return None if row is None else _validated_record(row)
+
+    @staticmethod
+    def _insert_record(connection: sqlite3.Connection, record: PanelAttemptRecord) -> None:
+        payload = _canonical_model_json(record)
+        connection.execute(
+            "INSERT INTO panel_attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.reservation.attempt_id,
+                record.reservation.project_id,
+                record.reservation.page_id,
+                record.reservation.plan_id,
+                record.reservation.panel_id,
+                record.state,
+                payload,
+                _authority_digest(payload),
+            ),
+        )
+
+    @staticmethod
+    def _replace_record(connection: sqlite3.Connection, record: PanelAttemptRecord) -> None:
+        payload = _canonical_model_json(record)
+        changed = connection.execute(
+            "UPDATE panel_attempts SET state = ?, payload_json = ?, payload_digest = ? "
+            "WHERE attempt_id = ?",
+            (record.state, payload, _authority_digest(payload), record.reservation.attempt_id),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("Panel attempt disappeared during transition")
+
+    @staticmethod
+    def _read_evidence(
+        connection: sqlite3.Connection, attempt_id: str
+    ) -> PanelGenerationEvidence | str | None:
+        row = connection.execute(
+            "SELECT payload_json, payload_digest FROM panel_evidence WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not isinstance(row[0], str) or not isinstance(row[1], str):
+            return "corrupt"
+        if _authority_digest(row[0]) != row[1]:
+            return "corrupt"
+        try:
+            return PanelGenerationEvidence.model_validate_json(row[0])
+        except Exception:
+            return "corrupt"
+
+    @staticmethod
+    def _insert_evidence(
+        connection: sqlite3.Connection, evidence: PanelGenerationEvidence
+    ) -> None:
+        payload = _canonical_model_json(evidence)
+        connection.execute(
+            "INSERT INTO panel_evidence VALUES (?, ?, ?, ?)",
+            (
+                evidence.attempt_id,
+                evidence.evidence_id,
+                payload,
+                _authority_digest(payload),
+            ),
+        )
+
+
+def _evidence_matches_reservation(
+    evidence: PanelGenerationEvidence, reservation: PanelAttemptReservation
+) -> bool:
+    return isinstance(evidence, PanelGenerationEvidence) and (
+        evidence.attempt_id,
+        evidence.plan_id,
+        evidence.plan_fingerprint,
+        evidence.project_id,
+        evidence.page_id,
+        evidence.panel_id,
+        evidence.panel_order,
+        evidence.request_id,
+        evidence.request_fingerprint,
+    ) == (
+        reservation.attempt_id,
+        reservation.plan_id,
+        reservation.plan_fingerprint,
+        reservation.project_id,
+        reservation.page_id,
+        reservation.panel_id,
+        reservation.panel_order,
+        reservation.request_id,
+        reservation.request_fingerprint,
+    )
+
+
+def _validated_record(row: object) -> PanelAttemptRecord | None:
+    if not isinstance(row, tuple) or len(row) != 7:
+        return None
+    project_id, page_id, plan_id, panel_id, state, payload, digest = row
+    if not isinstance(payload, str) or not isinstance(digest, str):
+        return None
+    if _authority_digest(payload) != digest:
+        return None
+    try:
+        record = PanelAttemptRecord.model_validate_json(payload)
+    except Exception:
+        return None
+    if (
+        record.reservation.project_id != project_id
+        or record.reservation.page_id != page_id
+        or record.reservation.plan_id != plan_id
+        or record.reservation.panel_id != panel_id
+        or record.state != state
+    ):
+        return None
+    return record
+
+
+def _canonical_model_json(model: DirectorModel) -> str:
+    return json.dumps(
+        model.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+
+
+def _authority_digest(payload: str) -> str:
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _prepare_authority_root(root: Path) -> Path:
+    if not isinstance(root, Path) or root.is_symlink() or _authority_reparse(root):
+        raise ValueError("Panel generation authority root is unavailable")
+    root.mkdir(parents=True, exist_ok=True)
+    resolved = root.resolve(strict=True)
+    if not resolved.is_dir() or resolved.is_symlink() or _authority_reparse(resolved):
+        raise ValueError("Panel generation authority root is unavailable")
+    return resolved
+
+
+def _prepare_authority_database(root: Path) -> Path:
+    path = root / _AUTHORITY_DATABASE
+    if path.exists() and (
+        not path.is_file() or path.is_symlink() or _authority_reparse(path)
+    ):
+        raise ValueError("Panel generation authority is unavailable")
+    if path.resolve(strict=False).parent != root:
+        raise ValueError("Panel generation authority is unavailable")
+    return path
+
+
+def _authority_reparse(path: Path) -> bool:
+    try:
+        attributes = path.lstat()
+        return bool(
+            getattr(attributes, "st_file_attributes", 0)
+            & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        )
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _rollback_authority(connection: sqlite3.Connection) -> None:
+    try:
+        connection.rollback()
+    except sqlite3.Error:
+        pass

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from manga_director.production.next_generation_page_composition import (
     AcceptedPanelSource,
+    LocalPageCompositionAuthority,
     PageCompositeAsset,
     PageCompositionAttempt,
     PageCompositionEvidence,
@@ -153,3 +157,78 @@ def test_composite_asset_rejects_mixed_or_reused_source_manifest() -> None:
     reused = _source("panel-2", 2).model_copy(update={"attempt_id": first.attempt_id})
     with pytest.raises(ValidationError):
         PageCompositeAsset(**(values | {"ordered_sources": (first, reused)}))
+
+
+def _completed_evidence(request: PageCompositionRequest) -> PageCompositionEvidence:
+    return PageCompositionEvidence(
+        evidence_id="composition-evidence-1",
+        composition_attempt_id=request.composition_attempt_id,
+        plan_id=request.plan_id,
+        plan_fingerprint=request.plan_fingerprint,
+        project_id=request.project_id,
+        page_id=request.page_id,
+        request_fingerprint=request.request_fingerprint or "",
+        composition_provenance_reference=request.composition_provenance_reference,
+        ordered_sources=request.sources,
+        output_asset_id="composite-1",
+        output_sha256="f" * 64,
+        outcome="completed",
+    )
+
+
+def test_composition_authority_reserves_and_commits_exact_evidence(tmp_path: Path) -> None:
+    authority = LocalPageCompositionAuthority(tmp_path / "composition")
+    request = _request()
+    assert authority.reserve(request).outcome == "created"
+    assert authority.reserve(request).outcome == "confirmed"
+    evidence = _completed_evidence(request)
+    committed = authority.commit_evidence(evidence)
+    assert committed.outcome == "updated"
+    assert committed.attempt is not None and committed.attempt.outcome == "completed"
+    assert authority.commit_evidence(evidence).outcome == "confirmed"
+    lookup = authority.lookup(request.composition_attempt_id)
+    assert lookup.outcome == "confirmed"
+    assert lookup.evidence == evidence
+
+
+def test_composition_authority_rejects_active_duplicate_and_mixed_binding(
+    tmp_path: Path,
+) -> None:
+    authority = LocalPageCompositionAuthority(tmp_path / "composition")
+    request = _request()
+    assert authority.reserve(request).outcome == "created"
+    duplicate = _request(composition_attempt_id="composition-2")
+    assert authority.reserve(duplicate).outcome == "conflict"
+    mixed = _completed_evidence(request).model_copy(update={"plan_id": "plan-other"})
+    assert authority.commit_evidence(mixed).outcome == "conflict"
+
+
+def test_recovery_required_composition_blocks_replacement_attempt(tmp_path: Path) -> None:
+    authority = LocalPageCompositionAuthority(tmp_path / "composition")
+    request = _request()
+    assert authority.reserve(request).outcome == "created"
+    recovery = _completed_evidence(request).model_copy(
+        update={
+            "output_asset_id": None,
+            "output_sha256": None,
+            "outcome": "recovery_required",
+        }
+    )
+    assert authority.commit_evidence(recovery).outcome == "updated"
+    assert authority.reserve(
+        _request(composition_attempt_id="composition-2")
+    ).outcome == "conflict"
+
+
+def test_composition_index_column_tampering_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "composition"
+    authority = LocalPageCompositionAuthority(root)
+    request = _request()
+    assert authority.reserve(request).outcome == "created"
+    with sqlite3.connect(root / "page-composition-authority.sqlite3") as connection:
+        connection.execute(
+            "UPDATE composition_attempts SET outcome = 'completed' "
+            "WHERE composition_attempt_id = ?",
+            (request.composition_attempt_id,),
+        )
+    assert authority.lookup(request.composition_attempt_id).outcome == "corrupt"
