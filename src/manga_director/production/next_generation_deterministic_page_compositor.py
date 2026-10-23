@@ -106,7 +106,7 @@ def decode_png(
     )
 
 
-def _collect_png_chunks(data: bytes) -> tuple[bytes | None, list[bytes]]:
+def _collect_png_chunks(data: bytes) -> tuple[bytes | None, list[bytes]]:  # noqa: C901
     offset = len(PNG_SIGNATURE)
     header: bytes | None = None
     idat_parts: list[bytes] = []
@@ -243,9 +243,9 @@ def _draw_cover_center(
             canvas[target : target + 3] = bytes(rgb)
 
 
-def _decode_scanlines(
+def _decode_scanlines(  # noqa: C901
     compressed_parts: list[bytes], width: int, height: int, channels: int
-) -> bytes | memoryview:  # noqa: C901
+) -> bytes | memoryview:
     stride = width * channels
     row_length = stride + 1
     pixels = bytearray(height * stride)
