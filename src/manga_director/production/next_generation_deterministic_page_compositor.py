@@ -245,7 +245,7 @@ def _draw_cover_center(
 
 def _decode_scanlines(
     compressed_parts: list[bytes], width: int, height: int, channels: int
-) -> bytes:  # noqa: C901
+) -> bytes | memoryview:  # noqa: C901
     stride = width * channels
     row_length = stride + 1
     pixels = bytearray(height * stride)
