@@ -34,6 +34,11 @@ from manga_director.production.next_generation_human_visual_qa_approval_readines
     HumanVisualJudgmentDTO,
     HumanVisualQAApprovalReadinessService,
 )
+from manga_director.production.next_generation_page_composition import AcceptedPanelSource
+from manga_director.production.next_generation_page_generation_plan import PanelRectangle
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+)
 from manga_director.production.next_generation_visual_continuity_qa import (
     ContinuityComparisonDTO,
     PanelContinuityEvidenceDTO,
@@ -524,6 +529,94 @@ def test_models_are_frozen_closed_and_reject_unsafe_review_data() -> None:
         _judgment(prior_review_reference="")
     with pytest.raises(ValidationError, match="200 characters"):
         _judgment(reviewer_id="r" * 201)
+
+
+def test_exact_composition_proof_preserves_readiness_without_provider_identity() -> None:
+    scope = ApprovalReadinessScopeDTO(
+        project_id="project-1",
+        page_id="1",
+        page_number=1,
+        target_page_reference="page.project-1.1",
+        attempt_id="composition-1",
+        output_asset_id="composite-1",
+        provenance_reference="composition-provenance-1",
+        qa_report_reference="qa-report-1",
+    )
+    source = AcceptedPanelSource(
+        plan_id="plan-1",
+        plan_fingerprint="a" * 64,
+        project_id="project-1",
+        page_id="1",
+        panel_id="panel-1",
+        panel_order=1,
+        request_id="request-1",
+        request_fingerprint="b" * 64,
+        attempt_id="panel-attempt-1",
+        evidence_id="panel-evidence-1",
+        asset_id="panel-asset-1",
+        content_sha256="c" * 64,
+        width=1,
+        height=1,
+        rectangle=PanelRectangle(
+            left=46875, top=31250, right=953125, bottom=968750
+        ),
+    )
+    proof = DeterministicCompositionPageOutputProof(
+        project_id=scope.project_id,
+        page_id=scope.page_id,
+        target_page_reference=scope.target_page_reference,
+        attempt_id=scope.attempt_id,
+        provenance_reference=scope.provenance_reference,
+        asset_id=scope.output_asset_id,
+        content_sha256="d" * 64,
+        plan_id="plan-1",
+        plan_fingerprint="a" * 64,
+        request_fingerprint="e" * 64,
+        evidence_id="composition-evidence-1",
+        evidence_sha256="f" * 64,
+        ordered_sources=(source,),
+    )
+    comparison = ContinuityComparisonDTO(
+        comparison_id="comparison-1",
+        current_panel=PanelContinuityEvidenceDTO(
+            page_id=scope.page_id,
+            panel_id="panel-1",
+            generation_attempt_id=scope.attempt_id,
+            generation_output_asset_id=scope.output_asset_id,
+            generation_provenance_reference=scope.provenance_reference,
+            characters=(),
+            prop_ids=(),
+            location=_known("location-studio"),
+            time=_known("time-day"),
+        ),
+    )
+    visual = VisualContinuityQAService().validate((comparison,))
+    judgment = HumanVisualJudgmentDTO(
+        review_id="review-1",
+        project_id=scope.project_id,
+        page_id=scope.page_id,
+        attempt_id=scope.attempt_id,
+        output_asset_id=scope.output_asset_id,
+        provenance_reference=scope.provenance_reference,
+        qa_report_reference=scope.qa_report_reference,
+        reviewer_id="reviewer-1",
+        reviewed_at=datetime(2026, 10, 24, tzinfo=UTC),
+        checklist=_human_checklist(),
+        overall_judgment="acceptable_for_approval_consideration",
+        rationale="Exact composite and complete ordered source manifest inspected",
+    )
+
+    report = HumanVisualQAApprovalReadinessService()._assess_composition_proof(
+        scope,
+        proof,
+        _consistency_report(project_id="project-1"),
+        visual,
+        human_judgment=judgment,
+    )
+
+    assert report.findings == ()
+    assert report.status == "ready"
+    assert report.ready
 
 
 def test_source_has_no_public_export_io_provider_workflow_or_clock_boundary() -> None:

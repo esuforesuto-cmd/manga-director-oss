@@ -41,6 +41,42 @@ def test_prepare_apply_and_exact_replay_are_idempotent(tmp_path: Path) -> None:
     lookup = ledger.lookup_exact(binding)
     assert lookup.outcome == "confirmed"
     assert lookup.lifecycle == "applied"
+    applied = ledger.lookup_applied("project-1", "page-1", "composite-1")
+    assert applied.outcome == "found"
+    assert applied.binding == binding
+
+
+def test_applied_lookup_distinguishes_missing_prepared_and_asset_mismatch(
+    tmp_path: Path,
+) -> None:
+    ledger = LocalPageCompositionApplicationLedger(tmp_path / "ledger")
+    assert ledger.lookup_applied("project-1", "page-1", "composite-1").outcome == "missing"
+    binding = _binding()
+    assert ledger.prepare(binding).outcome == "prepared"
+    assert ledger.lookup_applied("project-1", "page-1", "composite-1").outcome == "prepared"
+    assert (
+        ledger.lookup_applied("project-1", "page-1", "other-composite").outcome
+        == "asset_mismatch"
+    )
+
+
+def test_applied_lookup_rejects_multiple_page_revisions(tmp_path: Path) -> None:
+    ledger = LocalPageCompositionApplicationLedger(tmp_path / "ledger")
+    first = _binding()
+    second = _binding(
+        application_id="application-2",
+        page_revision="revision-2",
+        composition_attempt_id="composition-2",
+    )
+    assert ledger.prepare(first).outcome == "prepared"
+    assert ledger.mark_applied(first).outcome == "applied"
+    assert ledger.prepare(second).outcome == "prepared"
+    assert ledger.mark_applied(second).outcome == "applied"
+
+    result = ledger.lookup_applied("project-1", "page-1", "composite-1")
+
+    assert result.outcome == "ambiguous"
+    assert result.binding is None
 
 
 def test_binding_difference_and_second_page_application_conflict(tmp_path: Path) -> None:
@@ -74,3 +110,4 @@ def test_corrupt_payload_fails_closed(tmp_path: Path) -> None:
             "UPDATE composition_application SET binding_fingerprint = ?", ("0" * 64,)
         )
     assert ledger.lookup_exact(binding).outcome == "corrupt"
+    assert ledger.lookup_applied("project-1", "page-1", "composite-1").outcome == "corrupt"

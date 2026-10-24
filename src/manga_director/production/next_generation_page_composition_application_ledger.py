@@ -23,6 +23,14 @@ ApplicationLifecycle = Literal["prepared", "applied"]
 ApplicationLedgerOutcome = Literal[
     "prepared", "applied", "confirmed", "missing", "conflict", "corrupt", "failed"
 ]
+AppliedBindingLookupOutcome = Literal[
+    "found",
+    "missing",
+    "prepared",
+    "asset_mismatch",
+    "ambiguous",
+    "corrupt",
+]
 
 _DATABASE_FILENAME = "page-composition-application-ledger.sqlite3"
 _SCHEMA_VERSION = 1
@@ -99,6 +107,14 @@ class PageCompositionApplicationLedgerResult:
     binding: PageCompositionApplicationBinding | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class PageCompositionAppliedBindingLookupResult:
+    outcome: AppliedBindingLookupOutcome
+    binding: PageCompositionApplicationBinding | None = field(
+        default=None, repr=False
+    )
+
+
 class LocalPageCompositionApplicationLedger:
     """Separate versioned sidecar; never creates Provider application rows."""
 
@@ -147,6 +163,54 @@ class LocalPageCompositionApplicationLedger:
             return _result(binding, "confirmed", lifecycle)
         except Exception:
             return _result(binding, "corrupt")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def lookup_applied(
+        self,
+        project_id: str,
+        page_id: str,
+        output_asset_id: str,
+    ) -> PageCompositionAppliedBindingLookupResult:
+        """Return one canonical applied binding without mutating the ledger."""
+
+        try:
+            project = logical_reference(project_id, "composition application project")
+            page = logical_reference(page_id, "composition application Page")
+            asset = logical_reference(output_asset_id, "composite asset")
+        except ValueError:
+            return PageCompositionAppliedBindingLookupResult("corrupt")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            rows = connection.execute(
+                "SELECT project_id, page_id, page_revision, lifecycle, payload_json, "
+                "payload_digest, binding_fingerprint "
+                "FROM composition_application"
+            ).fetchall()
+            verified = [_verified_row(row) for row in rows]
+            if any(item is None for item in verified):
+                return PageCompositionAppliedBindingLookupResult("corrupt")
+            matching_page = [
+                item
+                for item in verified
+                if item is not None
+                and item[0].project_id == project
+                and item[0].page_id == page
+            ]
+            if not matching_page:
+                return PageCompositionAppliedBindingLookupResult("missing")
+            if len(matching_page) != 1:
+                return PageCompositionAppliedBindingLookupResult("ambiguous")
+            binding, lifecycle = matching_page[0]
+            if binding.composite_asset_id != asset:
+                return PageCompositionAppliedBindingLookupResult("asset_mismatch")
+            if lifecycle != "applied":
+                return PageCompositionAppliedBindingLookupResult("prepared")
+            return PageCompositionAppliedBindingLookupResult("found", binding)
+        except Exception:
+            return PageCompositionAppliedBindingLookupResult("corrupt")
         finally:
             if connection is not None:
                 connection.close()

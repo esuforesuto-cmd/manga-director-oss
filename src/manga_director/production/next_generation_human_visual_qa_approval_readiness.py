@@ -28,6 +28,9 @@ from manga_director.production.next_generation_durable_evidence_workflow_binding
 from manga_director.production.next_generation_generation_evidence import (
     GenerationEvidenceValidationReport,
 )
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+)
 from manga_director.production.next_generation_visual_continuity_qa import (
     VisualContinuityQAReport,
     VisualContinuityQAService,
@@ -225,7 +228,36 @@ class _ServerResolvedAttemptBinding:
     ready: Literal[True] = True
 
 
-_AttemptBinding = AttemptToEvidenceBindingReport | _ServerResolvedAttemptBinding
+@dataclass(frozen=True, slots=True)
+class _ServerResolvedCompositionBinding:
+    """Normalized exact composite and complete ordered source proof."""
+
+    proof: DeterministicCompositionPageOutputProof
+    attempt_id: str
+    status: Literal["ready"] = "ready"
+    findings: tuple[()] = ()
+    bound: Literal[True] = True
+    ready: Literal[True] = True
+
+
+@dataclass(frozen=True, slots=True)
+class _CompositionWorkflowBinding:
+    attempt_id: str
+    output_asset_id: str
+    project_id: str
+    page_id: str
+    target_page_reference: str
+    status: Literal["eligible"] = "eligible"
+    findings: tuple[()] = ()
+    eligible: Literal[True] = True
+
+
+_AttemptBinding = (
+    AttemptToEvidenceBindingReport
+    | _ServerResolvedAttemptBinding
+    | _ServerResolvedCompositionBinding
+)
+_WorkflowBinding = DurableEvidenceWorkflowBindingReport | _CompositionWorkflowBinding
 
 
 class HumanVisualQAApprovalReadinessService:
@@ -292,11 +324,48 @@ class HumanVisualQAApprovalReadinessService:
             human_judgment,
         )
 
+    def _assess_composition_proof(
+        self,
+        scope: ApprovalReadinessScopeDTO,
+        proof: DeterministicCompositionPageOutputProof,
+        workflow_consistency_report: WorkflowConsistencyReport,
+        visual_qa_report: VisualContinuityQAReport,
+        identity_validation_report: IdentityValidationReport | None = None,
+        human_judgment: HumanVisualJudgmentDTO | None = None,
+    ) -> HumanVisualQAApprovalReadinessReport:
+        """Evaluate one exact composite without fabricating Provider evidence."""
+
+        if (
+            proof.project_id != scope.project_id
+            or proof.page_id != scope.page_id
+            or proof.attempt_id != scope.attempt_id
+            or proof.asset_id != scope.output_asset_id
+            or proof.provenance_reference != scope.provenance_reference
+            or proof.target_page_reference != scope.target_page_reference
+            or not proof.ordered_sources
+        ):
+            raise ValueError("server-resolved composition proof is not ready")
+        return self._assess(
+            scope,
+            _ServerResolvedCompositionBinding(proof=proof, attempt_id=proof.attempt_id),
+            _CompositionWorkflowBinding(
+                attempt_id=proof.attempt_id,
+                output_asset_id=proof.asset_id,
+                project_id=proof.project_id,
+                page_id=proof.page_id,
+                target_page_reference=proof.target_page_reference,
+            ),
+            workflow_consistency_report,
+            visual_qa_report,
+            identity_validation_report,
+            human_judgment,
+        )
+
     def _assess(
         self,
         scope: ApprovalReadinessScopeDTO,
         attempt_binding_report: _AttemptBinding,
-        workflow_page_binding_report: DurableEvidenceWorkflowBindingReport,
+        workflow_page_binding_report: _WorkflowBinding,
         workflow_consistency_report: WorkflowConsistencyReport,
         visual_qa_report: VisualContinuityQAReport,
         identity_validation_report: IdentityValidationReport | None,
@@ -451,6 +520,25 @@ def _append_attempt_binding_findings(
             )
         )
 
+    if isinstance(report, _ServerResolvedCompositionBinding):
+        proof = report.proof
+        if (
+            proof.attempt_id != scope.attempt_id
+            or proof.asset_id != scope.output_asset_id
+            or proof.provenance_reference != scope.provenance_reference
+            or not proof.ordered_sources
+            or tuple(source.panel_order for source in proof.ordered_sources)
+            != tuple(range(1, len(proof.ordered_sources) + 1))
+        ):
+            findings.append(
+                _finding(
+                    "COMPOSITION_OUTPUT_PROOF_MISMATCH",
+                    "blocked",
+                    "composite output and ordered source manifest are not exactly bound",
+                )
+            )
+        return
+
     matching = tuple(
         envelope
         for envelope in report.generation_evidence_validation_report.envelopes
@@ -486,7 +574,7 @@ def _append_attempt_binding_findings(
 
 def _append_workflow_page_binding_findings(
     scope: ApprovalReadinessScopeDTO,
-    report: DurableEvidenceWorkflowBindingReport,
+    report: _WorkflowBinding,
     findings: list[ApprovalReadinessFindingDTO],
 ) -> None:
     if report.status != "eligible" or not report.eligible or report.findings:
@@ -542,8 +630,9 @@ def _append_visual_qa_findings(
                 "advisory Visual QA comparisons and checklist are required",
             )
         )
-    if any(
-        item.classification in {"missing_evidence", "evidence_conflict"} for item in report.findings
+    if not isinstance(attempt_binding_report, _ServerResolvedCompositionBinding) and any(
+        item.classification in {"missing_evidence", "evidence_conflict"}
+        for item in report.findings
     ):
         findings.append(
             _finding(
@@ -596,13 +685,19 @@ def _visual_qa_report_is_complete(
 ) -> bool:
     if not report.comparisons or not report.checklist:
         return False
-    rebuilt = VisualContinuityQAService().validate(
-        report.comparisons,
-        identity_validation_report=identity_validation_report,
-        generation_evidence_validation_report=(
-            attempt_binding_report.generation_evidence_validation_report
-        ),
-    )
+    if isinstance(attempt_binding_report, _ServerResolvedCompositionBinding):
+        rebuilt = VisualContinuityQAService().validate(
+            report.comparisons,
+            identity_validation_report=identity_validation_report,
+        )
+    else:
+        rebuilt = VisualContinuityQAService().validate(
+            report.comparisons,
+            identity_validation_report=identity_validation_report,
+            generation_evidence_validation_report=(
+                attempt_binding_report.generation_evidence_validation_report
+            ),
+        )
     return report == rebuilt
 
 

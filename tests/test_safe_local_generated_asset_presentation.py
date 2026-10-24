@@ -17,6 +17,12 @@ from manga_director.application.generated_asset_presentation import (
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
 from manga_director.production import next_generation_local_durable_asset_owner as owner_module
+from manga_director.production.next_generation_deterministic_composite_asset_owner import (
+    DeterministicCompositeAssetOwner,
+)
+from manga_director.production.next_generation_deterministic_page_compositor import (
+    encode_rgb_png,
+)
 from manga_director.production.next_generation_generation_evidence import (
     EvidenceValueDTO,
     GenerationConfigurationEvidenceDTO,
@@ -31,6 +37,25 @@ from manga_director.production.next_generation_generation_evidence_persistence i
 from manga_director.production.next_generation_local_durable_asset_owner import (
     LocalDurableAssetOwner,
     OwnerRegistrationMaterial,
+)
+from manga_director.production.next_generation_page_composition import (
+    AcceptedPanelSource,
+    LocalPageCompositionAuthority,
+    PageCompositeAsset,
+    PageCompositionEvidence,
+    PageCompositionRequest,
+)
+from manga_director.production.next_generation_page_composition_application_ledger import (
+    LocalPageCompositionApplicationLedger,
+    PageCompositionApplicationBinding,
+)
+from manga_director.production.next_generation_page_generation_plan import PanelRectangle
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+    ProviderProofLookupResult,
+    ResolvedPageOutput,
+    build_local_page_output_proof_resolver,
+    composition_evidence_sha256,
 )
 from manga_director.production.next_generation_workflow_application_ledger import (
     LocalWorkflowApplicationLedgerStore,
@@ -162,6 +187,199 @@ def _manifest(root: Path) -> tuple[tuple[str, str, int, str], ...]:
         else:
             records.append((relative, "directory", 0, ""))
     return tuple(records)
+
+
+class _Release:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _CompositionResolver:
+    def __init__(self, asset_id: str, image_bytes: bytes) -> None:
+        self._asset_id = asset_id
+        self._image_bytes = image_bytes
+        self.release = _Release()
+
+    def resolve(
+        self, project_id: str, page_id: str, output_asset_id: str
+    ) -> ResolvedPageOutput:
+        assert (project_id, page_id, output_asset_id) == (_PROJECT, "1", self._asset_id)
+        source = AcceptedPanelSource(
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            project_id=_PROJECT,
+            page_id="1",
+            panel_id="panel-1",
+            panel_order=1,
+            request_id="request-1",
+            request_fingerprint="b" * 64,
+            attempt_id="panel-attempt-1",
+            evidence_id="panel-evidence-1",
+            asset_id="panel-asset-1",
+            content_sha256="c" * 64,
+            width=1,
+            height=1,
+            rectangle=PanelRectangle(
+                left=46875, top=31250, right=953125, bottom=968750
+            ),
+        )
+        proof = DeterministicCompositionPageOutputProof(
+            project_id=_PROJECT,
+            page_id="1",
+            target_page_reference="target:composition:1",
+            attempt_id="composition-1",
+            provenance_reference="composition-provenance-1",
+            asset_id=self._asset_id,
+            content_sha256=hashlib.sha256(self._image_bytes).hexdigest(),
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            request_fingerprint="d" * 64,
+            evidence_id="composition-evidence-1",
+            evidence_sha256="e" * 64,
+            ordered_sources=(source,),
+        )
+        return ResolvedPageOutput(proof, self._image_bytes, self.release)
+
+
+class _MissingProviderProofLookup:
+    def lookup(
+        self, project_id: str, page_id: str, output_asset_id: str
+    ) -> ProviderProofLookupResult:
+        del project_id, page_id, output_asset_id
+        return ProviderProofLookupResult("missing")
+
+
+def _durable_composition_resolver(
+    root: Path,
+    *,
+    output_asset_id: str,
+    image_bytes: bytes,
+) -> object:
+    source = AcceptedPanelSource(
+        plan_id="plan-1",
+        plan_fingerprint="a" * 64,
+        project_id=_PROJECT,
+        page_id="1",
+        panel_id="panel-1",
+        panel_order=1,
+        request_id="request-1",
+        request_fingerprint="b" * 64,
+        attempt_id="panel-attempt-1",
+        evidence_id="panel-evidence-1",
+        asset_id="panel-asset-1",
+        content_sha256="c" * 64,
+        width=1,
+        height=1,
+        rectangle=PanelRectangle(
+            left=46875, top=31250, right=953125, bottom=968750
+        ),
+    )
+    request = PageCompositionRequest(
+        composition_attempt_id="composition-1",
+        plan_id=source.plan_id,
+        plan_fingerprint=source.plan_fingerprint,
+        project_id=source.project_id,
+        page_id=source.page_id,
+        explicit_authorization_reference="composition-authorization-1",
+        composition_provenance_reference="composition-provenance-1",
+        panel_count=1,
+        sources=(source,),
+    )
+    authority = LocalPageCompositionAuthority(root / "composition")
+    assert authority.reserve(request).outcome == "created"
+    asset = PageCompositeAsset(
+        composition_attempt_id=request.composition_attempt_id,
+        request_fingerprint=request.request_fingerprint or "",
+        composition_provenance_reference=request.composition_provenance_reference,
+        ordered_sources=request.sources,
+        asset_id=output_asset_id,
+        content_sha256=hashlib.sha256(image_bytes).hexdigest(),
+    )
+    owner = DeterministicCompositeAssetOwner(root / "composites")
+    assert owner.register(asset, image_bytes).outcome == "registered"
+    evidence = PageCompositionEvidence(
+        evidence_id="composition-evidence-1",
+        composition_attempt_id=request.composition_attempt_id,
+        plan_id=request.plan_id,
+        plan_fingerprint=request.plan_fingerprint,
+        project_id=request.project_id,
+        page_id=request.page_id,
+        request_fingerprint=request.request_fingerprint or "",
+        composition_provenance_reference=request.composition_provenance_reference,
+        ordered_sources=request.sources,
+        output_asset_id=asset.asset_id,
+        output_sha256=asset.content_sha256,
+        outcome="completed",
+    )
+    assert authority.commit_evidence(evidence).outcome == "updated"
+    binding = PageCompositionApplicationBinding(
+        application_id="composition-application-1",
+        project_id=request.project_id,
+        page_id=request.page_id,
+        page_revision="revision-1",
+        plan_id=request.plan_id,
+        plan_fingerprint=request.plan_fingerprint,
+        composition_attempt_id=request.composition_attempt_id,
+        composition_provenance_reference=request.composition_provenance_reference,
+        request_fingerprint=request.request_fingerprint or "",
+        evidence_id=evidence.evidence_id,
+        evidence_sha256=composition_evidence_sha256(evidence),
+        composite_asset_id=asset.asset_id,
+        composite_sha256=asset.content_sha256,
+    )
+    ledger = LocalPageCompositionApplicationLedger(root / "application")
+    assert ledger.prepare(binding).outcome == "prepared"
+    assert ledger.mark_applied(binding).outcome == "applied"
+    return build_local_page_output_proof_resolver(
+        provider_proof_lookup=_MissingProviderProofLookup(),
+        composition_authority=authority,
+        composite_owner=owner,
+        composition_application_ledger=ledger,
+    )
+
+
+def test_private_composition_resolver_presents_exact_composite_bytes(tmp_path: Path) -> None:
+    repository, _legacy_service, _png_bytes, binding = _seed(tmp_path)
+    composite = b"exact-composite-bytes"
+    resolver = _CompositionResolver(binding.output_asset_id, composite)
+    service = build_generated_asset_presentation(
+        repository, page_output_resolver=resolver
+    )
+
+    presentation = service.get(_PROJECT, 1)
+    assert presentation.image_bytes == composite
+    presentation.release()
+    assert resolver.release.released
+
+
+def test_concrete_durable_composition_resolver_presents_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    repository, _legacy_service, _png_bytes, _binding = _seed(tmp_path)
+    output_asset_id = "composite-1"
+    repository.save(
+        Project(
+            id=_PROJECT,
+            title="V7-07",
+            pages=[_page(PageState.GENERATED, output_asset_id)],
+        )
+    )
+    composite = encode_rgb_png(2048, 3072, b"\xff" * (2048 * 3072 * 3))
+    resolver = _durable_composition_resolver(
+        tmp_path / "composition-sidecars",
+        output_asset_id=output_asset_id,
+        image_bytes=composite,
+    )
+    service = build_generated_asset_presentation(
+        repository, page_output_resolver=resolver
+    )
+
+    presentation = service.get(_PROJECT, 1)
+
+    assert presentation.image_bytes == composite
 
 
 @pytest.mark.parametrize(
