@@ -131,6 +131,53 @@ def test_prepare_finalize_and_exact_replays(tmp_path: Path) -> None:
     assert replay_finalized.status == "applied" and replay_finalized.idempotent_replay is True
 
 
+def test_exact_inventory_observation_distinguishes_prepared_applied_and_corrupt(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    assert LocalWorkflowApplicationLedgerStore.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    ).outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalWorkflowApplicationLedgerStore.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+
+    store = LocalWorkflowApplicationLedgerStore(tmp_path / "ledger")
+    binding = _binding()
+    assert store.prepare(binding).outcome == "prepared"
+    prepared = LocalWorkflowApplicationLedgerStore.observe_attempts(
+        tmp_path / "ledger", (_ATTEMPT,)
+    )
+    assert prepared.outcome == "prepared"
+    assert prepared.bindings == (binding,)
+    assert LocalWorkflowApplicationLedgerStore.observe_page(
+        tmp_path / "ledger", _PROJECT, _PAGE
+    ) == prepared
+    assert store.finalize(
+        binding, _authoritative_commit_proof(binding)
+    ).outcome == "applied"
+    assert LocalWorkflowApplicationLedgerStore.observe_attempts(
+        tmp_path / "ledger", (_ATTEMPT,)
+    ).outcome == "found"
+    page = LocalWorkflowApplicationLedgerStore.observe_page(
+        tmp_path / "ledger", _PROJECT, _PAGE
+    )
+    assert page.outcome == "found"
+    assert page.attempt_ids == (_ATTEMPT,)
+    with sqlite3.connect(
+        tmp_path / "ledger" / "workflow-application-ledger.sqlite3"
+    ) as connection:
+        connection.execute("UPDATE workflow_application_ledger SET binding_digest = 'bad'")
+    assert LocalWorkflowApplicationLedgerStore.observe_attempts(
+        tmp_path / "ledger", (_ATTEMPT,)
+    ).outcome == "corrupt"
+    assert LocalWorkflowApplicationLedgerStore.observe_page(
+        tmp_path / "ledger", _PROJECT, _PAGE
+    ).outcome == "corrupt"
+
+
 def test_finalize_requires_prepared_record_and_exact_private_proof(tmp_path: Path) -> None:
     service = WorkflowApplicationLedgerService()
     store = LocalWorkflowApplicationLedgerStore(tmp_path)

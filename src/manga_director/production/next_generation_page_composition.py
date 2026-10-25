@@ -357,6 +357,16 @@ class PageCompositionAuthorityResult:
     evidence: PageCompositionEvidence | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class PageCompositionPageObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    plan_ids: tuple[str, ...] = ()
+    attempt_ids: tuple[str, ...] = ()
+    asset_required_attempt_ids: tuple[str, ...] = ()
+    attempts: tuple[PageCompositionAttempt, ...] = field(default=(), repr=False)
+    evidence: tuple[PageCompositionEvidence, ...] = field(default=(), repr=False)
+
+
 class LocalPageCompositionAuthority:
     """Private versioned store for deterministic attempts and immutable evidence."""
 
@@ -594,6 +604,134 @@ class LocalPageCompositionAuthority:
             if connection is not None:
                 connection.close()
 
+    def observe_page(  # noqa: C901 - one closed authority integrity inventory.
+        self, project_id: str, page_id: str
+    ) -> PageCompositionPageObservation:
+        """Read one Page's exact composition inventory without mutation."""
+
+        path_status = _readonly_composition_status(self._root, self._database_path)
+        if path_status == "missing":
+            return PageCompositionPageObservation("missing")
+        if path_status == "corrupt":
+            return PageCompositionPageObservation("corrupt")
+        try:
+            uri = f"{self._database_path.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if int(connection.execute("PRAGMA user_version").fetchone()[0]) != _COMPOSITION_SCHEMA_VERSION:
+                    return PageCompositionPageObservation("corrupt")
+                attempt_columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute("PRAGMA table_info(composition_attempts)")
+                )
+                evidence_columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute("PRAGMA table_info(composition_evidence)")
+                )
+                if not _composition_schema_objects_are_exact(connection) or attempt_columns != (
+                    ("composition_attempt_id", "TEXT", 0, None, 1),
+                    ("project_id", "TEXT", 1, None, 0),
+                    ("page_id", "TEXT", 1, None, 0),
+                    ("plan_id", "TEXT", 1, None, 0),
+                    ("outcome", "TEXT", 1, None, 0),
+                    ("payload_json", "TEXT", 1, None, 0),
+                    ("payload_digest", "TEXT", 1, None, 0),
+                ) or evidence_columns != (
+                    ("composition_attempt_id", "TEXT", 0, None, 1),
+                    ("evidence_id", "TEXT", 1, None, 0),
+                    ("payload_json", "TEXT", 1, None, 0),
+                    ("payload_digest", "TEXT", 1, None, 0),
+                ):
+                    return PageCompositionPageObservation("corrupt")
+                attempt_rows = connection.execute(
+                    "SELECT composition_attempt_id, project_id, page_id, plan_id, outcome, "
+                    "payload_json, payload_digest FROM composition_attempts"
+                ).fetchall()
+                evidence_rows = connection.execute(
+                    "SELECT composition_attempt_id, evidence_id, payload_json, payload_digest "
+                    "FROM composition_evidence"
+                ).fetchall()
+            attempts = tuple(_validated_attempt(row) for row in attempt_rows)
+            evidence = tuple(
+                _validated_composition_evidence(row) for row in evidence_rows
+            )
+            if any(item is None for item in (*attempts, *evidence)):
+                return PageCompositionPageObservation("corrupt")
+            attempt_by_id = {
+                item.composition_attempt_id: item
+                for item in attempts
+                if item is not None
+            }
+            if len(attempt_by_id) != len(attempts):
+                return PageCompositionPageObservation("ambiguous")
+            for item in evidence:
+                assert item is not None
+                attempt = attempt_by_id.get(item.composition_attempt_id)
+                if (
+                    attempt is None
+                    or attempt.outcome != item.outcome
+                    or not _composition_evidence_matches(attempt, item)
+                ):
+                    return PageCompositionPageObservation("corrupt")
+            evidence_attempt_ids = {
+                item.composition_attempt_id for item in evidence if item is not None
+            }
+            if any(
+                (attempt.outcome != "reserved")
+                != (attempt.composition_attempt_id in evidence_attempt_ids)
+                for attempt in attempt_by_id.values()
+            ):
+                return PageCompositionPageObservation("corrupt")
+            page_attempts = tuple(
+                item
+                for item in attempts
+                if item is not None
+                and item.project_id == project_id
+                and item.page_id == page_id
+            )
+        except Exception:
+            return PageCompositionPageObservation("corrupt")
+        if not page_attempts:
+            return PageCompositionPageObservation("missing")
+        plans = tuple(sorted({item.plan_id for item in page_attempts}))
+        attempt_ids = tuple(
+            sorted(item.composition_attempt_id for item in page_attempts)
+        )
+        asset_required = tuple(
+            sorted(
+                item.composition_attempt_id
+                for item in page_attempts
+                if item.outcome == "completed"
+            )
+        )
+        if len(plans) != 1:
+            return PageCompositionPageObservation(
+                "ambiguous", plans, attempt_ids, asset_required, page_attempts, ()
+            )
+        page_evidence = tuple(
+            sorted(
+                (
+                    item
+                    for item in evidence
+                    if item is not None
+                    and item.composition_attempt_id in attempt_ids
+                ),
+                key=lambda item: item.composition_attempt_id,
+            )
+        )
+        return PageCompositionPageObservation(
+            "found", plans, attempt_ids, asset_required, page_attempts, page_evidence
+        )
+
+    @classmethod
+    def observe_page_at(
+        cls, owner_root: Path, project_id: str, page_id: str
+    ) -> PageCompositionPageObservation:
+        authority = object.__new__(cls)
+        authority._root = owner_root
+        authority._database_path = owner_root / _COMPOSITION_DATABASE
+        return authority.observe_page(project_id, page_id)
+
     def _initialize_schema(self) -> None:
         connection: sqlite3.Connection | None = None
         try:
@@ -723,6 +861,110 @@ def _validated_composition_evidence(row: object) -> PageCompositionEvidence | No
     ):
         return None
     return evidence
+
+
+def _composition_schema_objects_are_exact(connection: sqlite3.Connection) -> bool:
+    objects = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if objects != [
+        ("index", "one_reserved_composition", "composition_attempts"),
+        ("table", "composition_attempts", "composition_attempts"),
+        ("table", "composition_evidence", "composition_evidence"),
+    ]:
+        return False
+    expected: dict[str, set[tuple[int, str, int, tuple[str, ...]]]] = {
+        "composition_attempts": {
+            (1, "pk", 0, ("composition_attempt_id",)),
+            (1, "c", 1, ("project_id", "page_id")),
+        },
+        "composition_evidence": {
+            (1, "pk", 0, ("composition_attempt_id",)),
+            (1, "u", 0, ("evidence_id",)),
+        },
+    }
+    for table, expected_indexes in expected.items():
+        observed: set[tuple[int, str, int, tuple[str, ...]]] = set()
+        for index in connection.execute(f"PRAGMA index_list({table})").fetchall():
+            if len(index) != 5 or not isinstance(index[1], str):
+                return False
+            columns = tuple(
+                str(row[2])
+                for row in connection.execute(
+                    f"PRAGMA index_info({index[1]})"
+                ).fetchall()
+            )
+            observed.add((int(index[2]), str(index[3]), int(index[4]), columns))
+        if observed != expected_indexes:
+            return False
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'one_reserved_composition'"
+    ).fetchone()
+    expected_sql = (
+        "CREATE UNIQUE INDEX one_reserved_composition "
+        "ON composition_attempts(project_id, page_id) "
+        "WHERE outcome IN ('reserved', 'recovery_required')"
+    )
+    return bool(
+        isinstance(row, tuple)
+        and len(row) == 1
+        and isinstance(row[0], str)
+        and _without_ascii_whitespace(row[0]).lower()
+        == _without_ascii_whitespace(expected_sql).lower()
+    )
+
+
+def _without_ascii_whitespace(value: str) -> str:
+    return "".join(
+        character for character in value if character not in " \t\r\n\f\v"
+    )
+
+
+def _readonly_composition_status(
+    root: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != root.resolve(strict=True)
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
 
 
 def _validated_composition_payload(row: object) -> str | None:

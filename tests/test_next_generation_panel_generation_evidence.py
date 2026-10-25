@@ -122,6 +122,28 @@ def test_panel_authority_persists_exact_lifecycle_and_evidence(tmp_path: Path) -
     assert authority.accept_panel(reservation).outcome == "confirmed"
 
 
+def test_page_observation_is_read_only_and_rejects_unknown_schema(tmp_path: Path) -> None:
+    missing_root = tmp_path / "missing"
+    assert LocalPanelGenerationAuthority.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalPanelGenerationAuthority.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "corrupt"
+
+    root = tmp_path / "panels"
+    authority = LocalPanelGenerationAuthority(root)
+    assert authority.reserve(_reservation()).outcome == "created"
+    found = authority.observe_page("project-1", "page-1")
+    assert found.outcome == "found"
+    assert found.plan_ids == ("plan-1",)
+    with sqlite3.connect(root / "panel-generation-authority.sqlite3") as connection:
+        connection.execute("PRAGMA user_version = 99")
+    assert authority.observe_page("project-1", "page-1").outcome == "corrupt"
+
+
 def test_only_one_nonterminal_attempt_per_plan_panel(tmp_path: Path) -> None:
     authority = LocalPanelGenerationAuthority(tmp_path / "panels")
     first = _reservation()

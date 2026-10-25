@@ -46,6 +46,35 @@ def test_prepare_apply_and_exact_replay_are_idempotent(tmp_path: Path) -> None:
     assert applied.binding == binding
 
 
+def test_page_observation_is_read_only_and_distinguishes_prepared_applied(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    assert LocalPageCompositionApplicationLedger.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalPageCompositionApplicationLedger.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "corrupt"
+
+    root = tmp_path / "ledger"
+    ledger = LocalPageCompositionApplicationLedger(root)
+    binding = _binding()
+    ledger.prepare(binding)
+    prepared = ledger.observe_page("project-1", "page-1")
+    assert prepared.outcome == "prepared"
+    assert prepared.plan_ids == ("plan-1",)
+    ledger.mark_applied(binding)
+    assert ledger.observe_page("project-1", "page-1").outcome == "found"
+    with sqlite3.connect(
+        root / "page-composition-application-ledger.sqlite3"
+    ) as connection:
+        connection.execute("PRAGMA user_version = 99")
+    assert ledger.observe_page("project-1", "page-1").outcome == "corrupt"
+
+
 def test_applied_lookup_distinguishes_missing_prepared_and_asset_mismatch(
     tmp_path: Path,
 ) -> None:

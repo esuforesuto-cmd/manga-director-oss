@@ -47,6 +47,21 @@ class DeterministicCompositeReadResult:
     image_bytes: bytes | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class DeterministicCompositeInventoryObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    composition_attempt_ids: tuple[str, ...] = ()
+    assets: tuple[PageCompositeAsset, ...] = field(default=(), repr=False)
+    missing_composition_attempt_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DeterministicCompositePageObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    composition_attempt_ids: tuple[str, ...] = ()
+    assets: tuple[PageCompositeAsset, ...] = field(default=(), repr=False)
+
+
 class DeterministicCompositeAssetOwner:
     """Own strict canonical PNGs without any Provider identity or registry row."""
 
@@ -221,6 +236,142 @@ class DeterministicCompositeAssetOwner:
             if connection is not None:
                 connection.close()
 
+    def observe_attempts(  # noqa: C901 - one closed integrity inventory.
+        self, composition_attempt_ids: tuple[str, ...]
+    ) -> DeterministicCompositeInventoryObservation:
+        if len(composition_attempt_ids) != len(set(composition_attempt_ids)):
+            return DeterministicCompositeInventoryObservation("ambiguous")
+        path_status = _readonly_composite_owner_status(
+            self._root, self._asset_directory, self._database_path
+        )
+        if path_status == "missing":
+            return DeterministicCompositeInventoryObservation(
+                "missing",
+                missing_composition_attempt_ids=tuple(
+                    sorted(composition_attempt_ids)
+                ),
+            )
+        if path_status == "corrupt":
+            return DeterministicCompositeInventoryObservation("corrupt")
+        try:
+            uri = f"{self._database_path.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if int(connection.execute("PRAGMA user_version").fetchone()[0]) != _SCHEMA_VERSION:
+                    return DeterministicCompositeInventoryObservation("corrupt")
+                if not _composite_schema_is_exact(connection):
+                    return DeterministicCompositeInventoryObservation("corrupt")
+                all_rows = connection.execute(
+                    "SELECT asset_id, storage_name, producer_kind, payload_json, "
+                    "payload_digest, content_sha256, composition_attempt_id "
+                    "FROM composite_assets"
+                ).fetchall()
+                verified_assets: dict[str, PageCompositeAsset] = {}
+                for row in all_rows:
+                    verified = _verified_row(row[:6], row[6])
+                    if verified is None:
+                        return DeterministicCompositeInventoryObservation("corrupt")
+                    asset, storage_name = verified
+                    if asset.composition_attempt_id in verified_assets:
+                        return DeterministicCompositeInventoryObservation("ambiguous")
+                    path = self._safe_asset_path(storage_name)
+                    if _file_digest(path) != asset.content_sha256:
+                        return DeterministicCompositeInventoryObservation("corrupt")
+                    verified_assets[asset.composition_attempt_id] = asset
+                found: list[str] = []
+                assets: list[PageCompositeAsset] = []
+                for attempt_id in composition_attempt_ids:
+                    found_asset = verified_assets.get(attempt_id)
+                    if found_asset is None:
+                        continue
+                    found.append(attempt_id)
+                    assets.append(found_asset)
+        except Exception:
+            return DeterministicCompositeInventoryObservation("corrupt")
+        missing = tuple(sorted(set(composition_attempt_ids) - set(found)))
+        if not found:
+            return DeterministicCompositeInventoryObservation(
+                "missing", missing_composition_attempt_ids=missing
+            )
+        return DeterministicCompositeInventoryObservation(
+            "found",
+            tuple(sorted(found)),
+            tuple(sorted(assets, key=lambda item: item.composition_attempt_id)),
+            missing,
+        )
+
+    @classmethod
+    def observe_attempts_at(
+        cls, owner_root: Path, composition_attempt_ids: tuple[str, ...]
+    ) -> DeterministicCompositeInventoryObservation:
+        owner = object.__new__(cls)
+        owner._root = owner_root
+        owner._asset_directory = owner_root / _ASSET_DIRECTORY
+        owner._database_path = owner_root / _DATABASE_FILENAME
+        return owner.observe_attempts(composition_attempt_ids)
+
+    def observe_page(
+        self, project_id: str, page_id: str
+    ) -> DeterministicCompositePageObservation:
+        """Verify and return composites whose source manifest owns this Page."""
+
+        path_status = _readonly_composite_owner_status(
+            self._root, self._asset_directory, self._database_path
+        )
+        if path_status == "missing":
+            return DeterministicCompositePageObservation("missing")
+        if path_status == "corrupt":
+            return DeterministicCompositePageObservation("corrupt")
+        try:
+            uri = f"{self._database_path.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if (
+                    int(connection.execute("PRAGMA user_version").fetchone()[0])
+                    != _SCHEMA_VERSION
+                    or not _composite_schema_is_exact(connection)
+                ):
+                    return DeterministicCompositePageObservation("corrupt")
+                rows = connection.execute(
+                    "SELECT asset_id, storage_name, producer_kind, payload_json, "
+                    "payload_digest, content_sha256, composition_attempt_id "
+                    "FROM composite_assets"
+                ).fetchall()
+            matching: list[PageCompositeAsset] = []
+            observed_ids: set[str] = set()
+            for row in rows:
+                verified = _verified_row(row[:6], row[6])
+                if verified is None or row[6] in observed_ids:
+                    return DeterministicCompositePageObservation("corrupt")
+                asset, storage_name = verified
+                if _file_digest(self._safe_asset_path(storage_name)) != asset.content_sha256:
+                    return DeterministicCompositePageObservation("corrupt")
+                observed_ids.add(asset.composition_attempt_id)
+                source = asset.ordered_sources[0]
+                if source.project_id == project_id and source.page_id == page_id:
+                    matching.append(asset)
+        except Exception:
+            return DeterministicCompositePageObservation("corrupt")
+        if not matching:
+            return DeterministicCompositePageObservation("missing")
+        ordered = tuple(sorted(matching, key=lambda item: item.composition_attempt_id))
+        attempt_ids = tuple(item.composition_attempt_id for item in ordered)
+        if len(attempt_ids) != len(set(attempt_ids)):
+            return DeterministicCompositePageObservation(
+                "ambiguous", attempt_ids, ordered
+            )
+        return DeterministicCompositePageObservation("found", attempt_ids, ordered)
+
+    @classmethod
+    def observe_page_at(
+        cls, owner_root: Path, project_id: str, page_id: str
+    ) -> DeterministicCompositePageObservation:
+        owner = object.__new__(cls)
+        owner._root = owner_root
+        owner._asset_directory = owner_root / _ASSET_DIRECTORY
+        owner._database_path = owner_root / _DATABASE_FILENAME
+        return owner.observe_page(project_id, page_id)
+
     def _assert_live_directories(self) -> None:
         if (
             not self._root.is_dir()
@@ -302,6 +453,93 @@ class DeterministicCompositeAssetOwner:
             raise ValueError("composite owner is unavailable")
         connection.execute("PRAGMA synchronous = FULL")
         return connection
+
+
+def _readonly_composite_owner_status(
+    root: Path, asset_directory: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != root.resolve(strict=True)
+            or _readonly_path_kind(asset_directory) != "directory"
+            or asset_directory.resolve(strict=True).parent != root.resolve(strict=True)
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
+
+
+def _composite_schema_is_exact(connection: sqlite3.Connection) -> bool:
+    objects = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if objects != [("table", "composite_assets", "composite_assets")]:
+        return False
+    columns = tuple(
+        (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+        for row in connection.execute("PRAGMA table_info(composite_assets)")
+    )
+    if columns != (
+        ("composition_attempt_id", "TEXT", 0, None, 1),
+        ("asset_id", "TEXT", 1, None, 0),
+        ("storage_name", "TEXT", 1, None, 0),
+        ("producer_kind", "TEXT", 1, None, 0),
+        ("payload_json", "TEXT", 1, None, 0),
+        ("payload_digest", "TEXT", 1, None, 0),
+        ("content_sha256", "TEXT", 1, None, 0),
+    ):
+        return False
+    indexes = connection.execute("PRAGMA index_list(composite_assets)").fetchall()
+    observed: set[tuple[int, str, int, tuple[str, ...]]] = set()
+    for index in indexes:
+        if len(index) != 5 or not isinstance(index[1], str):
+            return False
+        index_columns = tuple(
+            str(row[2])
+            for row in connection.execute(
+                f"PRAGMA index_info({index[1]})"
+            ).fetchall()
+        )
+        observed.add((int(index[2]), str(index[3]), int(index[4]), index_columns))
+    return observed == {
+        (1, "pk", 0, ("composition_attempt_id",)),
+        (1, "u", 0, ("asset_id",)),
+        (1, "u", 0, ("storage_name",)),
+    }
 
 
 def _result(

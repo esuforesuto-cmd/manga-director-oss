@@ -173,6 +173,16 @@ class PanelGenerationEvidenceLookupResult:
     evidence: PanelGenerationEvidence | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class PanelGenerationPageObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    plan_ids: tuple[str, ...] = ()
+    attempt_ids: tuple[str, ...] = ()
+    records: tuple[PanelAttemptRecord, ...] = field(default=(), repr=False)
+    evidence: tuple[PanelGenerationEvidence, ...] = field(default=(), repr=False)
+    authority_attempt_ids: tuple[str, ...] = ()
+
+
 class LocalPanelGenerationAuthority:
     """Private Panel-keyed attempt and immutable evidence sidecar."""
 
@@ -334,6 +344,140 @@ class LocalPanelGenerationAuthority:
         finally:
             if connection is not None:
                 connection.close()
+
+    def observe_page(  # noqa: C901 - one closed Page integrity inventory.
+        self, project_id: str, page_id: str
+    ) -> PanelGenerationPageObservation:
+        """Return one verified Page inventory without changing authority state."""
+
+        path_status = _readonly_authority_status(self._root, self._database_path)
+        if path_status == "missing":
+            return PanelGenerationPageObservation("missing")
+        if path_status == "corrupt":
+            return PanelGenerationPageObservation("corrupt")
+        try:
+            uri = f"{self._database_path.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if int(connection.execute("PRAGMA user_version").fetchone()[0]) != _AUTHORITY_SCHEMA_VERSION:
+                    return PanelGenerationPageObservation("corrupt")
+                attempt_columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute("PRAGMA table_info(panel_attempts)")
+                )
+                evidence_columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute("PRAGMA table_info(panel_evidence)")
+                )
+                if not _panel_schema_objects_are_exact(connection) or attempt_columns != (
+                    ("attempt_id", "TEXT", 0, None, 1),
+                    ("project_id", "TEXT", 1, None, 0),
+                    ("page_id", "TEXT", 1, None, 0),
+                    ("plan_id", "TEXT", 1, None, 0),
+                    ("panel_id", "TEXT", 1, None, 0),
+                    ("state", "TEXT", 1, None, 0),
+                    ("payload_json", "TEXT", 1, None, 0),
+                    ("payload_digest", "TEXT", 1, None, 0),
+                ) or evidence_columns != (
+                    ("attempt_id", "TEXT", 0, None, 1),
+                    ("evidence_id", "TEXT", 1, None, 0),
+                    ("payload_json", "TEXT", 1, None, 0),
+                    ("payload_digest", "TEXT", 1, None, 0),
+                ):
+                    return PanelGenerationPageObservation("corrupt")
+                attempt_rows = connection.execute(
+                    "SELECT project_id, page_id, plan_id, panel_id, state, payload_json, payload_digest "
+                    "FROM panel_attempts"
+                ).fetchall()
+                evidence_rows = connection.execute(
+                    "SELECT attempt_id, evidence_id, payload_json, payload_digest FROM panel_evidence"
+                ).fetchall()
+            attempts = tuple(_validated_record(row) for row in attempt_rows)
+            if any(record is None for record in attempts):
+                return PanelGenerationPageObservation("corrupt")
+            evidence = tuple(_validated_evidence(row) for row in evidence_rows)
+            if any(item is None for item in evidence):
+                return PanelGenerationPageObservation("corrupt")
+            attempt_by_id = {
+                record.reservation.attempt_id: record
+                for record in attempts
+                if record is not None
+            }
+            if len(attempt_by_id) != len(attempts):
+                return PanelGenerationPageObservation("ambiguous")
+            for item in evidence:
+                assert item is not None
+                record = attempt_by_id.get(item.attempt_id)
+                if record is None or not _evidence_matches_reservation(
+                    item, record.reservation
+                ) or (
+                    record.evidence_id != item.evidence_id
+                    or record.output_asset_id != item.output_asset_id
+                    or record.state not in {"EVIDENCE_COMMITTED", "PANEL_ACCEPTED"}
+                ):
+                    return PanelGenerationPageObservation("corrupt")
+            evidence_attempt_ids = {
+                item.attempt_id for item in evidence if item is not None
+            }
+            if any(
+                (record.state in {"EVIDENCE_COMMITTED", "PANEL_ACCEPTED"})
+                != (record.reservation.attempt_id in evidence_attempt_ids)
+                for record in attempt_by_id.values()
+            ):
+                return PanelGenerationPageObservation("corrupt")
+            page_records = tuple(
+                record
+                for record in attempts
+                if record is not None
+                and record.reservation.project_id == project_id
+                and record.reservation.page_id == page_id
+            )
+        except Exception:
+            return PanelGenerationPageObservation("corrupt")
+        if not page_records:
+            return PanelGenerationPageObservation(
+                "missing", authority_attempt_ids=tuple(sorted(attempt_by_id))
+            )
+        plans = tuple(sorted({record.reservation.plan_id for record in page_records}))
+        attempt_ids = tuple(
+            sorted(record.reservation.attempt_id for record in page_records)
+        )
+        if len(plans) != 1:
+            return PanelGenerationPageObservation(
+                "ambiguous",
+                plans,
+                attempt_ids,
+                page_records,
+                (),
+                tuple(sorted(attempt_by_id)),
+            )
+        page_evidence = tuple(
+            sorted(
+                (
+                    item
+                    for item in evidence
+                    if item is not None and item.attempt_id in attempt_ids
+                ),
+                key=lambda item: item.attempt_id,
+            )
+        )
+        return PanelGenerationPageObservation(
+            "found",
+            plans,
+            attempt_ids,
+            page_records,
+            page_evidence,
+            tuple(sorted(attempt_by_id)),
+        )
+
+    @classmethod
+    def observe_page_at(
+        cls, owner_root: Path, project_id: str, page_id: str
+    ) -> PanelGenerationPageObservation:
+        authority = object.__new__(cls)
+        authority._root = owner_root
+        authority._database_path = owner_root / _AUTHORITY_DATABASE
+        return authority.observe_page(project_id, page_id)
 
     def _create_or_confirm(
         self, record: PanelAttemptRecord
@@ -627,6 +771,128 @@ def _validated_record(row: object) -> PanelAttemptRecord | None:
     ):
         return None
     return record
+
+
+def _validated_evidence(row: object) -> PanelGenerationEvidence | None:
+    if not isinstance(row, tuple) or len(row) != 4:
+        return None
+    attempt_id, evidence_id, payload, digest = row
+    if not isinstance(payload, str) or not isinstance(digest, str):
+        return None
+    if _authority_digest(payload) != digest:
+        return None
+    try:
+        evidence = PanelGenerationEvidence.model_validate_json(payload)
+    except Exception:
+        return None
+    if evidence.attempt_id != attempt_id or evidence.evidence_id != evidence_id:
+        return None
+    return evidence
+
+
+def _panel_schema_objects_are_exact(connection: sqlite3.Connection) -> bool:
+    objects = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if objects != [
+        ("index", "one_nonterminal_panel_attempt", "panel_attempts"),
+        ("table", "panel_attempts", "panel_attempts"),
+        ("table", "panel_evidence", "panel_evidence"),
+    ]:
+        return False
+    expected: dict[str, set[tuple[int, str, int, tuple[str, ...]]]] = {
+        "panel_attempts": {
+            (1, "pk", 0, ("attempt_id",)),
+            (1, "c", 1, ("project_id", "page_id", "panel_id")),
+        },
+        "panel_evidence": {
+            (1, "pk", 0, ("attempt_id",)),
+            (1, "u", 0, ("evidence_id",)),
+        },
+    }
+    for table, expected_indexes in expected.items():
+        observed: set[tuple[int, str, int, tuple[str, ...]]] = set()
+        for index in connection.execute(f"PRAGMA index_list({table})").fetchall():
+            if len(index) != 5 or not isinstance(index[1], str):
+                return False
+            columns = tuple(
+                str(row[2])
+                for row in connection.execute(
+                    f"PRAGMA index_info({index[1]})"
+                ).fetchall()
+            )
+            observed.add((int(index[2]), str(index[3]), int(index[4]), columns))
+        if observed != expected_indexes:
+            return False
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'one_nonterminal_panel_attempt'"
+    ).fetchone()
+    states = ",".join(f"'{value}'" for value in _NON_TERMINAL_STATES)
+    expected_sql = (
+        "CREATE UNIQUE INDEX one_nonterminal_panel_attempt "
+        "ON panel_attempts(project_id, page_id, panel_id) "
+        f"WHERE state IN ({states})"
+    )
+    return bool(
+        isinstance(row, tuple)
+        and len(row) == 1
+        and isinstance(row[0], str)
+        and _without_ascii_whitespace(row[0]).lower()
+        == _without_ascii_whitespace(expected_sql).lower()
+    )
+
+
+def _without_ascii_whitespace(value: str) -> str:
+    return "".join(
+        character for character in value if character not in " \t\r\n\f\v"
+    )
+
+
+def _readonly_authority_status(
+    root: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != root.resolve(strict=True)
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
 
 
 def _canonical_model_json(model: DirectorModel) -> str:

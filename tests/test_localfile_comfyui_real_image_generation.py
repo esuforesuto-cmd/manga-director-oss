@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -20,6 +21,12 @@ from manga_director.production import (
 )
 from manga_director.production.next_generation_normal_execution_attempt import (
     LocalNormalExecutionAttemptStore,
+)
+from manga_director.production.next_generation_panel_execution_attempt import (
+    PanelAttemptReservation,
+)
+from manga_director.production.next_generation_panel_generation_evidence import (
+    LocalPanelGenerationAuthority,
 )
 from manga_director.production.next_generation_secure_execution_input_resolution import (
     OpaqueReferenceAssetHandle,
@@ -206,6 +213,64 @@ def test_real_path_runs_one_fixed_prompt_png_and_registers_one_asset(
     assert len(assets) == 1 and assets[0].read_bytes() == _PNG_BYTES
 
 
+def test_generated_crash_window_replays_without_preflight_or_prompt_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    first_client = _HttpClient()
+    composition_builder = (
+        comfy_module._build_localfile_external_generation_composition_v1
+    )
+
+    def build_with_test_fence(*args: object, **kwargs: object):
+        composition = composition_builder(*args, **kwargs)
+        composition.external_application._fence_factory = _Fence
+        return composition
+
+    monkeypatch.setattr(
+        comfy_module,
+        "_build_localfile_external_generation_composition_v1",
+        build_with_test_fence,
+    )
+    token = "9" * 32
+    assert _execute(repository, first_client, token=token).completed
+    attempt_id = f"attempt:v7-04:human:editor:{token}"
+    database = (
+        repository._next_generation_normal_execution_owner_root()
+        / "attempts"
+        / "normal_execution_attempts.sqlite3"
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE normal_execution_attempts SET state = 'PROVIDER_COMPLETED', "
+            "completion_kind = NULL WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+    replay_client = _HttpClient()
+
+    def checkpoint_lookup_forbidden(_name: str) -> str | None:
+        raise AssertionError("Generated replay must not resolve a checkpoint")
+
+    replay = execute_localfile_comfyui_real_image_generation(
+        repository,
+        _engine(),
+        "project-v7-04",
+        "1",
+        "human:editor",
+        checkpoint_lookup=checkpoint_lookup_forbidden,
+        http_client=replay_client,
+        now=lambda: _NOW,
+        token_factory=lambda: token,
+    )
+
+    assert replay.completed and replay.provider_invocation_performed is False
+    assert replay_client.reads == replay_client.posts == 0
+    record = LocalNormalExecutionAttemptStore(database.parent).lookup(attempt_id)
+    assert record is not None
+    assert record.state == "COMPLETED"
+    assert record.completion_kind == "application_event_published"
+
+
 @pytest.mark.parametrize(
     "authorized_by",
     ("", "local user", "local-user", "local-user@example.com", "fixed-secret-user"),
@@ -369,3 +434,38 @@ def test_v7_04_source_has_no_i02_or_legacy_stub_coupling() -> None:
     assert "future_real_delivery_i02" not in source
     assert "ComfyUIImageGenerator" not in source
     assert "OpenAIImageGenerator" not in source
+
+
+def test_panel_authority_conflict_blocks_before_preflight_or_prompt(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    root = repository._next_generation_normal_execution_owner_root()
+    authority = LocalPanelGenerationAuthority(root / "panel-generation-authority")
+    authority.reserve(
+        PanelAttemptReservation(
+            attempt_id="panel-attempt-1",
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            project_id="project-v7-04",
+            page_id="1",
+            panel_id="panel-1",
+            panel_order=1,
+            request_id="panel-request-1",
+            request_fingerprint="b" * 64,
+            provider_reference="provider-1",
+            authorization_reference="authorization-1",
+            execution_fingerprint="c" * 64,
+        )
+    )
+    client = _HttpClient()
+
+    report = _execute(repository, client, token="7" * 32)
+
+    assert report.status == "blocked"
+    assert tuple(item.code for item in report.findings) == (
+        "GENERATION_MODE_ADMISSION_BLOCKED",
+    )
+    assert client.reads == client.posts == 0
+    assert repository.load("project-v7-04").page(1).state == PageState.PROMPT_BUILT
+    assert not (root / "attempts" / "normal_execution_attempts.sqlite3").exists()

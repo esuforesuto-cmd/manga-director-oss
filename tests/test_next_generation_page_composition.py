@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -189,6 +191,72 @@ def test_composition_authority_reserves_and_commits_exact_evidence(tmp_path: Pat
     lookup = authority.lookup(request.composition_attempt_id)
     assert lookup.outcome == "confirmed"
     assert lookup.evidence == evidence
+    observed = authority.observe_page("project-1", "page-1")
+    assert observed.asset_required_attempt_ids == ("composition-1",)
+
+
+def test_composition_page_observation_is_read_only_and_detects_orphan_evidence(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    assert LocalPageCompositionAuthority.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalPageCompositionAuthority.observe_page_at(
+        missing_root, "project-1", "page-1"
+    ).outcome == "corrupt"
+
+    root = tmp_path / "composition"
+    authority = LocalPageCompositionAuthority(root)
+    request = _request()
+    authority.reserve(request)
+    found = authority.observe_page("project-1", "page-1")
+    assert found.outcome == "found"
+    assert found.plan_ids == ("plan-1",)
+    with sqlite3.connect(root / "page-composition-authority.sqlite3") as connection:
+        connection.execute(
+            "INSERT INTO composition_evidence VALUES (?, ?, ?, ?)",
+            ("orphan", "orphan-evidence", "{}", "bad"),
+        )
+    assert authority.observe_page("project-1", "page-1").outcome == "corrupt"
+
+
+def test_composition_page_observation_rejects_attempt_evidence_outcome_mismatch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "composition"
+    authority = LocalPageCompositionAuthority(root)
+    request = _request()
+    assert authority.reserve(request).outcome == "created"
+    completed = _completed_evidence(request)
+    assert authority.commit_evidence(completed).outcome == "updated"
+    failed = PageCompositionEvidence(
+        **(
+            completed.model_dump()
+            | {
+                "output_asset_id": None,
+                "output_sha256": None,
+                "outcome": "failed",
+            }
+        )
+    )
+    payload = json.dumps(
+        failed.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    with sqlite3.connect(root / "page-composition-authority.sqlite3") as connection:
+        connection.execute(
+            "UPDATE composition_evidence SET payload_json = ?, payload_digest = ? "
+            "WHERE composition_attempt_id = ?",
+            (payload, digest, request.composition_attempt_id),
+        )
+
+    assert authority.observe_page("project-1", "page-1").outcome == "corrupt"
 
 
 def test_composition_authority_rejects_active_duplicate_and_mixed_binding(

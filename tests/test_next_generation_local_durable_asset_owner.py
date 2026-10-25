@@ -176,9 +176,51 @@ def test_staging_final_registry_order_and_durable_confirmation(tmp_path: Path) -
     assert result.outcome == "registered"
     assert result.durable_registration_confirmed is True
     assert result.output is not None
-    assert result.output.output_asset_id.startswith("asset:generated:")
-    assert result.output.output_content_hash is None
+    assert result.output.output_asset_id.startswith("asset-generated-")
+    assert result.output.output_content_hash is not None
+    assert result.output.output_content_hash.availability == "known"
+    assert result.output.output_content_hash.value == hashlib.sha256(_PNG_BYTES).hexdigest()
     assert result.output.media_type == "image/png"
+
+
+def test_exact_asset_observation_verifies_registry_and_bytes_without_creation(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    assert LocalDurableAssetOwner.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    ).outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalDurableAssetOwner.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+
+    root = tmp_path / "owner"
+    owner = LocalDurableAssetOwner(root)
+    registered = owner.register(_material())
+    assert registered.output is not None
+    observed = LocalDurableAssetOwner.observe_attempts(root, (_ATTEMPT,))
+    assert observed.outcome == "found"
+    assert observed.bindings[0].output_asset_id == registered.output.output_asset_id
+    assert observed.bindings[0].content_sha256 == hashlib.sha256(_PNG_BYTES).hexdigest()
+    assert LocalDurableAssetOwner.observe_presence(
+        root, (_ATTEMPT,)
+    ).outcome == "found"
+    assert LocalDurableAssetOwner.observe_presence(root, ()).outcome == "orphaned"
+    with sqlite3.connect(root / "registry" / "asset-owner.sqlite3") as connection:
+        connection.execute(
+            "CREATE VIEW unexpected_view AS SELECT attempt_id FROM asset_registry"
+        )
+    assert LocalDurableAssetOwner.observe_attempts(
+        root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+    with sqlite3.connect(root / "registry" / "asset-owner.sqlite3") as connection:
+        connection.execute("DROP VIEW unexpected_view")
+    next((root / "assets").glob("*.png")).write_bytes(b"tampered")
+    assert LocalDurableAssetOwner.observe_attempts(
+        root, (_ATTEMPT,)
+    ).outcome == "corrupt"
 
 
 def test_real_delivery_registration_commitment_is_exact_owner_bound_and_one_shot(tmp_path: Path) -> None:
@@ -345,7 +387,11 @@ def test_bridge_integrates_without_openai_types_in_the_durable_owner(tmp_path: P
     assert report.status == "registered"
     assert report.registered is True
     assert report.registered_output is not None
-    assert report.registered_output.output.output_content_hash is None
+    assert report.registered_output.output.output_content_hash is not None
+    assert report.registered_output.output.output_content_hash.availability == "known"
+    assert report.registered_output.output.output_content_hash.value == hashlib.sha256(
+        _PNG_BYTES
+    ).hexdigest()
 
 
 def test_material_is_immutable_and_closed_failures_are_deterministic(tmp_path: Path) -> None:
