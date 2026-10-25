@@ -357,15 +357,55 @@ def test_exact_retry_confirms_and_distinct_review_appends(tmp_path: Path) -> Non
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="non-Windows fail-closed behavior is not applicable on Windows",
+    reason="POSIX exact-file lease contract",
 )
-def test_unsupported_exact_file_lease_creates_no_review_sidecar(tmp_path: Path) -> None:
+def test_posix_safe_exact_file_lease_records_without_source_mutation(
+    tmp_path: Path,
+) -> None:
     repository, service = _seed(tmp_path)
+    before_project = repository.load(_PROJECT)
+    before_manifest = _manifest(repository._root)
+
+    result = service.record(_PROJECT, 1, **_submission())
+
+    assert result.status == "ready"
+    assert result.ready is True
+    assert result.evidence_recorded is True
+    assert result.analysis_only is True
+    assert repository.load(_PROJECT) == before_project
+    after_manifest = _manifest(repository._root)
+    assert {
+        path: content
+        for path, content in after_manifest.items()
+        if "/review-evidence/" not in f"/{path}"
+    } == before_manifest
+    with sqlite3.connect(_review_database(repository)) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM human_visual_review_evidence_records"
+        ).fetchone() == (1,)
+
+    unsafe_repository, unsafe_service = _seed(tmp_path / "unsafe")
+    asset_path = next(
+        (
+            unsafe_repository._next_generation_normal_execution_owner_root()
+            / "assets"
+            / "assets"
+        ).glob("*.png")
+    )
+    image_bytes = asset_path.read_bytes()
+    asset_path.unlink()
+    outside_path = tmp_path / "outside-review-evidence.png"
+    outside_path.write_bytes(image_bytes)
+    asset_path.symlink_to(outside_path)
+    unsafe_before = _manifest(unsafe_repository._root)
 
     with pytest.raises(HumanVisualReviewEvidenceUnavailable):
-        service.record(_PROJECT, 1, **_submission())
+        unsafe_service.record(_PROJECT, 1, **_submission())
 
-    assert not _review_database(repository).parent.exists()
+    assert asset_path.is_symlink()
+    assert outside_path.read_bytes() == image_bytes
+    assert _manifest(unsafe_repository._root) == unsafe_before
+    assert not _review_database(unsafe_repository).parent.exists()
 
 
 @pytest.mark.skipif(

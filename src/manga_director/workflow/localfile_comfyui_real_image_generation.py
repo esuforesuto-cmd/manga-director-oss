@@ -108,7 +108,7 @@ from manga_director.workflow.localfile_page_generation_mode_admission import (
 )
 from manga_director.workflow.page_execution_fence import (
     PageExecutionFenceError,
-    WindowsPageExecutionFence,
+    local_page_execution_fence,
 )
 
 _PROVIDER_REFERENCE = "provider:comfyui"
@@ -133,7 +133,7 @@ _HUMAN_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _GENERIC_HUMAN_IDENTITIES = frozenset(
     {"anonymous", "default", "local-user", "system", "unknown", "user"}
 )
-_legacy_fence_factory = WindowsPageExecutionFence
+_legacy_fence_factory = local_page_execution_fence
 
 
 @dataclass(frozen=True, slots=True)

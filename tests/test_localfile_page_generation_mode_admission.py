@@ -3,12 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 from threading import Barrier, Event, Lock, get_ident
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -86,7 +89,10 @@ from manga_director.workflow.localfile_panel_aware_page_generation import (
     PanelGenerationUnit,
     PanelProviderExecution,
 )
-from manga_director.workflow.page_execution_fence import PageExecutionFenceError
+from manga_director.workflow.page_execution_fence import (
+    PageExecutionFenceError,
+    _PosixPageExecutionFence,
+)
 
 
 class _Fence:
@@ -102,6 +108,18 @@ class _Fence:
     def release(self) -> None:
         self.released += 1
         self.active = False
+
+
+def _hold_posix_page_fence(
+    lock_root: Path, ready: Any, release: Any
+) -> None:
+    fence = _PosixPageExecutionFence(
+        "project:cross-process", "1", lock_root=lock_root
+    )
+    fence.acquire()
+    ready.set()
+    release.wait(10)
+    fence.release()
 
 
 class _SharedFence:
@@ -151,6 +169,124 @@ class _OrderedSharedFence(_SharedFence):
         super().release()
         if self._winner and self._claim_committed():
             self._admitted.set()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Page fence contract")
+def test_posix_page_fence_is_nonblocking_cross_process_and_recoverable(
+    tmp_path: Path,
+) -> None:
+    lock_root = tmp_path / "page-fences"
+    context = get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    holder = context.Process(
+        target=_hold_posix_page_fence,
+        args=(lock_root, ready, release),
+    )
+    holder.start()
+    try:
+        assert ready.wait(timeout=5)
+        contender = _PosixPageExecutionFence(
+            "project:cross-process", "1", lock_root=lock_root
+        )
+        with pytest.raises(
+            PageExecutionFenceError, match="page_execution_fence_contended"
+        ):
+            contender.acquire()
+    finally:
+        release.set()
+        holder.join(timeout=5)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=5)
+    assert holder.exitcode == 0
+
+    recovered = _PosixPageExecutionFence(
+        "project:cross-process", "1", lock_root=lock_root
+    )
+    recovered.acquire()
+    recovered.release()
+    lock_names = tuple(path.name for path in lock_root.iterdir())
+    assert len(lock_names) == 1
+    assert "project" not in lock_names[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Page fence contract")
+def test_posix_page_fence_rejects_reentry_and_unsafe_lock_targets(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "page-fences"
+    held = _PosixPageExecutionFence("project:one", "1", lock_root=root)
+    held.acquire()
+    try:
+        with pytest.raises(
+            PageExecutionFenceError, match="page_execution_fence_contended"
+        ):
+            held.acquire()
+        with pytest.raises(
+            PageExecutionFenceError, match="page_execution_fence_contended"
+        ):
+            _PosixPageExecutionFence(
+                "project:one", "1", lock_root=root
+            ).acquire()
+    finally:
+        held.release()
+
+    unsafe_root = tmp_path / "unsafe-root"
+    unsafe_root.mkdir(mode=0o700)
+    unsafe_root.chmod(0o777)
+    with pytest.raises(
+        PageExecutionFenceError, match="page_execution_fence_unavailable"
+    ):
+        _PosixPageExecutionFence(
+            "project:unsafe-root", "1", lock_root=unsafe_root
+        ).acquire()
+
+    symlink_root = tmp_path / "symlink-root"
+    symlink_root.mkdir(mode=0o700)
+    symlink_fence = _PosixPageExecutionFence(
+        "project:symlink", "1", lock_root=symlink_root
+    )
+    outside = tmp_path / "outside.lock"
+    outside.write_bytes(b"")
+    (symlink_root / f"{symlink_fence._identity}.lock").symlink_to(outside)
+    with pytest.raises(
+        PageExecutionFenceError, match="page_execution_fence_unavailable"
+    ):
+        symlink_fence.acquire()
+    assert outside.read_bytes() == b""
+
+    ambiguous_root = tmp_path / "ambiguous-root"
+    ambiguous_root.mkdir(mode=0o700)
+    ambiguous_fence = _PosixPageExecutionFence(
+        "project:ambiguous", "1", lock_root=ambiguous_root
+    )
+    shared = tmp_path / "shared.lock"
+    shared.write_bytes(b"")
+    os.link(shared, ambiguous_root / f"{ambiguous_fence._identity}.lock")
+    with pytest.raises(
+        PageExecutionFenceError, match="page_execution_fence_unavailable"
+    ):
+        ambiguous_fence.acquire()
+
+    release_root = tmp_path / "release-root"
+    release_fence = _PosixPageExecutionFence(
+        "project:release", "1", lock_root=release_root
+    )
+    release_fence.acquire()
+    release_fence._fcntl = SimpleNamespace(
+        LOCK_UN=8,
+        flock=lambda *_args: (_ for _ in ()).throw(OSError("unlock failed"))
+    )
+    with pytest.raises(
+        PageExecutionFenceError, match="page_execution_fence_unavailable"
+    ):
+        release_fence.release()
+    recovered_release = _PosixPageExecutionFence(
+        "project:release", "1", lock_root=release_root
+    )
+    recovered_release.acquire()
+    recovered_release.release()
 
 
 class _Observations:

@@ -343,16 +343,38 @@ def test_approved_page_returns_same_png_without_server_mutation(tmp_path: Path) 
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="non-Windows fail-closed behavior is not applicable on Windows",
+    reason="POSIX exact-file lease contract",
 )
-def test_non_windows_without_safe_exact_file_lease_fails_closed(tmp_path: Path) -> None:
-    repository, service, _png_bytes = _seed(tmp_path)
+def test_posix_safe_exact_file_lease_downloads_without_mutation(tmp_path: Path) -> None:
+    repository, service, png_bytes = _seed(tmp_path)
     before = _manifest(repository._root)
 
-    with pytest.raises(ApprovedAssetDownloadUnavailable):
-        service.get(_PROJECT, 1)
+    result = service.get(_PROJECT, 1)
+    assert result.image_bytes == png_bytes
+    result.release()
 
     assert _manifest(repository._root) == before
+
+    unsafe_repository, unsafe_service, unsafe_png = _seed(tmp_path / "unsafe")
+    asset_path = next(
+        (
+            unsafe_repository._next_generation_normal_execution_owner_root()
+            / "assets"
+            / "assets"
+        ).glob("*.png")
+    )
+    asset_path.unlink()
+    outside_path = tmp_path / "outside-download.png"
+    outside_path.write_bytes(unsafe_png)
+    asset_path.symlink_to(outside_path)
+    unsafe_before = _manifest(unsafe_repository._root)
+
+    with pytest.raises(ApprovedAssetDownloadUnavailable):
+        unsafe_service.get(_PROJECT, 1)
+
+    assert asset_path.is_symlink()
+    assert outside_path.read_bytes() == unsafe_png
+    assert _manifest(unsafe_repository._root) == unsafe_before
 
 
 def test_missing_authorities_create_nothing_on_read(tmp_path: Path) -> None:

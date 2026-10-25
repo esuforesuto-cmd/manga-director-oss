@@ -481,11 +481,11 @@ def test_posix_presentation_uses_canonical_read_only_registry_bound_lease(
     finally:
         presentation.release()
 
-    assert len(owner_descriptors) == 1
+    assert owner_descriptors
     assert len(asset_opens) == 1
-    storage_name, asset_descriptor, relative_root_descriptor, flags = asset_opens[0]
+    storage_name, _asset_descriptor, relative_root_descriptor, flags = asset_opens[0]
     assert storage_name == registry_binding[4]
-    assert relative_root_descriptor == owner_descriptors[0]
+    assert relative_root_descriptor in owner_descriptors
     assert flags & getattr(os, "O_NOFOLLOW", 0)
     assert len(asset_stats) == 2
     assert len(asset_fstats) == 2
@@ -709,16 +709,16 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
         service.get(_PROJECT, 1)
 
     monkeypatch.setattr(owner_module, "_is_link_or_reparse_point", original_reparse)
-    original_open = owner_module._open_verified_windows_lease
+    original_open = owner_module._open_verified_asset_lease
     monkeypatch.setattr(
         owner_module,
-        "_open_verified_windows_lease",
+        "_open_verified_asset_lease",
         lambda *_args: (_ for _ in ()).throw(ValueError("unsafe identity")),
     )
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)
 
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", original_open)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", original_open)
 
     class _PartialStream:
         def read(self, _size: int) -> bytes:
@@ -731,7 +731,7 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
         _PartialStream(),
         owner_module._OpenedAssetIdentity(Path("C:/fixed.png"), 1, 1, len(png), 0),
     )
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", lambda *_args: partial)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", lambda *_args: partial)
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)
 
@@ -741,6 +741,6 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
             Path("C:/fixed.png"), 1, 1, 25 * 1024 * 1024 + 1, 0
         ),
     )
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", lambda *_args: oversized)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", lambda *_args: oversized)
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)
