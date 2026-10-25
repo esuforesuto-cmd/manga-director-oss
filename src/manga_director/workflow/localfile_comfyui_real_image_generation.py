@@ -94,6 +94,7 @@ from manga_director.production.next_generation_structured_generation_request imp
     StructuredGenerationRequestValidationService,
 )
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.repositories.local_file_durability import LocalFileDurabilityError
 from manga_director.workflow.durable_execution import LocalFileDurablePageStore
 from manga_director.workflow.engine import WorkflowEngine
 from manga_director.workflow.localfile_external_generated_application import (
@@ -105,7 +106,10 @@ from manga_director.workflow.localfile_page_generation_mode_admission import (
     _ProviderApplicationAdmission,
     _replay_localfile_legacy_generated_application,
 )
-from manga_director.workflow.page_execution_fence import WindowsPageExecutionFence
+from manga_director.workflow.page_execution_fence import (
+    PageExecutionFenceError,
+    WindowsPageExecutionFence,
+)
 
 _PROVIDER_REFERENCE = "provider:comfyui"
 _PROVIDER_ID = "comfyui"
@@ -170,8 +174,13 @@ class _WorkflowContextLoader:
         self._page_store = LocalFileDurablePageStore(repository)
 
     def load(self, project_id: str, page_id: str) -> object | None:
-        snapshot = self._page_store.load_revisioned(project_id)
-        return self._page_store.context_from_snapshot(snapshot, page_id)
+        fence = _legacy_fence_factory(project_id, page_id)
+        fence.acquire()
+        try:
+            snapshot = self._page_store.load_revisioned(project_id)
+            return self._page_store.context_from_snapshot(snapshot, page_id)
+        finally:
+            fence.release()
 
 
 def execute_localfile_comfyui_real_image_generation(
@@ -192,7 +201,6 @@ def execute_localfile_comfyui_real_image_generation(
     if not isinstance(repository, LocalFileRepository):
         raise ValueError("real image generation requires the LocalFile repository")
     _validate_human_identity(authorized_by)
-    context = _load_prompt_built_context(repository, project_id, page_id)
     observed_at = (now or (lambda: datetime.now(UTC)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("real image generation requires a timezone-aware clock")
@@ -208,6 +216,10 @@ def execute_localfile_comfyui_real_image_generation(
     execution_authorization_id = f"authorization:v7-04:{token}"
     workflow_authorization_id = f"workflow-authorization:v7-04:{authorized_by}:{token}"
     attempt_id = f"attempt:v7-04:{authorized_by}:{token}"
+    try:
+        context = _load_prompt_built_context(repository, project_id, normalized_page_id)
+    except (LocalFileDurabilityError, PageExecutionFenceError):
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
     mode_service, mode_result, mode_claim = _admit_localfile_legacy_generation(
         repository,
         project_id,
@@ -220,9 +232,9 @@ def execute_localfile_comfyui_real_image_generation(
         return _mode_blocked(attempt_id, project_id, normalized_page_id)
     prompt: str | None = None
     checkpoint: str | None = None
-    if getattr(context, "state", None) == PageState.PROMPT_BUILT:
-        prompt = _prompt_from_context(context)
-        checkpoint = _require_checkpoint(checkpoint_name, checkpoint_lookup)
+    prompt, checkpoint = _prompt_and_checkpoint(
+        context, checkpoint_name, checkpoint_lookup
+    )
 
     root = repository._next_generation_normal_execution_owner_root()
     evidence_store = LocalGenerationEvidenceStore(root / "evidence")
@@ -320,6 +332,19 @@ def execute_localfile_comfyui_real_image_generation(
     transport.preflight()
     report = service.execute(request, attempt_store)
     return _as_recovery_required(report, project_id, normalized_page_id)
+
+
+def _prompt_and_checkpoint(
+    context: object,
+    checkpoint_name: str | None,
+    checkpoint_lookup: Callable[[str], str | None] | None,
+) -> tuple[str | None, str | None]:
+    if getattr(context, "state", None) != PageState.PROMPT_BUILT:
+        return None, None
+    return (
+        _prompt_from_context(context),
+        _require_checkpoint(checkpoint_name, checkpoint_lookup),
+    )
 
 
 def _validated_facts(  # noqa: C901 - mirrors the frozen V7-03 durable evidence chain.

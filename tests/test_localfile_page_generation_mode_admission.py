@@ -3,10 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,8 @@ from manga_director.production.next_generation_workflow_application_ledger impor
     _authoritative_commit_proof,
 )
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.repositories.local_file_durability import LocalFileDurabilityError
+from manga_director.workflow import localfile_comfyui_real_image_generation as comfyui_module
 from manga_director.workflow import localfile_page_generation_mode_admission as admission_module
 from manga_director.workflow import localfile_real_image_generation as legacy_module
 from manga_director.workflow.engine import WorkflowEngine
@@ -79,9 +82,11 @@ from manga_director.workflow.localfile_page_generation_mode_admission import (
 from manga_director.workflow.localfile_panel_aware_page_generation import (
     LocalFilePanelAwarePageGeneration,
     PanelAwarePageGenerationOperation,
+    PanelAwarePageGenerationResult,
     PanelGenerationUnit,
     PanelProviderExecution,
 )
+from manga_director.workflow.page_execution_fence import PageExecutionFenceError
 
 
 class _Fence:
@@ -130,13 +135,12 @@ class _OrderedSharedFence(_SharedFence):
         admitted: Event,
         *,
         winner: bool,
-        signal_after_releases: int,
+        claim_committed: Callable[[], bool],
     ) -> None:
         super().__init__(lock)
         self._admitted = admitted
         self._winner = winner
-        self._signal_after_releases = signal_after_releases
-        self._releases = 0
+        self._claim_committed = claim_committed
 
     def acquire(self) -> None:
         if not self._winner:
@@ -145,8 +149,7 @@ class _OrderedSharedFence(_SharedFence):
 
     def release(self) -> None:
         super().release()
-        self._releases += 1
-        if self._winner and self._releases >= self._signal_after_releases:
+        if self._winner and self._claim_committed():
             self._admitted.set()
 
 
@@ -522,6 +525,12 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
     shared_lock = Lock()
     start = Barrier(2)
     winner_admitted = Event()
+
+    def claim_committed() -> bool:
+        return claim_store.lookup_active(
+            "project-1", "1", current.page_revision
+        ).outcome == "found"
+
     monkeypatch.setattr(
         legacy_module,
         "_legacy_fence_factory",
@@ -529,12 +538,14 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
             shared_lock,
             winner_admitted,
             winner=winner == "legacy",
-            signal_after_releases=1,
+            claim_committed=claim_committed,
         ),
     )
 
     def secret_lookup(name: str) -> str | None:
         return "race-secret" if name == "OPENAI_API_KEY" else None
+
+    legacy_events = MemoryEventBus()
 
     def legacy_route() -> object:
         start.wait()
@@ -542,7 +553,7 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
             repository,
             WorkflowEngine(
                 state_machine=StateMachine(),
-                event_bus=MemoryEventBus(),
+                event_bus=legacy_events,
                 agents={},
             ),
             "project-1",
@@ -554,7 +565,7 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
             token_factory=lambda: "7" * 32,
         )
 
-    def panel_route() -> str:
+    def panel_route() -> PanelAwarePageGenerationResult:
         start.wait()
         return panel_workflow.execute(
             operation,
@@ -562,14 +573,41 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
                 shared_lock,
                 winner_admitted,
                 winner=winner == "panel",
-                signal_after_releases=2,
+                claim_committed=claim_committed,
             ),
-        ).status
+        )
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        legacy_future = executor.submit(legacy_route)
-        panel_future = executor.submit(panel_route)
-        outcomes = (legacy_future.result(), panel_future.result())
+    # Every competing repository read must use the same Page fence. POSIX's
+    # project fence rejects overlapping in-process reads instead of waiting.
+    fence_owner: list[int | None] = [None]
+    unguarded_reads: list[int] = []
+    original_acquire = _SharedFence.acquire
+    original_release = _SharedFence.release
+    original_load = repository._load_revisioned
+
+    def tracked_acquire(fence: _SharedFence) -> None:
+        original_acquire(fence)
+        fence_owner[0] = get_ident()
+
+    def tracked_release(fence: _SharedFence) -> None:
+        fence_owner[0] = None
+        original_release(fence)
+
+    def guarded_load(project_id: str):
+        if fence_owner[0] != get_ident():
+            unguarded_reads.append(get_ident())
+            raise AssertionError("repository read outside the shared Page fence")
+        return original_load(project_id)
+
+    with monkeypatch.context() as guard_patch:
+        guard_patch.setattr(_SharedFence, "acquire", tracked_acquire)
+        guard_patch.setattr(_SharedFence, "release", tracked_release)
+        guard_patch.setattr(repository, "_load_revisioned", guarded_load)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            legacy_future = executor.submit(legacy_route)
+            panel_future = executor.submit(panel_route)
+            outcomes = (legacy_future.result(), panel_future.result())
+    assert unguarded_reads == []
 
     active = claim_store.lookup_active(
         "project-1", "1", current.page_revision
@@ -585,7 +623,7 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
         assert provider.calls == 0
         assert generate.calls == 0
         assert getattr(outcomes[0], "completed", False) is True
-        assert outcomes[1] == "blocked"
+        assert outcomes[1].status == "blocked", outcomes[1]
         applied = LocalWorkflowApplicationLedgerStore.observe_page(
             repository._workflow_application_ledger_owner_root(),
             "project-1",
@@ -597,12 +635,14 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
             root / "page-composition-application", "project-1", "1"
         ).outcome == "missing"
     else:
+        assert outcomes[1].status == "generated", outcomes[1]
         assert provider.calls == 1
         assert generate.calls == 1
         assert legacy_factory.create_calls == 0
         assert legacy_client.calls == 0
         assert getattr(outcomes[0], "status", None) == "blocked"
-        assert outcomes[1] == "generated"
+        assert legacy_events.published == []
+        assert not (root / "attempts").exists()
         applied = LocalPageCompositionApplicationLedger.observe_page_at(
             root / "page-composition-application", "project-1", "1"
         )
@@ -613,6 +653,45 @@ def test_real_legacy_entry_races_panel_workflow_with_one_successful_winner(  # n
             "project-1",
             "1",
         ).outcome == "missing"
+
+
+@pytest.mark.parametrize("provider", ("legacy", "comfyui"))
+@pytest.mark.parametrize("failure", ("page-fence", "project-fence"))
+def test_initial_entry_contention_is_blocked_without_provider_or_workflow_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, failure: str
+) -> None:
+    repository = _repository(tmp_path)
+    before = repository.load("project-1")
+    root = repository._next_generation_normal_execution_owner_root()
+    events = MemoryEventBus()
+    engine = WorkflowEngine(state_machine=StateMachine(), event_bus=events, agents={})
+    module = legacy_module if provider == "legacy" else comfyui_module
+    loads = 0
+
+    class ContendedFence(_Fence):
+        def acquire(self) -> None:
+            if failure == "page-fence":
+                raise PageExecutionFenceError("page_execution_fence_contended")
+            super().acquire()
+
+    def contended_load(project_id: str):
+        nonlocal loads
+        loads += 1
+        raise LocalFileDurabilityError("project_commit_fence_contended")
+
+    monkeypatch.setattr(module, "_legacy_fence_factory", lambda *_args: ContendedFence())
+    monkeypatch.setattr(repository, "_load_revisioned", contended_load)
+    # Any credential/provider composition would fail: no runtime is supplied.
+    execute = (
+        legacy_module.execute_localfile_real_image_generation
+        if provider == "legacy" else comfyui_module.execute_localfile_comfyui_real_image_generation
+    )
+    result = execute(repository, engine, "project-1", "1", "human:editor")
+    assert result.status == "blocked"
+    assert loads == (1 if failure == "project-fence" else 0)
+    assert events.published == []
+    assert repository.load("project-1") == before
+    assert not root.exists()
 
 
 def test_localfile_observation_is_noncreating_and_reconciles_one_legacy_attempt(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
@@ -218,6 +219,59 @@ def test_exact_asset_observation_verifies_registry_and_bytes_without_creation(
     with sqlite3.connect(root / "registry" / "asset-owner.sqlite3") as connection:
         connection.execute("DROP VIEW unexpected_view")
     next((root / "assets").glob("*.png")).write_bytes(b"tampered")
+    assert LocalDurableAssetOwner.observe_attempts(
+        root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+
+
+def test_verified_presentation_and_application_lease_use_registered_binding(
+    tmp_path: Path,
+) -> None:
+    owner = LocalDurableAssetOwner(tmp_path / "owner")
+    registered = owner.register(_material())
+    assert registered.output is not None
+    assert registered.output.output_content_hash is not None
+    digest = registered.output.output_content_hash.value
+    assert digest is not None
+    inputs = {
+        "attempt_id": _ATTEMPT,
+        "provider_reference": _PROVIDER,
+        "output_asset_id": registered.output.output_asset_id,
+        "expected_sha256": digest,
+        "expected_media_type": "image/png",
+    }
+
+    presentation = owner._read_verified_presentation_bytes(**inputs)
+    try:
+        assert presentation.image_bytes == _PNG_BYTES
+    finally:
+        presentation.release()
+
+    application = owner._verify_for_generated_application(**inputs)
+    try:
+        assert application._stream.read() == _PNG_BYTES
+        assert application._identity.size == len(_PNG_BYTES)
+    finally:
+        application.release()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor contract")
+@pytest.mark.parametrize("replacement", ("symlink", "directory"))
+def test_posix_verified_read_rejects_link_and_non_regular_asset(
+    tmp_path: Path, replacement: str
+) -> None:
+    root = tmp_path / "owner"
+    owner = LocalDurableAssetOwner(root)
+    assert owner.register(_material()).outcome == "registered"
+    asset_path = next((root / "assets").glob("*.png"))
+    asset_path.unlink()
+    if replacement == "symlink":
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(_PNG_BYTES)
+        asset_path.symlink_to(outside)
+    else:
+        asset_path.mkdir()
+
     assert LocalDurableAssetOwner.observe_attempts(
         root, (_ATTEMPT,)
     ).outcome == "corrupt"

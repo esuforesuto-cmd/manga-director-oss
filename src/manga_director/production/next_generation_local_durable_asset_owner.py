@@ -108,7 +108,7 @@ class ProviderNeutralAssetOwner(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _OpenedAssetIdentity:
-    """Windows metadata derived from the one leased asset HANDLE."""
+    """Stable metadata derived from the one leased asset descriptor."""
 
     final_path: Path
     volume_serial: int
@@ -183,10 +183,8 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         self._registry_directory = _prepare_child_directory(self._root, "registry")
         self._staging_directory = _prepare_child_directory(self._root, "staging")
         self._assets_directory = _prepare_child_directory(self._root, "assets")
-        self._assets_root_identity = (
-            _capture_windows_owner_root_identity(self._assets_directory)
-            if os.name == "nt"
-            else None
+        self._assets_root_identity = _capture_owner_root_identity(
+            self._assets_directory
         )
         self._registry_path = _prepare_registry_path(self._registry_directory)
         self._initialize_registry()
@@ -213,9 +211,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         owner._registry_directory = registry_directory
         owner._assets_directory = assets_directory
         owner._registry_path = registry_path
-        owner._assets_root_identity = (
-            _capture_windows_owner_root_identity(assets_directory) if os.name == "nt" else None
-        )
+        owner._assets_root_identity = _capture_owner_root_identity(assets_directory)
         return owner
 
     @classmethod
@@ -395,7 +391,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         expected_sha256: str,
         expected_media_type: str,
     ) -> _AssetPresentationBytesLease:
-        """Return bytes from the exact read-only registry-selected Windows lease."""
+        """Return bytes from the exact read-only registry-selected asset lease."""
 
         if (
             not _is_logical_reference(attempt_id)
@@ -429,7 +425,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 raise _AssetVerificationIntegrityFailure(
                     "asset presentation binding is invalid"
                 )
-            lease = _open_verified_windows_lease(
+            lease = _open_verified_asset_lease(
                 self._final_path(row[4]),
                 self._assets_directory,
                 self._assets_root_identity,
@@ -683,7 +679,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
             ):
                 raise _AssetVerificationIntegrityFailure("asset verification binding is invalid")
             path = self._final_path(str(row[4]))
-            return _open_verified_windows_lease(
+            return _open_verified_asset_lease(
                 path,
                 self._assets_directory,
                 self._assets_root_identity,
@@ -1121,6 +1117,107 @@ def _private_file_matches(path: Path, expected_digest: str) -> bool:
     return digest.hexdigest() == expected_digest
 
 
+def _open_verified_asset_lease(
+    path: Path,
+    owner_root: Path,
+    expected_owner_root: _OwnerRootIdentity | None,
+    expected_digest: str,
+) -> _AssetVerificationLease:
+    if os.name == "nt":
+        return _open_verified_windows_lease(
+            path, owner_root, expected_owner_root, expected_digest
+        )
+    return _open_verified_posix_lease(
+        path, owner_root, expected_owner_root, expected_digest
+    )
+
+
+def _open_verified_posix_lease(
+    path: Path,
+    owner_root: Path,
+    expected_owner_root: _OwnerRootIdentity | None,
+    expected_digest: str,
+) -> _AssetVerificationLease:
+    """Lease and hash one ordinary file relative to its pinned POSIX owner root."""
+
+    _assert_private_path(path, owner_root)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if (
+        os.name == "nt"
+        or expected_owner_root is None
+        or not isinstance(no_follow, int)
+        or not isinstance(directory, int)
+    ):
+        raise ValueError("asset verification lease is unavailable")
+    root_descriptor = os.open(
+        owner_root,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow | directory,
+    )
+    asset_descriptor: int | None = None
+    stream: BinaryIO | None = None
+    try:
+        if not _posix_owner_root_descriptor_matches(
+            root_descriptor, owner_root, expected_owner_root
+        ):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification owner identity is invalid"
+            )
+        asset_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | no_follow,
+            dir_fd=root_descriptor,
+        )
+        descriptor_status = os.fstat(asset_descriptor)
+        path_status = os.stat(
+            path.name, dir_fd=root_descriptor, follow_symlinks=False
+        )
+        if not _posix_asset_identity_matches(descriptor_status, path_status):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification identity is invalid"
+            )
+        identity = _OpenedAssetIdentity(
+            final_path=path,
+            volume_serial=descriptor_status.st_dev,
+            file_index=descriptor_status.st_ino,
+            size=descriptor_status.st_size,
+            attributes=descriptor_status.st_mode,
+        )
+        stream = os.fdopen(asset_descriptor, "rb", closefd=True)
+        asset_descriptor = None
+        digest = hashlib.sha256()
+        while chunk := stream.read(64 * 1024):
+            digest.update(chunk)
+        final_status = os.fstat(stream.fileno())
+        final_path_status = os.stat(
+            path.name, dir_fd=root_descriptor, follow_symlinks=False
+        )
+        if (
+            not _posix_asset_identity_matches(final_status, final_path_status)
+            or not _same_posix_file_identity(descriptor_status, final_status)
+            or digest.hexdigest() != expected_digest
+            or not _posix_owner_root_descriptor_matches(
+                root_descriptor, owner_root, expected_owner_root
+            )
+        ):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification digest or binding is invalid"
+            )
+        stream.seek(0)
+        lease = _AssetVerificationLease(stream, identity)
+        stream = None
+        return lease
+    finally:
+        if stream is not None:
+            stream.close()
+        if asset_descriptor is not None:
+            os.close(asset_descriptor)
+        os.close(root_descriptor)
+
+
 def _open_verified_windows_lease(
     path: Path,
     owner_root: Path,
@@ -1236,6 +1333,93 @@ def _capture_windows_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity
         )
     finally:
         kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _capture_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity:
+    if os.name == "nt":
+        return _capture_windows_owner_root_identity(owner_root)
+    return _capture_posix_owner_root_identity(owner_root)
+
+
+def _capture_posix_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity:
+    """Pin one ordinary POSIX assets directory without following a final link."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if (
+        os.name == "nt"
+        or not isinstance(no_follow, int)
+        or not isinstance(directory, int)
+    ):
+        raise ValueError("asset owner root is unavailable")
+    descriptor = os.open(
+        owner_root,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow | directory,
+    )
+    try:
+        descriptor_status = os.fstat(descriptor)
+        path_status = owner_root.lstat()
+        if (
+            not stat.S_ISDIR(descriptor_status.st_mode)
+            or stat.S_ISLNK(path_status.st_mode)
+            or not stat.S_ISDIR(path_status.st_mode)
+            or not _same_posix_file_identity(descriptor_status, path_status)
+        ):
+            raise ValueError("asset owner root is unavailable")
+        return _OwnerRootIdentity(
+            final_path=owner_root.resolve(strict=True),
+            volume_serial=descriptor_status.st_dev,
+            file_index=descriptor_status.st_ino,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _posix_owner_root_descriptor_matches(
+    descriptor: int,
+    owner_root: Path,
+    expected: _OwnerRootIdentity,
+) -> bool:
+    try:
+        descriptor_status = os.fstat(descriptor)
+        path_status = owner_root.lstat()
+        resolved = owner_root.resolve(strict=True)
+    except OSError:
+        return False
+    return bool(
+        stat.S_ISDIR(descriptor_status.st_mode)
+        and not stat.S_ISLNK(path_status.st_mode)
+        and stat.S_ISDIR(path_status.st_mode)
+        and _same_posix_file_identity(descriptor_status, path_status)
+        and descriptor_status.st_dev == expected.volume_serial
+        and descriptor_status.st_ino == expected.file_index
+        and resolved == expected.final_path
+    )
+
+
+def _posix_asset_identity_matches(
+    descriptor_status: os.stat_result, path_status: os.stat_result
+) -> bool:
+    return bool(
+        stat.S_ISREG(descriptor_status.st_mode)
+        and not stat.S_ISLNK(path_status.st_mode)
+        and stat.S_ISREG(path_status.st_mode)
+        and _same_posix_file_identity(descriptor_status, path_status)
+        and 0 < descriptor_status.st_size <= _MAX_REGISTERED_BYTES
+    )
+
+
+def _same_posix_file_identity(
+    left: os.stat_result, right: os.stat_result
+) -> bool:
+    return bool(
+        left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_mode == right.st_mode
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+        and left.st_ctime_ns == right.st_ctime_ns
+    )
 
 
 def _windows_handle_identity(kernel32: Any, handle: int) -> _OpenedAssetIdentity:

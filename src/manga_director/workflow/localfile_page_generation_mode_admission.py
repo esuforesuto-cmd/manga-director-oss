@@ -522,7 +522,38 @@ class LocalFilePageGenerationModeAdmission:
         return PageGenerationModeAdmissionResult("admitted", "admitted", claim)
 
 
-def _admit_localfile_legacy_generation(  # noqa: C901 - closed reconciliation gate.
+def _admit_localfile_legacy_generation(
+    repository: LocalFileRepository,
+    project_id: str,
+    page_id: str,
+    attempt_id: str,
+    authorized_by: str,
+    fence: PageExecutionFencePort,
+) -> tuple[
+    LocalFilePageGenerationModeAdmission | None,
+    PageGenerationModeAdmissionResult,
+    PageGenerationModeClaim | None,
+]:
+    """Protect the initial observation as well as the claim decision."""
+
+    acquired = False
+    try:
+        fence.acquire()
+        acquired = True
+        return _admit_localfile_legacy_generation_locked(
+            repository, project_id, page_id, attempt_id, authorized_by,
+            _BorrowedPageFence(fence),
+        )
+    except Exception:
+        return None, PageGenerationModeAdmissionResult(
+            "blocked", "admission_unavailable"
+        ), None
+    finally:
+        if acquired:
+            fence.release()
+
+
+def _admit_localfile_legacy_generation_locked(  # noqa: C901 - closed reconciliation gate.
     repository: LocalFileRepository,
     project_id: str,
     page_id: str,
@@ -1305,20 +1336,29 @@ class _ProviderApplicationAdmission:
             finally:
                 delegate._fence_factory = original_fence_factory
 
-        observed = self._admission._observation_port.observe(
-            self._claim.project_id, self._claim.page_id
-        )
-        if observed is not None and observed.page_state == "Generated":
-            admitted, result = self._admission.run_generated_replay_admitted(
-                self._claim,
-                fence,
-                getattr(binding, "output_asset_id", ""),
-                apply_under_shared_fence,
+        acquired = False
+        try:
+            fence.acquire()
+            acquired = True
+            observed = self._admission._observation_port.observe(
+                self._claim.project_id, self._claim.page_id
             )
-        else:
-            admitted, result = self._admission.run_admitted(
-                self._claim, fence, apply_under_shared_fence
-            )
+            if observed is not None and observed.page_state == "Generated":
+                admitted, result = self._admission.run_generated_replay_admitted(
+                    self._claim,
+                    borrowed,
+                    getattr(binding, "output_asset_id", ""),
+                    apply_under_shared_fence,
+                )
+            else:
+                admitted, result = self._admission.run_admitted(
+                    self._claim, borrowed, apply_under_shared_fence
+                )
+        except Exception:
+            return _BlockedProviderApplication()
+        finally:
+            if acquired:
+                fence.release()
         if not admitted.admitted or result is None:
             return _BlockedProviderApplication()
         return result

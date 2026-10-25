@@ -99,6 +99,7 @@ from manga_director.production.next_generation_structured_generation_request imp
     StructuredGenerationRequestValidationService,
 )
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.repositories.local_file_durability import LocalFileDurabilityError
 from manga_director.security import CredentialManager
 from manga_director.workflow.durable_execution import LocalFileDurablePageStore
 from manga_director.workflow.engine import WorkflowEngine
@@ -111,7 +112,10 @@ from manga_director.workflow.localfile_page_generation_mode_admission import (
     _ProviderApplicationAdmission,
     _replay_localfile_legacy_generated_application,
 )
-from manga_director.workflow.page_execution_fence import WindowsPageExecutionFence
+from manga_director.workflow.page_execution_fence import (
+    PageExecutionFenceError,
+    WindowsPageExecutionFence,
+)
 
 _PROVIDER_REFERENCE = "provider:openai"
 _PROVIDER_ID = "openai"
@@ -177,8 +181,13 @@ class _WorkflowContextLoader:
         self._page_store = LocalFileDurablePageStore(repository)
 
     def load(self, project_id: str, page_id: str) -> object | None:
-        snapshot = self._page_store.load_revisioned(project_id)
-        return self._page_store.context_from_snapshot(snapshot, page_id)
+        fence = _legacy_fence_factory(project_id, page_id)
+        fence.acquire()
+        try:
+            snapshot = self._page_store.load_revisioned(project_id)
+            return self._page_store.context_from_snapshot(snapshot, page_id)
+        finally:
+            fence.release()
 
 
 class _StrictPngAssetOwner:
@@ -217,7 +226,6 @@ def execute_localfile_real_image_generation(
     if not isinstance(repository, LocalFileRepository):
         raise ValueError("real image generation requires the LocalFile repository")
     _validate_human_identity(authorized_by)
-    context = _load_prompt_built_context(repository, project_id, page_id)
     observed_at = (now or (lambda: datetime.now(UTC)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("real image generation requires a timezone-aware clock")
@@ -235,6 +243,10 @@ def execute_localfile_real_image_generation(
         f"workflow-authorization:v7-03:{authorized_by}:{token}"
     )
     attempt_id = f"attempt:v7-03:{authorized_by}:{token}"
+    try:
+        context = _load_prompt_built_context(repository, project_id, normalized_page_id)
+    except (LocalFileDurabilityError, PageExecutionFenceError):
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
     mode_service, mode_result, mode_claim = _admit_localfile_legacy_generation(
         repository,
         project_id,
