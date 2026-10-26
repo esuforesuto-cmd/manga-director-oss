@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -96,6 +97,15 @@ AttemptStoreOutcome = Literal[
 class NormalExecutionAttemptStoreResult:
     outcome: AttemptStoreOutcome
     record: NormalExecutionAttemptRecord | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NormalExecutionPageObservation:
+    """Private verified inventory for one exact Project/Page."""
+
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    records: tuple[NormalExecutionAttemptRecord, ...] = ()
+    authority_attempt_ids: tuple[str, ...] = ()
 
 
 class NormalExecutionAttemptStorePort(Protocol):
@@ -211,6 +221,88 @@ class LocalNormalExecutionAttemptStore:
         with sqlite3.connect(self._database) as connection:
             return self._read(connection, attempt_id)
 
+    def observe_page(
+        self, project_id: str, page_id: str
+    ) -> NormalExecutionPageObservation:
+        """Read and validate the existing authority without creating it."""
+
+        path_status = _readonly_database_status(self._root, self._database)
+        if path_status == "missing":
+            return NormalExecutionPageObservation("missing")
+        if path_status == "corrupt":
+            return NormalExecutionPageObservation("corrupt")
+        try:
+            uri = f"{self._database.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                versions = connection.execute(
+                    "SELECT version FROM normal_execution_attempt_schema"
+                ).fetchall()
+                if versions != [(self._SCHEMA_VERSION,)]:
+                    return NormalExecutionPageObservation("corrupt")
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                schema_columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute(
+                        "PRAGMA table_info(normal_execution_attempt_schema)"
+                    )
+                )
+                columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute(
+                        "PRAGMA table_info(normal_execution_attempts)"
+                    )
+                )
+                if tables != {
+                    "normal_execution_attempt_schema",
+                    "normal_execution_attempts",
+                } or schema_columns != (("version", "INTEGER", 1, None, 0),) or columns != (
+                    ("attempt_id", "TEXT", 0, None, 1),
+                    ("request_id", "TEXT", 1, None, 0),
+                    ("project_id", "TEXT", 1, None, 0),
+                    ("page_id", "TEXT", 1, None, 0),
+                    ("target_page_reference", "TEXT", 1, None, 0),
+                    ("provider_reference", "TEXT", 1, None, 0),
+                    ("execution_fingerprint", "TEXT", 1, None, 0),
+                    ("state", "TEXT", 1, None, 0),
+                    ("completion_kind", "TEXT", 0, None, 0),
+                ):
+                    return NormalExecutionPageObservation("corrupt")
+                if not _normal_execution_schema_objects_are_exact(connection):
+                    return NormalExecutionPageObservation("corrupt")
+                rows = connection.execute(
+                    "SELECT attempt_id FROM normal_execution_attempts"
+                ).fetchall()
+                records: list[NormalExecutionAttemptRecord] = []
+                authority_attempt_ids: list[str] = []
+                for row in rows:
+                    record = self._read(connection, row[0])
+                    if record is None or not _valid_record(record):
+                        return NormalExecutionPageObservation("corrupt")
+                    authority_attempt_ids.append(record.reservation.attempt_id)
+                    if (
+                        record.reservation.project_id == project_id
+                        and record.reservation.page_id == page_id
+                    ):
+                        records.append(record)
+        except Exception:
+            return NormalExecutionPageObservation("corrupt")
+        all_attempt_ids = tuple(sorted(authority_attempt_ids))
+        if not records:
+            return NormalExecutionPageObservation(
+                "missing", authority_attempt_ids=all_attempt_ids
+            )
+        ordered = tuple(sorted(records, key=lambda item: item.reservation.attempt_id))
+        if len(ordered) != 1:
+            return NormalExecutionPageObservation("ambiguous", ordered, all_attempt_ids)
+        return NormalExecutionPageObservation("found", ordered, all_attempt_ids)
+
     def _transition(self, reservation: NormalExecutionAttemptReservationDTO, expected: AttemptState, target: AttemptState, completion: CompletionKind | None, success: AttemptStoreOutcome, already: AttemptStoreOutcome) -> NormalExecutionAttemptStoreResult:
         with self._transaction() as connection:
             existing = self._read(connection, reservation.attempt_id)
@@ -269,6 +361,143 @@ class _Transaction:
 
 def _row(reservation: NormalExecutionAttemptReservationDTO, state: AttemptState) -> tuple[str | None, ...]:
     return (*reservation.model_dump().values(), state, None)
+
+
+def _valid_record(record: NormalExecutionAttemptRecord) -> bool:
+    if record.state not in {
+        "RESERVED",
+        "PROVIDER_STARTED",
+        "PROVIDER_COMPLETED",
+        "COMPLETED",
+    }:
+        return False
+    if record.state == "COMPLETED":
+        return record.completion_kind in {
+            "provider_declared_failure",
+            "application_event_published",
+        }
+    return record.completion_kind is None
+
+
+def _normal_execution_schema_objects_are_exact(
+    connection: sqlite3.Connection,
+) -> bool:
+    objects = tuple(
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in connection.execute(
+            "SELECT type, name, tbl_name FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        )
+    )
+    if objects != (
+        ("index", "active_normal_execution_target", "normal_execution_attempts"),
+        ("table", "normal_execution_attempt_schema", "normal_execution_attempt_schema"),
+        ("table", "normal_execution_attempts", "normal_execution_attempts"),
+    ):
+        return False
+    indexes = connection.execute(
+        "PRAGMA index_list(normal_execution_attempts)"
+    ).fetchall()
+    observed: dict[str, tuple[int, str, int, tuple[str, ...]]] = {}
+    for index in indexes:
+        if len(index) != 5 or not isinstance(index[1], str):
+            return False
+        name = index[1]
+        columns = tuple(
+            str(row[2])
+            for row in connection.execute(f"PRAGMA index_info({name})").fetchall()
+        )
+        observed[name] = (int(index[2]), str(index[3]), int(index[4]), columns)
+    if observed != {
+        "active_normal_execution_target": (
+            1,
+            "c",
+            1,
+            ("project_id", "page_id", "target_page_reference"),
+        ),
+        "sqlite_autoindex_normal_execution_attempts_1": (
+            1,
+            "pk",
+            0,
+            ("attempt_id",),
+        ),
+    }:
+        return False
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'active_normal_execution_target'"
+    ).fetchone()
+    return bool(
+        isinstance(row, tuple)
+        and len(row) == 1
+        and isinstance(row[0], str)
+        and _without_ascii_whitespace(row[0]).lower()
+        == _without_ascii_whitespace(
+            "CREATE UNIQUE INDEX active_normal_execution_target "
+            "ON normal_execution_attempts(project_id, page_id, target_page_reference) "
+            "WHERE state <> 'COMPLETED'"
+        ).lower()
+    )
+
+
+def _without_ascii_whitespace(value: str) -> str:
+    return "".join(
+        character for character in value if character not in " \t\r\n\f\v"
+    )
+
+
+def _readonly_database_status(root: Path, database: Path) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        resolved_root = root.resolve(strict=True)
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != resolved_root
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
+
+
+def _is_reparse(path: Path) -> bool:
+    try:
+        return bool(
+            getattr(path.lstat(), "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
+    except OSError:
+        return False
 
 
 def _report(record: NormalExecutionAttemptRecord, outcome: str) -> NormalExecutionAttemptReport:

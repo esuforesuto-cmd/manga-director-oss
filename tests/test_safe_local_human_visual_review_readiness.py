@@ -23,6 +23,12 @@ from manga_director.application.human_visual_review_readiness import (
 from manga_director.application.workflow import WorkflowApplicationService
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_deterministic_composite_asset_owner import (
+    DeterministicCompositeAssetOwner,
+)
+from manga_director.production.next_generation_deterministic_page_compositor import (
+    encode_rgb_png,
+)
 from manga_director.production.next_generation_generation_evidence import (
     EvidenceValueDTO,
     GenerationConfigurationEvidenceDTO,
@@ -38,6 +44,25 @@ from manga_director.production.next_generation_generation_evidence_persistence i
 from manga_director.production.next_generation_local_durable_asset_owner import (
     LocalDurableAssetOwner,
     OwnerRegistrationMaterial,
+)
+from manga_director.production.next_generation_page_composition import (
+    AcceptedPanelSource,
+    LocalPageCompositionAuthority,
+    PageCompositeAsset,
+    PageCompositionEvidence,
+    PageCompositionRequest,
+)
+from manga_director.production.next_generation_page_composition_application_ledger import (
+    LocalPageCompositionApplicationLedger,
+    PageCompositionApplicationBinding,
+)
+from manga_director.production.next_generation_page_generation_plan import PanelRectangle
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+    ProviderProofLookupResult,
+    ResolvedPageOutput,
+    build_local_page_output_proof_resolver,
+    composition_evidence_sha256,
 )
 from manga_director.production.next_generation_workflow_application_ledger import (
     LocalWorkflowApplicationLedgerStore,
@@ -272,6 +297,198 @@ def _manifest(root: Path) -> tuple[tuple[str, str, int, str], ...]:
     return tuple(records)
 
 
+class _Release:
+    def release(self) -> None:
+        return None
+
+
+class _CompositionResolver:
+    def __init__(self, asset_id: str) -> None:
+        self._asset_id = asset_id
+
+    def resolve(
+        self, project_id: str, page_id: str, output_asset_id: str
+    ) -> ResolvedPageOutput:
+        assert (project_id, page_id, output_asset_id) == (_PROJECT, "1", self._asset_id)
+        source = AcceptedPanelSource(
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            project_id=_PROJECT,
+            page_id="1",
+            panel_id="panel-1",
+            panel_order=1,
+            request_id="request-1",
+            request_fingerprint="b" * 64,
+            attempt_id="panel-attempt-1",
+            evidence_id="panel-evidence-1",
+            asset_id="panel-asset-1",
+            content_sha256="c" * 64,
+            width=1,
+            height=1,
+            rectangle=PanelRectangle(
+                left=46875, top=31250, right=953125, bottom=968750
+            ),
+        )
+        proof = DeterministicCompositionPageOutputProof(
+            project_id=_PROJECT,
+            page_id="1",
+            target_page_reference="page.project-v7-08.1",
+            attempt_id="composition-1",
+            provenance_reference="composition-provenance-1",
+            asset_id=self._asset_id,
+            content_sha256="d" * 64,
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            request_fingerprint="e" * 64,
+            evidence_id="composition-evidence-1",
+            evidence_sha256="f" * 64,
+            ordered_sources=(source,),
+        )
+        return ResolvedPageOutput(proof, b"composite", _Release())
+
+
+class _MissingProviderProofLookup:
+    def lookup(
+        self, project_id: str, page_id: str, output_asset_id: str
+    ) -> ProviderProofLookupResult:
+        del project_id, page_id, output_asset_id
+        return ProviderProofLookupResult("missing")
+
+
+def _durable_composition_resolver(
+    root: Path,
+    *,
+    output_asset_id: str,
+    image_bytes: bytes,
+) -> object:
+    source = AcceptedPanelSource(
+        plan_id="plan-1",
+        plan_fingerprint="a" * 64,
+        project_id=_PROJECT,
+        page_id="1",
+        panel_id="panel-1",
+        panel_order=1,
+        request_id="request-1",
+        request_fingerprint="b" * 64,
+        attempt_id="panel-attempt-1",
+        evidence_id="panel-evidence-1",
+        asset_id="panel-asset-1",
+        content_sha256="c" * 64,
+        width=1,
+        height=1,
+        rectangle=PanelRectangle(
+            left=46875, top=31250, right=953125, bottom=968750
+        ),
+    )
+    request = PageCompositionRequest(
+        composition_attempt_id="composition-1",
+        plan_id=source.plan_id,
+        plan_fingerprint=source.plan_fingerprint,
+        project_id=source.project_id,
+        page_id=source.page_id,
+        explicit_authorization_reference="composition-authorization-1",
+        composition_provenance_reference="composition-provenance-1",
+        panel_count=1,
+        sources=(source,),
+    )
+    authority = LocalPageCompositionAuthority(root / "composition")
+    assert authority.reserve(request).outcome == "created"
+    asset = PageCompositeAsset(
+        composition_attempt_id=request.composition_attempt_id,
+        request_fingerprint=request.request_fingerprint or "",
+        composition_provenance_reference=request.composition_provenance_reference,
+        ordered_sources=request.sources,
+        asset_id=output_asset_id,
+        content_sha256=hashlib.sha256(image_bytes).hexdigest(),
+    )
+    owner = DeterministicCompositeAssetOwner(root / "composites")
+    assert owner.register(asset, image_bytes).outcome == "registered"
+    evidence = PageCompositionEvidence(
+        evidence_id="composition-evidence-1",
+        composition_attempt_id=request.composition_attempt_id,
+        plan_id=request.plan_id,
+        plan_fingerprint=request.plan_fingerprint,
+        project_id=request.project_id,
+        page_id=request.page_id,
+        request_fingerprint=request.request_fingerprint or "",
+        composition_provenance_reference=request.composition_provenance_reference,
+        ordered_sources=request.sources,
+        output_asset_id=asset.asset_id,
+        output_sha256=asset.content_sha256,
+        outcome="completed",
+    )
+    assert authority.commit_evidence(evidence).outcome == "updated"
+    binding = PageCompositionApplicationBinding(
+        application_id="composition-application-1",
+        project_id=request.project_id,
+        page_id=request.page_id,
+        page_revision="revision-1",
+        plan_id=request.plan_id,
+        plan_fingerprint=request.plan_fingerprint,
+        composition_attempt_id=request.composition_attempt_id,
+        composition_provenance_reference=request.composition_provenance_reference,
+        request_fingerprint=request.request_fingerprint or "",
+        evidence_id=evidence.evidence_id,
+        evidence_sha256=composition_evidence_sha256(evidence),
+        composite_asset_id=asset.asset_id,
+        composite_sha256=asset.content_sha256,
+    )
+    ledger = LocalPageCompositionApplicationLedger(root / "application")
+    assert ledger.prepare(binding).outcome == "prepared"
+    assert ledger.mark_applied(binding).outcome == "applied"
+    return build_local_page_output_proof_resolver(
+        provider_proof_lookup=_MissingProviderProofLookup(),
+        composition_authority=authority,
+        composite_owner=owner,
+        composition_application_ledger=ledger,
+    )
+
+
+def test_composition_review_binds_complete_ordered_source_manifest(tmp_path: Path) -> None:
+    repository, _legacy = _seed(tmp_path)
+    page = repository._load_authoritative_page(_PROJECT, 1)
+    asset_id = cast(dict[str, str], page.image)["output_asset_id"]
+    service = build_human_visual_review_readiness(
+        repository,
+        page_output_resolver=_CompositionResolver(asset_id),
+    )
+
+    result = service.assess(_PROJECT, 1, **_submission())
+
+    assert result.status == "ready"
+    assert result.ready
+    assert result.analysis_only
+
+
+def test_concrete_durable_composition_resolver_drives_review_readiness(
+    tmp_path: Path,
+) -> None:
+    repository, _legacy = _seed(tmp_path)
+    asset_id = "composite-1"
+    repository.save(
+        Project(
+            id=_PROJECT,
+            title="V7-08",
+            pages=[_page(PageState.QUALITY_CHECKED, asset_id)],
+        )
+    )
+    composite = encode_rgb_png(2048, 3072, b"\xff" * (2048 * 3072 * 3))
+    resolver = _durable_composition_resolver(
+        tmp_path / "composition-sidecars",
+        output_asset_id=asset_id,
+        image_bytes=composite,
+    )
+    service = build_human_visual_review_readiness(
+        repository, page_output_resolver=resolver
+    )
+
+    result = service.assess(_PROJECT, 1, **_submission())
+
+    assert result.status == "ready"
+    assert result.ready
+    assert result.analysis_only
+
+
 @pytest.mark.skipif(
     os.name != "nt",
     reason="safe exact-file presentation lease is available only on Windows",
@@ -303,16 +520,40 @@ def test_exact_server_resolved_evidence_is_transient_and_state_bounded(
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="non-Windows fail-closed behavior is not applicable on Windows",
+    reason="POSIX exact-file lease contract",
 )
-def test_non_windows_without_safe_exact_file_lease_fails_closed(tmp_path: Path) -> None:
+def test_posix_safe_exact_file_lease_is_ready_without_mutation(tmp_path: Path) -> None:
     repository, service = _seed(tmp_path)
     before = _manifest(repository._root)
 
-    with pytest.raises(HumanVisualReviewReadinessUnavailable):
-        service.assess(_PROJECT, 1, **_submission())
+    result = service.assess(_PROJECT, 1, **_submission())
 
+    assert result.status == "ready"
+    assert result.ready is True
+    assert result.analysis_only is True
     assert _manifest(repository._root) == before
+
+    unsafe_repository, unsafe_service = _seed(tmp_path / "unsafe")
+    asset_path = next(
+        (
+            unsafe_repository._next_generation_normal_execution_owner_root()
+            / "assets"
+            / "assets"
+        ).glob("*.png")
+    )
+    image_bytes = asset_path.read_bytes()
+    asset_path.unlink()
+    outside_path = tmp_path / "outside-review-readiness.png"
+    outside_path.write_bytes(image_bytes)
+    asset_path.symlink_to(outside_path)
+    unsafe_before = _manifest(unsafe_repository._root)
+
+    with pytest.raises(HumanVisualReviewReadinessUnavailable):
+        unsafe_service.assess(_PROJECT, 1, **_submission())
+
+    assert asset_path.is_symlink()
+    assert outside_path.read_bytes() == image_bytes
+    assert _manifest(unsafe_repository._root) == unsafe_before
 
 
 def test_missing_sidecars_and_legacy_artifact_fail_without_create_on_read(

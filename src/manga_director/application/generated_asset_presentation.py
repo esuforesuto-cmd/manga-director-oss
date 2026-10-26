@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_page_output_proof import (
+    PageOutputProofUnavailable,
+    PageOutputResolverPort,
+)
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresentationError,
     SafeLocalGeneratedAssetPresenter,
@@ -42,9 +46,11 @@ class GeneratedAssetPresentationService:
         self,
         repository: LocalFileRepository,
         presenter: SafeLocalGeneratedAssetPresenter,
+        page_output_resolver: PageOutputResolverPort | None = None,
     ) -> None:
         self._repository = repository
         self._presenter = presenter
+        self._page_output_resolver = page_output_resolver
 
     def get(self, project_id: str, page_number: int) -> GeneratedAssetPresentation:
         try:
@@ -64,6 +70,14 @@ class GeneratedAssetPresentationService:
                 raise GeneratedAssetPresentationUnavailable(
                     "generated asset presentation is unavailable"
                 )
+            if self._page_output_resolver is not None:
+                resolved = self._page_output_resolver.resolve(
+                    project_id, str(page_number), output_asset_id
+                )
+                return GeneratedAssetPresentation(
+                    resolved.image_bytes,
+                    resolved.release,
+                )
             presentation = self._presenter.present(
                 project_id, str(page_number), output_asset_id
             )
@@ -77,6 +91,10 @@ class GeneratedAssetPresentationService:
             raise GeneratedAssetPresentationUnavailable(
                 "generated asset presentation is unavailable"
             ) from error
+        except PageOutputProofUnavailable as error:
+            raise GeneratedAssetPresentationUnavailable(
+                "generated asset presentation is unavailable"
+            ) from error
         except Exception as error:
             raise GeneratedAssetPresentationUnavailable(
                 "generated asset presentation is unavailable"
@@ -85,6 +103,8 @@ class GeneratedAssetPresentationService:
 
 def build_generated_asset_presentation(
     repository: LocalFileRepository,
+    *,
+    page_output_resolver: PageOutputResolverPort | None = None,
 ) -> GeneratedAssetPresentationService:
     """Compose fixed private roots without opening or creating them."""
 
@@ -94,7 +114,9 @@ def build_generated_asset_presentation(
         evidence_root=normal_root / "evidence",
         asset_root=normal_root / "assets",
     )
-    return GeneratedAssetPresentationService(repository, presenter)
+    return GeneratedAssetPresentationService(
+        repository, presenter, page_output_resolver
+    )
 
 
 def attach_generated_asset_presentation(

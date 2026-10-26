@@ -97,6 +97,23 @@ class GenerationEvidenceStoreLookupResult:
     evidence_status: EvidenceStatus | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationEvidenceInventoryObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    attempt_ids: tuple[str, ...] = ()
+    evidence: tuple[GenerationEvidenceEnvelopeDTO, ...] = field(
+        default=(), repr=False
+    )
+    provider_references: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationEvidencePresenceObservation:
+    """Owner-local integrity result that never exposes record identities."""
+
+    outcome: Literal["empty", "found", "orphaned", "corrupt"]
+
+
 class GenerationEvidenceStorePort(Protocol):
     """Internal immutable Evidence persistence and exact-attempt lookup port."""
 
@@ -253,6 +270,127 @@ class LocalGenerationEvidenceStore(GenerationEvidenceStorePort):
         finally:
             if connection is not None:
                 connection.close()
+
+    @classmethod
+    def observe_attempts(
+        cls, owner_root: Path, attempt_ids: tuple[str, ...]
+    ) -> GenerationEvidenceInventoryObservation:
+        """Verify only the caller-supplied exact attempt inventory, read-only."""
+
+        if len(attempt_ids) != len(set(attempt_ids)):
+            return GenerationEvidenceInventoryObservation("ambiguous")
+        database = owner_root / _DATABASE_FILENAME
+        path_status = _readonly_database_status(owner_root, database)
+        if path_status == "missing":
+            return GenerationEvidenceInventoryObservation("missing")
+        if path_status == "corrupt":
+            return GenerationEvidenceInventoryObservation("corrupt")
+        try:
+            uri = f"{database.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                tables = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                    )
+                )
+                if (
+                    int(connection.execute("PRAGMA user_version").fetchone()[0])
+                    != _SCHEMA_VERSION
+                    or tables != (_TABLE_NAME,)
+                    or not _schema_is_valid(connection)
+                ):
+                    return GenerationEvidenceInventoryObservation("corrupt")
+                found: list[str] = []
+                evidence_records: list[tuple[GenerationEvidenceEnvelopeDTO, str]] = []
+                for attempt_id in attempt_ids:
+                    row = connection.execute(
+                        "SELECT payload_json, payload_digest, provider_reference, "
+                        "binding_fingerprint, evidence_status FROM generation_evidence "
+                        "WHERE attempt_id = ?",
+                        (attempt_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    verified = _verified_row(attempt_id, row)
+                    if verified is None:
+                        return GenerationEvidenceInventoryObservation("corrupt")
+                    evidence = _validated_evidence(verified[0])
+                    if evidence is None or evidence.attempt_id != attempt_id:
+                        return GenerationEvidenceInventoryObservation("corrupt")
+                    found.append(attempt_id)
+                    evidence_records.append((evidence, verified[2]))
+        except Exception:
+            return GenerationEvidenceInventoryObservation("corrupt")
+        if not found:
+            return GenerationEvidenceInventoryObservation("missing")
+        if len(found) != len(attempt_ids):
+            ordered = tuple(
+                sorted(evidence_records, key=lambda item: item[0].attempt_id)
+            )
+            return GenerationEvidenceInventoryObservation(
+                "ambiguous",
+                tuple(item[0].attempt_id for item in ordered),
+                tuple(item[0] for item in ordered),
+                tuple(item[1] for item in ordered),
+            )
+        ordered = tuple(sorted(evidence_records, key=lambda item: item[0].attempt_id))
+        return GenerationEvidenceInventoryObservation(
+            "found",
+            tuple(item[0].attempt_id for item in ordered),
+            tuple(item[0] for item in ordered),
+            tuple(item[1] for item in ordered),
+        )
+
+    @classmethod
+    def observe_presence(
+        cls, owner_root: Path, authority_attempt_ids: tuple[str, ...]
+    ) -> GenerationEvidencePresenceObservation:
+        """Verify all rows against owner-supplied attempt authority, read-only."""
+
+        if len(authority_attempt_ids) != len(set(authority_attempt_ids)):
+            return GenerationEvidencePresenceObservation("corrupt")
+        database = owner_root / _DATABASE_FILENAME
+        path_status = _readonly_database_status(owner_root, database)
+        if path_status == "missing":
+            return GenerationEvidencePresenceObservation("empty")
+        if path_status == "corrupt":
+            return GenerationEvidencePresenceObservation("corrupt")
+        try:
+            uri = f"{database.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if (
+                    int(connection.execute("PRAGMA user_version").fetchone()[0])
+                    != _SCHEMA_VERSION
+                    or not _schema_is_valid(connection)
+                ):
+                    return GenerationEvidencePresenceObservation("corrupt")
+                rows = connection.execute(
+                    "SELECT attempt_id, payload_json, payload_digest, "
+                    "provider_reference, binding_fingerprint, evidence_status "
+                    "FROM generation_evidence"
+                ).fetchall()
+                observed_ids: set[str] = set()
+                for row in rows:
+                    if (
+                        not isinstance(row, tuple)
+                        or len(row) != 6
+                        or not isinstance(row[0], str)
+                        or row[0] in observed_ids
+                        or _verified_row(row[0], row[1:]) is None
+                    ):
+                        return GenerationEvidencePresenceObservation("corrupt")
+                    observed_ids.add(row[0])
+        except Exception:
+            return GenerationEvidencePresenceObservation("corrupt")
+        if not observed_ids:
+            return GenerationEvidencePresenceObservation("empty")
+        if not observed_ids.issubset(set(authority_attempt_ids)):
+            return GenerationEvidencePresenceObservation("orphaned")
+        return GenerationEvidencePresenceObservation("found")
 
     def _initialize_schema(self) -> None:
         connection: sqlite3.Connection | None = None
@@ -539,7 +677,74 @@ def _schema_is_valid(connection: sqlite3.Connection) -> bool:
         ("evidence_status", "TEXT", 0),
     )
     actual = tuple((str(row[1]), str(row[2]).upper(), int(row[5])) for row in rows)
-    return actual == expected
+    if actual != expected:
+        return False
+    objects = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if objects != [("table", _TABLE_NAME, _TABLE_NAME)]:
+        return False
+    indexes = connection.execute(f"PRAGMA index_list({_TABLE_NAME})").fetchall()
+    if len(indexes) != 1:
+        return False
+    index = indexes[0]
+    if (
+        len(index) != 5
+        or index[1] != f"sqlite_autoindex_{_TABLE_NAME}_1"
+        or (int(index[2]), str(index[3]), int(index[4])) != (1, "pk", 0)
+    ):
+        return False
+    index_columns = connection.execute(
+        f"PRAGMA index_info({index[1]})"
+    ).fetchall()
+    return len(index_columns) == 1 and str(index_columns[0][2]) == "attempt_id"
+
+
+def _readonly_database_status(
+    root: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        resolved_root = root.resolve(strict=True)
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != resolved_root
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
 
 
 def _rollback_quietly(connection: sqlite3.Connection) -> None:

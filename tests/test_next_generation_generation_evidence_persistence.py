@@ -148,6 +148,49 @@ def test_ready_bound_evidence_persists_only_after_commit(tmp_path: Path) -> None
     assert _database(tmp_path / "store").is_file()
 
 
+def test_exact_inventory_observation_is_read_only_and_verifies_bindings(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    missing = LocalGenerationEvidenceStore.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    )
+    assert missing.outcome == "missing"
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert LocalGenerationEvidenceStore.observe_attempts(
+        missing_root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+
+    root = tmp_path / "store"
+    assert _persist(root, _construction()).persisted
+    found = LocalGenerationEvidenceStore.observe_attempts(root, (_ATTEMPT,))
+    assert found.outcome == "found"
+    assert found.evidence == (_evidence(),)
+    assert found.provider_references == (_PROVIDER,)
+    assert LocalGenerationEvidenceStore.observe_presence(
+        root, (_ATTEMPT,)
+    ).outcome == "found"
+    assert LocalGenerationEvidenceStore.observe_presence(
+        root, ()
+    ).outcome == "orphaned"
+    with sqlite3.connect(_database(root)) as connection:
+        connection.execute(
+            "CREATE TRIGGER unexpected_trigger AFTER INSERT ON generation_evidence "
+            "BEGIN SELECT 1; END"
+        )
+    assert LocalGenerationEvidenceStore.observe_attempts(
+        root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+    with sqlite3.connect(_database(root)) as connection:
+        connection.execute("DROP TRIGGER unexpected_trigger")
+    with sqlite3.connect(_database(root)) as connection:
+        connection.execute("PRAGMA user_version = 99")
+    assert LocalGenerationEvidenceStore.observe_attempts(
+        root, (_ATTEMPT,)
+    ).outcome == "corrupt"
+
+
 @pytest.mark.parametrize("status", ("needs_evidence", "needs_review"))
 def test_bound_nonready_evidence_remains_persistable(tmp_path: Path, status: str) -> None:
     report = _persist(tmp_path / status, _construction(status=status))

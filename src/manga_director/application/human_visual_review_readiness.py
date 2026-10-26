@@ -16,6 +16,7 @@ from manga_director.production.next_generation_durable_evidence_workflow_binding
 )
 from manga_director.production.next_generation_generation_evidence import (
     EvidenceValueDTO,
+    GenerationEvidenceEnvelopeDTO,
     GenerationEvidenceValidationReport,
     GenerationEvidenceValidationService,
     GenerationIdentityBindingDTO,
@@ -29,6 +30,12 @@ from manga_director.production.next_generation_human_visual_qa_approval_readines
     HumanVisualQAApprovalReadinessReport,
     HumanVisualQAApprovalReadinessService,
     OverallHumanJudgment,
+)
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+    PageOutputProofUnavailable,
+    PageOutputResolverPort,
+    ResolvedPageOutput,
 )
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresenter,
@@ -95,7 +102,9 @@ class _HumanVisualReviewReadinessProof:
     """Canonical readiness report retained under the exact-file lease."""
 
     report: HumanVisualQAApprovalReadinessReport
-    _asset_proof: _SafeLocalGeneratedAssetProof = field(repr=False, compare=False)
+    _asset_proof: _SafeLocalGeneratedAssetProof | ResolvedPageOutput = field(
+        repr=False, compare=False
+    )
     _workflow_consistency: WorkflowConsistencyReport = field(
         repr=False, compare=False
     )
@@ -114,9 +123,11 @@ class HumanVisualReviewReadinessService:
         self,
         repository: LocalFileRepository,
         presenter: SafeLocalGeneratedAssetPresenter,
+        page_output_resolver: PageOutputResolverPort | None = None,
     ) -> None:
         self._repository = repository
         self._presenter = presenter
+        self._page_output_resolver = page_output_resolver
         self._readiness = HumanVisualQAApprovalReadinessService()
 
     def assess(
@@ -144,7 +155,7 @@ class HumanVisualReviewReadinessService:
         finally:
             proof.release()
 
-    def _prove(
+    def _prove(  # noqa: C901 - closed legacy/composition proof branches stay explicit
         self,
         project_id: str,
         page_number: int,
@@ -157,35 +168,68 @@ class HumanVisualReviewReadinessService:
     ) -> _HumanVisualReviewReadinessProof:
         """Return one canonical report while retaining its exact-file proof."""
 
-        asset_proof: _SafeLocalGeneratedAssetProof | None = None
+        asset_proof: _SafeLocalGeneratedAssetProof | ResolvedPageOutput | None = None
         try:
             page = self._repository._load_authoritative_page(project_id, page_number)
             if page.state not in _ASSESSABLE_STATES:
                 raise HumanVisualReviewReadinessUnavailable(
                     "human visual review readiness is unavailable"
                 )
-            asset_proof = self._presenter._prove(
-                project_id,
-                str(page.page_number),
-                _output_asset_id(page),
-            )
-            evidence_report = GenerationEvidenceValidationService().validate(
-                (asset_proof.evidence,)
-            )
+            if self._page_output_resolver is None:
+                asset_proof = self._presenter._prove(
+                    project_id,
+                    str(page.page_number),
+                    _output_asset_id(page),
+                )
+                selected_attempt_id = asset_proof.binding.attempt_id
+                selected_asset_id = asset_proof.binding.output_asset_id
+                selected_provenance = asset_proof.evidence.provenance_reference
+                target_page_reference = asset_proof.binding.target_page_reference
+                evidence_report = GenerationEvidenceValidationService().validate(
+                    (asset_proof.evidence,)
+                )
+                identity_bindings: Sequence[GenerationIdentityBindingDTO] = (
+                    asset_proof.evidence.identity_bindings
+                )
+            else:
+                asset_proof = self._page_output_resolver.resolve(
+                    project_id,
+                    str(page.page_number),
+                    _output_asset_id(page),
+                )
+                selected_attempt_id = asset_proof.proof.attempt_id
+                selected_asset_id = asset_proof.proof.asset_id
+                selected_provenance = asset_proof.proof.provenance_reference
+                target_page_reference = asset_proof.proof.target_page_reference
+                if isinstance(
+                    asset_proof.proof, DeterministicCompositionPageOutputProof
+                ):
+                    evidence_report = None
+                    identity_bindings = ()
+                else:
+                    evidence = asset_proof.legacy_evidence
+                    if not isinstance(evidence, GenerationEvidenceEnvelopeDTO):
+                        raise HumanVisualReviewReadinessUnavailable(
+                            "human visual review readiness is unavailable"
+                        )
+                    evidence_report = GenerationEvidenceValidationService().validate(
+                        (evidence,)
+                    )
+                    identity_bindings = evidence.identity_bindings
             scope_seed = ApprovalReadinessScopeDTO(
                 project_id=project_id,
                 page_id=str(page.page_number),
                 page_number=page.page_number,
-                target_page_reference=asset_proof.binding.target_page_reference,
-                attempt_id=asset_proof.binding.attempt_id,
-                output_asset_id=asset_proof.binding.output_asset_id,
-                provenance_reference=asset_proof.evidence.provenance_reference,
+                target_page_reference=target_page_reference,
+                attempt_id=selected_attempt_id,
+                output_asset_id=selected_asset_id,
+                provenance_reference=selected_provenance,
                 qa_report_reference="qa-report:pending",
             )
             visual_report = _visual_report(
                 page,
                 scope_seed,
-                asset_proof.evidence.identity_bindings,
+                identity_bindings,
                 evidence_report,
             )
             scope = scope_seed.model_copy(
@@ -203,14 +247,42 @@ class HumanVisualReviewReadinessService:
                 rationale=rationale,
             )
             workflow_consistency = _workflow_consistency(project_id, page)
-            report = self._readiness._assess_server_resolved(
-                scope,
-                evidence_report,
-                _workflow_binding_report(asset_proof.binding),
-                workflow_consistency,
-                visual_report,
-                human_judgment=_human_judgment(project_id, page, scope, submission),
-            )
+            judgment = _human_judgment(project_id, page, scope, submission)
+            if (
+                isinstance(asset_proof, ResolvedPageOutput)
+                and isinstance(
+                    asset_proof.proof, DeterministicCompositionPageOutputProof
+                )
+            ):
+                report = self._readiness._assess_composition_proof(
+                    scope,
+                    asset_proof.proof,
+                    workflow_consistency,
+                    visual_report,
+                    human_judgment=judgment,
+                )
+            else:
+                if evidence_report is None:
+                    raise HumanVisualReviewReadinessUnavailable(
+                        "human visual review readiness is unavailable"
+                    )
+                binding = (
+                    asset_proof.binding
+                    if isinstance(asset_proof, _SafeLocalGeneratedAssetProof)
+                    else asset_proof.legacy_binding
+                )
+                if not isinstance(binding, WorkflowApplicationLedgerBindingDTO):
+                    raise HumanVisualReviewReadinessUnavailable(
+                        "human visual review readiness is unavailable"
+                    )
+                report = self._readiness._assess_server_resolved(
+                    scope,
+                    evidence_report,
+                    _workflow_binding_report(binding),
+                    workflow_consistency,
+                    visual_report,
+                    human_judgment=judgment,
+                )
             return _HumanVisualReviewReadinessProof(
                 report=report,
                 _asset_proof=asset_proof,
@@ -220,6 +292,12 @@ class HumanVisualReviewReadinessService:
             if asset_proof is not None:
                 asset_proof.release()
             raise
+        except PageOutputProofUnavailable as error:
+            if asset_proof is not None:
+                asset_proof.release()
+            raise HumanVisualReviewReadinessUnavailable(
+                "human visual review readiness is unavailable"
+            ) from error
         except Exception as error:
             if asset_proof is not None:
                 asset_proof.release()
@@ -348,7 +426,7 @@ def _visual_report(
     page: Page,
     scope: ApprovalReadinessScopeDTO,
     identity_bindings: Sequence[GenerationIdentityBindingDTO],
-    evidence_report: GenerationEvidenceValidationReport,
+    evidence_report: GenerationEvidenceValidationReport | None,
 ) -> VisualContinuityQAReport:
     previous = page.metadata.get("previous_page")
     current = page.metadata.get("current_page")
@@ -367,9 +445,10 @@ def _visual_report(
             else None
         ),
     )
+    if evidence_report is None:
+        return VisualContinuityQAService().validate((comparison,))
     return VisualContinuityQAService().validate(
-        (comparison,),
-        generation_evidence_validation_report=evidence_report,
+        (comparison,), generation_evidence_validation_report=evidence_report
     )
 
 
@@ -456,6 +535,8 @@ def _logical_digest_reference(prefix: str, value: object) -> str:
 
 def build_human_visual_review_readiness(
     repository: LocalFileRepository,
+    *,
+    page_output_resolver: PageOutputResolverPort | None = None,
 ) -> HumanVisualReviewReadinessService:
     normal_root = repository._next_generation_normal_execution_owner_root()
     return HumanVisualReviewReadinessService(
@@ -465,6 +546,7 @@ def build_human_visual_review_readiness(
             evidence_root=normal_root / "evidence",
             asset_root=normal_root / "assets",
         ),
+        page_output_resolver,
     )
 
 

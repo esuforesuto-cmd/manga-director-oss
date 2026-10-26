@@ -17,12 +17,13 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, Literal, Protocol
 
 from manga_director.production.next_generation_asset_registration import (
     AssetRegistrationRuntimeResult,
 )
 from manga_director.production.next_generation_generation_evidence import (
+    EvidenceValueDTO,
     GenerationOutputEvidenceDTO,
 )
 
@@ -65,6 +66,40 @@ class OwnerRegistrationMaterial:
     media_type: str = _MEDIA_TYPE
 
 
+@dataclass(frozen=True, slots=True)
+class DurableAssetInventoryObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    attempt_ids: tuple[str, ...] = ()
+    bindings: tuple[DurableAssetBindingObservation, ...] = field(
+        default=(), repr=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DurableAssetBindingObservation:
+    attempt_id: str
+    provider_reference: str
+    output_asset_id: str
+    media_type: str
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DurableAssetOutputObservation:
+    """Verified read-only facts for one exact registered output."""
+
+    outcome: Literal["found", "missing", "corrupt", "ambiguous"]
+    content_sha256: str | None = None
+    media_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DurableAssetPresenceObservation:
+    """Owner-local integrity result that never exposes registry identities."""
+
+    outcome: Literal["empty", "found", "orphaned", "corrupt"]
+
+
 class ProviderNeutralAssetOwner(Protocol):
     """Internal provider-neutral durable registration capability."""
 
@@ -73,7 +108,7 @@ class ProviderNeutralAssetOwner(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _OpenedAssetIdentity:
-    """Windows metadata derived from the one leased asset HANDLE."""
+    """Stable metadata derived from the one leased asset descriptor."""
 
     final_path: Path
     volume_serial: int
@@ -148,10 +183,8 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         self._registry_directory = _prepare_child_directory(self._root, "registry")
         self._staging_directory = _prepare_child_directory(self._root, "staging")
         self._assets_directory = _prepare_child_directory(self._root, "assets")
-        self._assets_root_identity = (
-            _capture_windows_owner_root_identity(self._assets_directory)
-            if os.name == "nt"
-            else None
+        self._assets_root_identity = _capture_owner_root_identity(
+            self._assets_directory
         )
         self._registry_path = _prepare_registry_path(self._registry_directory)
         self._initialize_registry()
@@ -178,10 +211,176 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         owner._registry_directory = registry_directory
         owner._assets_directory = assets_directory
         owner._registry_path = registry_path
-        owner._assets_root_identity = (
-            _capture_windows_owner_root_identity(assets_directory) if os.name == "nt" else None
-        )
+        owner._assets_root_identity = _capture_owner_root_identity(assets_directory)
         return owner
+
+    @classmethod
+    def observe_attempts(  # noqa: C901 - one closed integrity inventory.
+        cls, owner_root: Path, attempt_ids: tuple[str, ...]
+    ) -> DurableAssetInventoryObservation:
+        """Verify exact existing registrations without creating owner state."""
+
+        if len(attempt_ids) != len(set(attempt_ids)):
+            return DurableAssetInventoryObservation("ambiguous")
+        missing = _owner_observation_missing(owner_root)
+        if missing is True:
+            return DurableAssetInventoryObservation("missing")
+        if missing is None:
+            return DurableAssetInventoryObservation("corrupt")
+        try:
+            owner = cls._open_existing_for_presentation(owner_root)
+        except (OSError, ValueError):
+            return DurableAssetInventoryObservation("corrupt")
+        connection: sqlite3.Connection | None = None
+        leases: list[_AssetPresentationBytesLease] = []
+        try:
+            connection = _open_readonly_registry(owner._registry_path)
+            if not _registry_schema_is_valid(connection):
+                return DurableAssetInventoryObservation("corrupt")
+            found: list[str] = []
+            bindings: list[DurableAssetBindingObservation] = []
+            for attempt_id in attempt_ids:
+                rows = connection.execute(
+                    "SELECT asset_id, provider_reference, media_type, digest, storage_name "
+                    "FROM asset_registry WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchall()
+                if not rows:
+                    continue
+                if len(rows) != 1:
+                    return DurableAssetInventoryObservation("ambiguous")
+                asset_id, provider, media_type, digest, storage_name = rows[0]
+                if not _is_storage_name(storage_name):
+                    return DurableAssetInventoryObservation("corrupt")
+                lease = owner._read_verified_presentation_bytes(
+                    attempt_id=attempt_id,
+                    provider_reference=provider,
+                    output_asset_id=asset_id,
+                    expected_sha256=digest,
+                    expected_media_type=media_type,
+                )
+                leases.append(lease)
+                found.append(attempt_id)
+                bindings.append(
+                    DurableAssetBindingObservation(
+                        attempt_id, provider, asset_id, media_type, digest
+                    )
+                )
+        except Exception:
+            return DurableAssetInventoryObservation("corrupt")
+        finally:
+            for lease in leases:
+                lease.release()
+            if connection is not None:
+                connection.close()
+        if not found:
+            return DurableAssetInventoryObservation("missing")
+        if len(found) != len(attempt_ids):
+            ordered = tuple(sorted(bindings, key=lambda item: item.attempt_id))
+            return DurableAssetInventoryObservation(
+                "ambiguous", tuple(item.attempt_id for item in ordered), ordered
+            )
+        ordered = tuple(sorted(bindings, key=lambda item: item.attempt_id))
+        return DurableAssetInventoryObservation(
+            "found", tuple(item.attempt_id for item in ordered), ordered
+        )
+
+    @classmethod
+    def observe_output(
+        cls,
+        owner_root: Path,
+        *,
+        attempt_id: str,
+        provider_reference: str,
+        output_asset_id: str,
+    ) -> DurableAssetOutputObservation:
+        """Verify one exact output binding without exposing registry rows or paths."""
+
+        missing = _owner_observation_missing(owner_root)
+        if missing is True:
+            return DurableAssetOutputObservation("missing")
+        if missing is None:
+            return DurableAssetOutputObservation("corrupt")
+        try:
+            owner = cls._open_existing_for_presentation(owner_root)
+        except (OSError, ValueError):
+            return DurableAssetOutputObservation("corrupt")
+        connection: sqlite3.Connection | None = None
+        lease: _AssetPresentationBytesLease | None = None
+        try:
+            connection = _open_readonly_registry(owner._registry_path)
+            if not _registry_schema_is_valid(connection):
+                return DurableAssetOutputObservation("corrupt")
+            rows = connection.execute(
+                "SELECT asset_id, provider_reference, media_type, digest "
+                "FROM asset_registry WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchall()
+            if not rows:
+                return DurableAssetOutputObservation("missing")
+            if len(rows) != 1:
+                return DurableAssetOutputObservation("ambiguous")
+            asset_id, provider, media_type, digest = rows[0]
+            if asset_id != output_asset_id or provider != provider_reference:
+                return DurableAssetOutputObservation("corrupt")
+            lease = owner._read_verified_presentation_bytes(
+                attempt_id=attempt_id,
+                provider_reference=provider_reference,
+                output_asset_id=output_asset_id,
+                expected_sha256=digest,
+                expected_media_type=media_type,
+            )
+            return DurableAssetOutputObservation("found", digest, media_type)
+        except Exception:
+            return DurableAssetOutputObservation("corrupt")
+        finally:
+            if lease is not None:
+                lease.release()
+            if connection is not None:
+                connection.close()
+
+    @classmethod
+    def observe_presence(
+        cls, owner_root: Path, authority_attempt_ids: tuple[str, ...]
+    ) -> DurableAssetPresenceObservation:
+        """Verify every registry row and byte lease against attempt authority."""
+
+        if len(authority_attempt_ids) != len(set(authority_attempt_ids)):
+            return DurableAssetPresenceObservation("corrupt")
+        missing = _owner_observation_missing(owner_root)
+        if missing is True:
+            return DurableAssetPresenceObservation("empty")
+        if missing is None:
+            return DurableAssetPresenceObservation("corrupt")
+        try:
+            owner = cls._open_existing_for_presentation(owner_root)
+        except (OSError, ValueError):
+            return DurableAssetPresenceObservation("corrupt")
+        connection: sqlite3.Connection | None = None
+        leases: list[_AssetPresentationBytesLease] = []
+        try:
+            connection = _open_readonly_registry(owner._registry_path)
+            if not _registry_schema_is_valid(connection):
+                return DurableAssetPresenceObservation("corrupt")
+            rows = connection.execute(
+                "SELECT attempt_id, asset_id, provider_reference, media_type, digest, "
+                "storage_name FROM asset_registry"
+            ).fetchall()
+            observed_ids = _observe_registry_attempt_ids(owner, rows, leases)
+            if observed_ids is None:
+                return DurableAssetPresenceObservation("corrupt")
+        except Exception:
+            return DurableAssetPresenceObservation("corrupt")
+        finally:
+            for lease in leases:
+                lease.release()
+            if connection is not None:
+                connection.close()
+        if not observed_ids:
+            return DurableAssetPresenceObservation("empty")
+        if not observed_ids.issubset(set(authority_attempt_ids)):
+            return DurableAssetPresenceObservation("orphaned")
+        return DurableAssetPresenceObservation("found")
 
     def _read_verified_presentation_bytes(
         self,
@@ -192,7 +391,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
         expected_sha256: str,
         expected_media_type: str,
     ) -> _AssetPresentationBytesLease:
-        """Return bytes from the exact read-only registry-selected Windows lease."""
+        """Return bytes from the exact read-only registry-selected asset lease."""
 
         if (
             not _is_logical_reference(attempt_id)
@@ -226,7 +425,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 raise _AssetVerificationIntegrityFailure(
                     "asset presentation binding is invalid"
                 )
-            lease = _open_verified_windows_lease(
+            lease = _open_verified_asset_lease(
                 self._final_path(row[4]),
                 self._assets_directory,
                 self._assets_root_identity,
@@ -276,7 +475,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 return self._existing_result(material, digest, existing)
 
             asset_uuid = uuid.uuid4()
-            asset_id = f"asset:generated:{asset_uuid}"
+            asset_id = f"asset-generated-{asset_uuid}"
             storage_name = f"{asset_uuid.hex}.png"
             staging_path = self._staging_path(asset_uuid)
             final_path = self._final_path(storage_name)
@@ -290,7 +489,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 storage_name=storage_name,
             )
             durable_committed = True
-            result = _registered_result(material, asset_id)
+            result = _registered_result(material, asset_id, digest)
             if self._issue_i02_commitment:
                 try:
                     self._issue_real_delivery_registration_commitment_v1(
@@ -480,7 +679,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
             ):
                 raise _AssetVerificationIntegrityFailure("asset verification binding is invalid")
             path = self._final_path(str(row[4]))
-            return _open_verified_windows_lease(
+            return _open_verified_asset_lease(
                 path,
                 self._assets_directory,
                 self._assets_root_identity,
@@ -542,7 +741,7 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
                 return _failed_result(material)
         except Exception:
             return _failed_result(material)
-        return _registered_result(material, asset_id)
+        return _registered_result(material, asset_id, digest)
 
     def _write_staging(self, path: Path, image_bytes: bytes) -> None:
         _assert_private_path(path, self._staging_directory)
@@ -613,6 +812,56 @@ def _prepare_owner_root(owner_root: Path) -> Path:
     if _is_link_or_reparse_point(root) or not root.is_dir():
         raise ValueError("asset owner root is unavailable")
     return root
+
+
+def _owner_observation_missing(owner_root: Path) -> bool | None:
+    """Return True only for an absent authority, None for unsafe existing paths."""
+
+    try:
+        root_kind = _readonly_path_kind(owner_root)
+        if root_kind == "missing":
+            return True
+        parent = owner_root.parent
+        if (
+            not owner_root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return None
+        registry = owner_root / "registry"
+        database = registry / _REGISTRY_FILENAME
+        if (
+            _readonly_path_kind(registry) != "directory"
+            or registry.resolve(strict=True).parent != owner_root.resolve(strict=True)
+            or _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != registry.resolve(strict=True)
+        ):
+            return None
+        return False
+    except OSError:
+        return None
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        reparse_point and attributes & reparse_point
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
 
 
 def _existing_owner_root(owner_root: Path) -> Path:
@@ -762,6 +1011,18 @@ def _registry_schema_is_valid(connection: sqlite3.Connection) -> bool:
     columns = tuple((row[1], row[2], row[3], row[4], row[5]) for row in rows)
     if columns != expected_columns:
         return False
+    objects = connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if (
+        len(objects) != 1
+        or objects[0][:3] != ("table", "asset_registry", "asset_registry")
+        or not isinstance(objects[0][3], str)
+        or _without_ascii_whitespace(objects[0][3])
+        != _without_ascii_whitespace(_REGISTRY_DDL)
+    ):
+        return False
     indexes = connection.execute("PRAGMA index_list(asset_registry)").fetchall()
     unique_columns: set[tuple[str, str]] = set()
     for index in indexes:
@@ -821,6 +1082,30 @@ def _is_storage_name(value: object) -> bool:
     )
 
 
+def _observe_registry_attempt_ids(
+    owner: LocalDurableAssetOwner,
+    rows: list[tuple[Any, ...]],
+    leases: list[_AssetPresentationBytesLease],
+) -> set[str] | None:
+    observed_ids: set[str] = set()
+    for row in rows:
+        if len(row) != 6 or not all(isinstance(value, str) for value in row):
+            return None
+        attempt_id, asset_id, provider, media_type, digest, storage_name = row
+        if attempt_id in observed_ids or not _is_storage_name(storage_name):
+            return None
+        lease = owner._read_verified_presentation_bytes(
+            attempt_id=attempt_id,
+            provider_reference=provider,
+            output_asset_id=asset_id,
+            expected_sha256=digest,
+            expected_media_type=media_type,
+        )
+        leases.append(lease)
+        observed_ids.add(attempt_id)
+    return observed_ids
+
+
 def _private_file_matches(path: Path, expected_digest: str) -> bool:
     _assert_private_path(path, path.parent)
     if _is_link_or_reparse_point(path) or not path.is_file() or path.stat().st_size > _MAX_REGISTERED_BYTES:
@@ -830,6 +1115,107 @@ def _private_file_matches(path: Path, expected_digest: str) -> bool:
         while chunk := stream.read(64 * 1024):
             digest.update(chunk)
     return digest.hexdigest() == expected_digest
+
+
+def _open_verified_asset_lease(
+    path: Path,
+    owner_root: Path,
+    expected_owner_root: _OwnerRootIdentity | None,
+    expected_digest: str,
+) -> _AssetVerificationLease:
+    if os.name == "nt":
+        return _open_verified_windows_lease(
+            path, owner_root, expected_owner_root, expected_digest
+        )
+    return _open_verified_posix_lease(
+        path, owner_root, expected_owner_root, expected_digest
+    )
+
+
+def _open_verified_posix_lease(
+    path: Path,
+    owner_root: Path,
+    expected_owner_root: _OwnerRootIdentity | None,
+    expected_digest: str,
+) -> _AssetVerificationLease:
+    """Lease and hash one ordinary file relative to its pinned POSIX owner root."""
+
+    _assert_private_path(path, owner_root)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if (
+        os.name == "nt"
+        or expected_owner_root is None
+        or not isinstance(no_follow, int)
+        or not isinstance(directory, int)
+    ):
+        raise ValueError("asset verification lease is unavailable")
+    root_descriptor = os.open(
+        owner_root,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow | directory,
+    )
+    asset_descriptor: int | None = None
+    stream: BinaryIO | None = None
+    try:
+        if not _posix_owner_root_descriptor_matches(
+            root_descriptor, owner_root, expected_owner_root
+        ):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification owner identity is invalid"
+            )
+        asset_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | no_follow,
+            dir_fd=root_descriptor,
+        )
+        descriptor_status = os.fstat(asset_descriptor)
+        path_status = os.stat(
+            path.name, dir_fd=root_descriptor, follow_symlinks=False
+        )
+        if not _posix_asset_identity_matches(descriptor_status, path_status):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification identity is invalid"
+            )
+        identity = _OpenedAssetIdentity(
+            final_path=path,
+            volume_serial=descriptor_status.st_dev,
+            file_index=descriptor_status.st_ino,
+            size=descriptor_status.st_size,
+            attributes=descriptor_status.st_mode,
+        )
+        stream = os.fdopen(asset_descriptor, "rb", closefd=True)
+        asset_descriptor = None
+        digest = hashlib.sha256()
+        while chunk := stream.read(64 * 1024):
+            digest.update(chunk)
+        final_status = os.fstat(stream.fileno())
+        final_path_status = os.stat(
+            path.name, dir_fd=root_descriptor, follow_symlinks=False
+        )
+        if (
+            not _posix_asset_identity_matches(final_status, final_path_status)
+            or not _same_posix_file_identity(descriptor_status, final_status)
+            or digest.hexdigest() != expected_digest
+            or not _posix_owner_root_descriptor_matches(
+                root_descriptor, owner_root, expected_owner_root
+            )
+        ):
+            raise _AssetVerificationIntegrityFailure(
+                "asset verification digest or binding is invalid"
+            )
+        stream.seek(0)
+        lease = _AssetVerificationLease(stream, identity)
+        stream = None
+        return lease
+    finally:
+        if stream is not None:
+            stream.close()
+        if asset_descriptor is not None:
+            os.close(asset_descriptor)
+        os.close(root_descriptor)
 
 
 def _open_verified_windows_lease(
@@ -947,6 +1333,93 @@ def _capture_windows_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity
         )
     finally:
         kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _capture_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity:
+    if os.name == "nt":
+        return _capture_windows_owner_root_identity(owner_root)
+    return _capture_posix_owner_root_identity(owner_root)
+
+
+def _capture_posix_owner_root_identity(owner_root: Path) -> _OwnerRootIdentity:
+    """Pin one ordinary POSIX assets directory without following a final link."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if (
+        os.name == "nt"
+        or not isinstance(no_follow, int)
+        or not isinstance(directory, int)
+    ):
+        raise ValueError("asset owner root is unavailable")
+    descriptor = os.open(
+        owner_root,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow | directory,
+    )
+    try:
+        descriptor_status = os.fstat(descriptor)
+        path_status = owner_root.lstat()
+        if (
+            not stat.S_ISDIR(descriptor_status.st_mode)
+            or stat.S_ISLNK(path_status.st_mode)
+            or not stat.S_ISDIR(path_status.st_mode)
+            or not _same_posix_file_identity(descriptor_status, path_status)
+        ):
+            raise ValueError("asset owner root is unavailable")
+        return _OwnerRootIdentity(
+            final_path=owner_root.resolve(strict=True),
+            volume_serial=descriptor_status.st_dev,
+            file_index=descriptor_status.st_ino,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _posix_owner_root_descriptor_matches(
+    descriptor: int,
+    owner_root: Path,
+    expected: _OwnerRootIdentity,
+) -> bool:
+    try:
+        descriptor_status = os.fstat(descriptor)
+        path_status = owner_root.lstat()
+        resolved = owner_root.resolve(strict=True)
+    except OSError:
+        return False
+    return bool(
+        stat.S_ISDIR(descriptor_status.st_mode)
+        and not stat.S_ISLNK(path_status.st_mode)
+        and stat.S_ISDIR(path_status.st_mode)
+        and _same_posix_file_identity(descriptor_status, path_status)
+        and descriptor_status.st_dev == expected.volume_serial
+        and descriptor_status.st_ino == expected.file_index
+        and resolved == expected.final_path
+    )
+
+
+def _posix_asset_identity_matches(
+    descriptor_status: os.stat_result, path_status: os.stat_result
+) -> bool:
+    return bool(
+        stat.S_ISREG(descriptor_status.st_mode)
+        and not stat.S_ISLNK(path_status.st_mode)
+        and stat.S_ISREG(path_status.st_mode)
+        and _same_posix_file_identity(descriptor_status, path_status)
+        and 0 < descriptor_status.st_size <= _MAX_REGISTERED_BYTES
+    )
+
+
+def _same_posix_file_identity(
+    left: os.stat_result, right: os.stat_result
+) -> bool:
+    return bool(
+        left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_mode == right.st_mode
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+        and left.st_ctime_ns == right.st_ctime_ns
+    )
 
 
 def _windows_handle_identity(kernel32: Any, handle: int) -> _OpenedAssetIdentity:
@@ -1077,13 +1550,17 @@ def _delete_quietly(owner: LocalDurableAssetOwner, path: Path) -> None:
 
 
 def _registered_result(
-    material: OwnerRegistrationMaterial, asset_id: str
+    material: OwnerRegistrationMaterial, asset_id: str, digest: str
 ) -> AssetRegistrationRuntimeResult:
     return AssetRegistrationRuntimeResult(
         attempt_id=material.attempt_id,
         provider_reference=material.provider_reference,
         outcome="registered",
-        output=GenerationOutputEvidenceDTO(output_asset_id=asset_id, media_type=material.media_type),
+        output=GenerationOutputEvidenceDTO(
+            output_asset_id=asset_id,
+            output_content_hash=EvidenceValueDTO(availability="known", value=digest),
+            media_type=material.media_type,
+        ),
         durable_registration_confirmed=True,
     )
 
