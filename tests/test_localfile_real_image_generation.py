@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,12 @@ from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
 from manga_director.production.next_generation_normal_execution_attempt import (
     LocalNormalExecutionAttemptStore,
+)
+from manga_director.production.next_generation_panel_execution_attempt import (
+    PanelAttemptReservation,
+)
+from manga_director.production.next_generation_panel_generation_evidence import (
+    LocalPanelGenerationAuthority,
 )
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow import localfile_real_image_generation as real_generation_module
@@ -169,13 +176,70 @@ def test_real_path_runs_one_prompt_only_png_and_registers_one_asset(
     assert page.state == PageState.GENERATED
     assert page.image is not None
     assert page.image["artifact_kind"] == "logical_output_asset"
-    assert page.image["output_asset_id"].startswith("asset:generated:")
+    assert page.image["output_asset_id"].startswith("asset-generated-")
     assets = tuple(
         (repository._next_generation_normal_execution_owner_root() / "assets" / "assets").glob(
             "*.png"
         )
     )
     assert len(assets) == 1 and assets[0].read_bytes() == _PNG_BYTES
+
+
+def test_generated_crash_window_replays_exact_application_without_provider_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    factory = _ClientFactory(_Client())
+    composition_builder = (
+        real_generation_module._build_localfile_external_generation_composition_v1
+    )
+
+    def build_with_test_fence(*args: object, **kwargs: object):
+        composition = composition_builder(*args, **kwargs)
+        composition.external_application._fence_factory = _Fence
+        return composition
+
+    monkeypatch.setattr(
+        real_generation_module,
+        "_build_localfile_external_generation_composition_v1",
+        build_with_test_fence,
+    )
+    token = "9" * 32
+    assert _execute(repository, factory, token=token).completed
+    attempt_id = f"attempt:v7-03:human:editor:{token}"
+    database = (
+        repository._next_generation_normal_execution_owner_root()
+        / "attempts"
+        / "normal_execution_attempts.sqlite3"
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE normal_execution_attempts SET state = 'PROVIDER_COMPLETED', "
+            "completion_kind = NULL WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+
+    def provider_setup_forbidden(_name: str) -> str | None:
+        raise AssertionError("Generated replay must not resolve Provider credentials")
+
+    replay = execute_localfile_real_image_generation(
+        repository,
+        _engine(),
+        "project-v7-03",
+        "1",
+        "human:editor",
+        secret_lookup=provider_setup_forbidden,
+        client_factory=factory,
+        now=lambda: _NOW,
+        token_factory=lambda: token,
+    )
+
+    assert replay.completed and replay.provider_invocation_performed is False
+    assert factory.create_calls == 1
+    record = LocalNormalExecutionAttemptStore(database.parent).lookup(attempt_id)
+    assert record is not None
+    assert record.state == "COMPLETED"
+    assert record.completion_kind == "application_event_published"
 
 
 def test_secret_and_human_authorization_are_not_persisted(tmp_path: Path) -> None:
@@ -205,7 +269,8 @@ def test_invalid_human_authorization_fails_before_provider_attempt(
         _execute(repository, factory, authorized_by=authorized_by)
 
     assert factory.create_calls == 0
-    assert not repository._next_generation_normal_execution_owner_root().exists()
+    root = repository._next_generation_normal_execution_owner_root()
+    assert not (root / "attempts" / "normal_execution_attempts.sqlite3").exists()
 
 
 def test_missing_secret_fails_before_attempt_and_network(tmp_path: Path) -> None:
@@ -226,7 +291,8 @@ def test_missing_secret_fails_before_attempt_and_network(tmp_path: Path) -> None
         )
 
     assert factory.create_calls == 0
-    assert not repository._next_generation_normal_execution_owner_root().exists()
+    root = repository._next_generation_normal_execution_owner_root()
+    assert not (root / "attempts" / "normal_execution_attempts.sqlite3").exists()
 
 
 def test_missing_optional_package_fails_before_attempt_and_network(
@@ -254,7 +320,8 @@ def test_missing_optional_package_fails_before_attempt_and_network(
             token_factory=lambda: "3" * 32,
         )
 
-    assert not repository._next_generation_normal_execution_owner_root().exists()
+    root = repository._next_generation_normal_execution_owner_root()
+    assert not (root / "attempts" / "normal_execution_attempts.sqlite3").exists()
 
 
 def test_malformed_png_is_not_registered_or_applied(tmp_path: Path) -> None:
@@ -294,3 +361,38 @@ def test_ambiguous_provider_failure_consumes_attempt_and_blocks_replacement(
     assert "human:editor" in record.reservation.attempt_id
     assert b"human:editor" in store._database.read_bytes()
     assert repository.load("project-v7-03").page(1).state == PageState.PROMPT_BUILT
+
+
+def test_panel_authority_conflict_blocks_before_client_or_workflow_side_effect(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    root = repository._next_generation_normal_execution_owner_root()
+    panel = LocalPanelGenerationAuthority(root / "panel-generation-authority")
+    panel.reserve(
+        PanelAttemptReservation(
+            attempt_id="panel-attempt-1",
+            plan_id="plan-1",
+            plan_fingerprint="a" * 64,
+            project_id="project-v7-03",
+            page_id="1",
+            panel_id="panel-1",
+            panel_order=1,
+            request_id="panel-request-1",
+            request_fingerprint="b" * 64,
+            provider_reference="provider-1",
+            authorization_reference="authorization-1",
+            execution_fingerprint="c" * 64,
+        )
+    )
+    factory = _ClientFactory(_Client())
+
+    report = _execute(repository, factory, token="7" * 32)
+
+    assert report.status == "blocked"
+    assert tuple(item.code for item in report.findings) == (
+        "GENERATION_MODE_ADMISSION_BLOCKED",
+    )
+    assert factory.create_calls == 0
+    assert repository.load("project-v7-03").page(1).state == PageState.PROMPT_BUILT
+    assert not (root / "attempts" / "normal_execution_attempts.sqlite3").exists()

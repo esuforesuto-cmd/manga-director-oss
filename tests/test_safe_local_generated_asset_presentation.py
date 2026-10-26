@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import stat
 import struct
 import zlib
 from datetime import UTC, datetime
@@ -402,14 +403,133 @@ def test_exact_page_binding_returns_same_png_without_mutation(
     assert _manifest(repository._root) == before
 
 
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="non-Windows fail-closed behavior is not applicable on Windows",
-)
-def test_non_windows_without_safe_exact_file_lease_fails_closed(
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative lease contract")
+def test_posix_presentation_uses_canonical_read_only_registry_bound_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, service, png_bytes, binding = _seed(tmp_path)
+    before = _manifest(repository._root)
+    owner_root = (
+        repository._next_generation_normal_execution_owner_root() / "assets"
+    )
+    assets_directory = owner_root / "assets"
+    owner = LocalDurableAssetOwner._open_existing_for_presentation(owner_root)
+    expected_owner_identity = owner._assets_root_identity
+    assert expected_owner_identity.final_path == assets_directory.resolve(strict=True)
+
+    with sqlite3.connect(f"file:{owner._registry_path.as_posix()}?mode=ro", uri=True) as connection:
+        registry_binding = connection.execute(
+            "SELECT attempt_id, provider_reference, media_type, digest, storage_name "
+            "FROM asset_registry WHERE asset_id = ?",
+            (binding.output_asset_id,),
+        ).fetchone()
+    assert registry_binding == (
+        binding.attempt_id,
+        binding.provider_reference,
+        "image/png",
+        hashlib.sha256(png_bytes).hexdigest(),
+        next((assets_directory).glob("*.png")).name,
+    )
+
+    original_open = os.open
+    original_stat = os.stat
+    original_fstat = os.fstat
+    owner_descriptors: list[int] = []
+    asset_opens: list[tuple[str, int, int, int]] = []
+    asset_stats: list[os.stat_result] = []
+    asset_fstats: list[os.stat_result] = []
+
+    def tracked_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        descriptor = original_open(path, flags, *args, **kwargs)
+        if Path(path) == assets_directory:
+            owner_descriptors.append(descriptor)
+            assert flags & getattr(os, "O_DIRECTORY", 0)
+            assert flags & getattr(os, "O_NOFOLLOW", 0)
+        else:
+            relative_root_descriptor = kwargs.get("dir_fd")
+            if isinstance(relative_root_descriptor, int) and relative_root_descriptor in owner_descriptors:
+                asset_opens.append(
+                    (str(path), descriptor, relative_root_descriptor, flags)
+                )
+        return descriptor
+
+    def tracked_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        result = original_stat(path, *args, **kwargs)
+        if kwargs.get("dir_fd") in owner_descriptors:
+            assert kwargs.get("follow_symlinks") is False
+            asset_stats.append(result)
+        return result
+
+    def tracked_fstat(descriptor: int) -> os.stat_result:
+        result = original_fstat(descriptor)
+        if descriptor in owner_descriptors:
+            assert (result.st_dev, result.st_ino) == (
+                expected_owner_identity.volume_serial,
+                expected_owner_identity.file_index,
+            )
+        elif any(descriptor == item[1] for item in asset_opens):
+            asset_fstats.append(result)
+        return result
+
+    monkeypatch.setattr(owner_module.os, "open", tracked_open)
+    monkeypatch.setattr(owner_module.os, "stat", tracked_stat)
+    monkeypatch.setattr(owner_module.os, "fstat", tracked_fstat)
+
+    presentation = service.get(_PROJECT, 1)
+    try:
+        assert presentation.image_bytes == png_bytes
+    finally:
+        presentation.release()
+
+    assert owner_descriptors
+    assert len(asset_opens) == 1
+    storage_name, _asset_descriptor, relative_root_descriptor, flags = asset_opens[0]
+    assert storage_name == registry_binding[4]
+    assert relative_root_descriptor in owner_descriptors
+    assert flags & getattr(os, "O_NOFOLLOW", 0)
+    assert len(asset_stats) == 2
+    assert len(asset_fstats) == 2
+    initial, final = asset_fstats
+    assert stat.S_ISREG(initial.st_mode)
+    assert 0 < initial.st_size <= owner_module._MAX_REGISTERED_BYTES
+    assert (initial.st_dev, initial.st_ino) == (
+        asset_stats[0].st_dev,
+        asset_stats[0].st_ino,
+    )
+    assert (
+        initial.st_dev,
+        initial.st_ino,
+        initial.st_mode,
+        initial.st_size,
+        initial.st_mtime_ns,
+        initial.st_ctime_ns,
+    ) == (
+        final.st_dev,
+        final.st_ino,
+        final.st_mode,
+        final.st_size,
+        final.st_mtime_ns,
+        final.st_ctime_ns,
+    )
+    assert hashlib.sha256(presentation.image_bytes).hexdigest() == registry_binding[3]
+    assert _manifest(repository._root) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX final-symlink rejection contract")
+def test_posix_presentation_rejects_final_symlink_without_repair(
     tmp_path: Path,
 ) -> None:
-    repository, service, _png_bytes, _binding = _seed(tmp_path)
+    repository, service, png_bytes, _binding = _seed(tmp_path)
+    asset_path = next(
+        (repository._next_generation_normal_execution_owner_root() / "assets" / "assets").glob("*.png")
+    )
+    asset_path.unlink()
+    outside_path = tmp_path / "outside.png"
+    outside_path.write_bytes(png_bytes)
+    try:
+        asset_path.symlink_to(outside_path)
+    except OSError as error:
+        pytest.skip(f"POSIX symlink creation unavailable: {error}")
     before = _manifest(repository._root)
 
     with pytest.raises(GeneratedAssetPresentationUnavailable):
@@ -589,16 +709,16 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
         service.get(_PROJECT, 1)
 
     monkeypatch.setattr(owner_module, "_is_link_or_reparse_point", original_reparse)
-    original_open = owner_module._open_verified_windows_lease
+    original_open = owner_module._open_verified_asset_lease
     monkeypatch.setattr(
         owner_module,
-        "_open_verified_windows_lease",
+        "_open_verified_asset_lease",
         lambda *_args: (_ for _ in ()).throw(ValueError("unsafe identity")),
     )
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)
 
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", original_open)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", original_open)
 
     class _PartialStream:
         def read(self, _size: int) -> bytes:
@@ -611,7 +731,7 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
         _PartialStream(),
         owner_module._OpenedAssetIdentity(Path("C:/fixed.png"), 1, 1, len(png), 0),
     )
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", lambda *_args: partial)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", lambda *_args: partial)
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)
 
@@ -621,6 +741,6 @@ def test_unsafe_reparse_identity_oversize_and_partial_read_fail_closed(
             Path("C:/fixed.png"), 1, 1, 25 * 1024 * 1024 + 1, 0
         ),
     )
-    monkeypatch.setattr(owner_module, "_open_verified_windows_lease", lambda *_args: oversized)
+    monkeypatch.setattr(owner_module, "_open_verified_asset_lease", lambda *_args: oversized)
     with pytest.raises(GeneratedAssetPresentationUnavailable):
         service.get(_PROJECT, 1)

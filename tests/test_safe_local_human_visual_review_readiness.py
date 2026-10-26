@@ -520,16 +520,40 @@ def test_exact_server_resolved_evidence_is_transient_and_state_bounded(
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="non-Windows fail-closed behavior is not applicable on Windows",
+    reason="POSIX exact-file lease contract",
 )
-def test_non_windows_without_safe_exact_file_lease_fails_closed(tmp_path: Path) -> None:
+def test_posix_safe_exact_file_lease_is_ready_without_mutation(tmp_path: Path) -> None:
     repository, service = _seed(tmp_path)
     before = _manifest(repository._root)
 
-    with pytest.raises(HumanVisualReviewReadinessUnavailable):
-        service.assess(_PROJECT, 1, **_submission())
+    result = service.assess(_PROJECT, 1, **_submission())
 
+    assert result.status == "ready"
+    assert result.ready is True
+    assert result.analysis_only is True
     assert _manifest(repository._root) == before
+
+    unsafe_repository, unsafe_service = _seed(tmp_path / "unsafe")
+    asset_path = next(
+        (
+            unsafe_repository._next_generation_normal_execution_owner_root()
+            / "assets"
+            / "assets"
+        ).glob("*.png")
+    )
+    image_bytes = asset_path.read_bytes()
+    asset_path.unlink()
+    outside_path = tmp_path / "outside-review-readiness.png"
+    outside_path.write_bytes(image_bytes)
+    asset_path.symlink_to(outside_path)
+    unsafe_before = _manifest(unsafe_repository._root)
+
+    with pytest.raises(HumanVisualReviewReadinessUnavailable):
+        unsafe_service.assess(_PROJECT, 1, **_submission())
+
+    assert asset_path.is_symlink()
+    assert outside_path.read_bytes() == image_bytes
+    assert _manifest(unsafe_repository._root) == unsafe_before
 
 
 def test_missing_sidecars_and_legacy_artifact_fail_without_create_on_read(

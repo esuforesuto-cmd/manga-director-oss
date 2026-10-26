@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 from manga_director.production.next_generation_normal_execution_attempt import (
@@ -91,3 +92,48 @@ def test_canonical_fingerprint_is_order_independent_and_binds_logical_change() -
 
     assert derive_execution_fingerprint(left) == derive_execution_fingerprint(right)
     assert derive_execution_fingerprint(left) != derive_execution_fingerprint({**left, "attempt_id": "attempt-2"})
+
+
+def test_page_observation_is_read_only_exact_and_fail_closed(tmp_path) -> None:
+    root = tmp_path / "attempts"
+    store = LocalNormalExecutionAttemptStore(root.resolve())
+    assert store.observe_page("project-1", "page-1").outcome == "missing"
+    assert not root.exists()
+    root.mkdir()
+    assert store.observe_page("project-1", "page-1").outcome == "corrupt"
+
+    service = NormalExecutionAttemptService()
+    first = _reservation()
+    service.reserve(first, store)
+    assert store.observe_page("project-1", "page-1").records[0].reservation == first
+    service.begin_provider(first, store)
+    service.record_provider_declared_failure(first, store)
+    service.reserve(_reservation("attempt-2"), store)
+    assert store.observe_page("project-1", "page-1").outcome == "ambiguous"
+
+    with sqlite3.connect(store._database) as connection:
+        connection.execute("UPDATE normal_execution_attempt_schema SET version = 99")
+    assert store.observe_page("project-1", "page-1").outcome == "corrupt"
+
+
+def test_page_observation_requires_exact_active_index_and_no_unknown_objects(
+    tmp_path,
+) -> None:
+    missing_index = LocalNormalExecutionAttemptStore(
+        (tmp_path / "missing-index").resolve()
+    )
+    missing_index.reserve(_reservation())
+    with sqlite3.connect(missing_index._database) as connection:
+        connection.execute("DROP INDEX active_normal_execution_target")
+    assert missing_index.observe_page("project-1", "page-1").outcome == "corrupt"
+
+    extra_object = LocalNormalExecutionAttemptStore(
+        (tmp_path / "extra-object").resolve()
+    )
+    extra_object.reserve(_reservation())
+    with sqlite3.connect(extra_object._database) as connection:
+        connection.execute(
+            "CREATE TRIGGER unexpected_trigger AFTER INSERT ON normal_execution_attempts "
+            "BEGIN SELECT 1; END"
+        )
+    assert extra_object.observe_page("project-1", "page-1").outcome == "corrupt"

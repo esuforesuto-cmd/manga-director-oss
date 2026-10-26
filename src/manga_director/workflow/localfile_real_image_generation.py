@@ -46,6 +46,7 @@ from manga_director.production.next_generation_normal_execution_attempt import (
     derive_execution_fingerprint,
 )
 from manga_director.production.next_generation_normal_execution_composition import (
+    NormalExecutionCompositionFindingDTO,
     NormalExecutionCompositionInput,
     NormalExecutionCompositionReport,
     NormalExecutionCompositionService,
@@ -98,11 +99,22 @@ from manga_director.production.next_generation_structured_generation_request imp
     StructuredGenerationRequestValidationService,
 )
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.repositories.local_file_durability import LocalFileDurabilityError
 from manga_director.security import CredentialManager
 from manga_director.workflow.durable_execution import LocalFileDurablePageStore
 from manga_director.workflow.engine import WorkflowEngine
 from manga_director.workflow.localfile_external_generated_application import (
     _build_localfile_external_generation_composition_v1,
+)
+from manga_director.workflow.localfile_page_generation_mode_admission import (
+    _admit_localfile_legacy_generation,
+    _ModeGuardedAttemptStore,
+    _ProviderApplicationAdmission,
+    _replay_localfile_legacy_generated_application,
+)
+from manga_director.workflow.page_execution_fence import (
+    PageExecutionFenceError,
+    local_page_execution_fence,
 )
 
 _PROVIDER_REFERENCE = "provider:openai"
@@ -128,6 +140,7 @@ _HUMAN_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _GENERIC_HUMAN_IDENTITIES = frozenset(
     {"anonymous", "default", "local-user", "system", "unknown", "user"}
 )
+_legacy_fence_factory = local_page_execution_fence
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +181,13 @@ class _WorkflowContextLoader:
         self._page_store = LocalFileDurablePageStore(repository)
 
     def load(self, project_id: str, page_id: str) -> object | None:
-        snapshot = self._page_store.load_revisioned(project_id)
-        return self._page_store.context_from_snapshot(snapshot, page_id)
+        fence = _legacy_fence_factory(project_id, page_id)
+        fence.acquire()
+        try:
+            snapshot = self._page_store.load_revisioned(project_id)
+            return self._page_store.context_from_snapshot(snapshot, page_id)
+        finally:
+            fence.release()
 
 
 class _StrictPngAssetOwner:
@@ -208,10 +226,6 @@ def execute_localfile_real_image_generation(
     if not isinstance(repository, LocalFileRepository):
         raise ValueError("real image generation requires the LocalFile repository")
     _validate_human_identity(authorized_by)
-    context = _load_prompt_built_context(repository, project_id, page_id)
-    prompt = _prompt_from_context(context)
-    credential = _require_openai_runtime(secret_lookup, client_factory)
-
     observed_at = (now or (lambda: datetime.now(UTC)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("real image generation requires a timezone-aware clock")
@@ -229,6 +243,55 @@ def execute_localfile_real_image_generation(
         f"workflow-authorization:v7-03:{authorized_by}:{token}"
     )
     attempt_id = f"attempt:v7-03:{authorized_by}:{token}"
+    try:
+        context = _load_prompt_built_context(repository, project_id, normalized_page_id)
+    except (LocalFileDurabilityError, PageExecutionFenceError):
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
+    mode_service, mode_result, mode_claim = _admit_localfile_legacy_generation(
+        repository,
+        project_id,
+        normalized_page_id,
+        attempt_id,
+        authorized_by,
+        _legacy_fence_factory(project_id, normalized_page_id),
+    )
+    if not mode_result.admitted or mode_claim is None or mode_service is None:
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
+    prompt: str | None = None
+    credential: str | None = None
+    if getattr(context, "state", None) == PageState.PROMPT_BUILT:
+        prompt = _prompt_from_context(context)
+        credential = _require_openai_runtime(secret_lookup, client_factory)
+
+    root = repository._next_generation_normal_execution_owner_root()
+    evidence_store = LocalGenerationEvidenceStore(root / "evidence")
+    external_generation = _build_localfile_external_generation_composition_v1(
+        repository,
+        engine._state_machine,
+        engine._event_bus,
+        r25_composition=None,
+    )
+    provider_application = _ProviderApplicationAdmission(
+        external_generation.external_application,
+        evidence_store,
+        root / "evidence",
+        root / "assets",
+        mode_service,
+        mode_claim,
+        _legacy_fence_factory,
+    )
+    if getattr(context, "state", None) == PageState.GENERATED:
+        if _replay_localfile_legacy_generated_application(
+            repository,
+            attempt_id,
+            authorized_by,
+            observed_at,
+            provider_application,
+        ):
+            return _replay_completed(attempt_id)
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
+    if prompt is None or credential is None:
+        return _mode_blocked(attempt_id, project_id, normalized_page_id)
     facts = _validated_facts(
         attempt_id=attempt_id,
         request_id=request_id,
@@ -251,19 +314,15 @@ def execute_localfile_real_image_generation(
     )
     if invocation is None:
         raise ValueError("OpenAI real image generation composition is unavailable")
-
-    root = repository._next_generation_normal_execution_owner_root()
-    attempt_store = LocalNormalExecutionAttemptStore(root / "attempts")
-    evidence_store = LocalGenerationEvidenceStore(root / "evidence")
+    attempt_store = _ModeGuardedAttemptStore(
+        LocalNormalExecutionAttemptStore(root / "attempts"),
+        mode_service,
+        mode_claim,
+        _legacy_fence_factory,
+    )
     asset_owner = LocalDurableAssetOwner(root / "assets", _issue_i02_commitment=False)
     asset_registration = OpenAIOutputAssetRegistrationAdapter(
         OpenAIAssetOwnerSinkBridge(_StrictPngAssetOwner(asset_owner))
-    )
-    external_generation = _build_localfile_external_generation_composition_v1(
-        repository,
-        engine._state_machine,
-        engine._event_bus,
-        r25_composition=None,
     )
     request = NormalExecutionCompositionInput(
         reservation=facts.reservation,
@@ -282,7 +341,7 @@ def execute_localfile_real_image_generation(
         provider_invocation_port=invocation,
         asset_registration_port=asset_registration,
         evidence_store=evidence_store,
-        external_application_coordinator=external_generation.external_application,
+        external_application_coordinator=provider_application,
         observed_at=observed_at,
         provider_configuration_report=facts.configuration,
         provider_output_configuration_report=facts.output_configuration,
@@ -450,7 +509,10 @@ def _load_prompt_built_context(
     repository: LocalFileRepository, project_id: str, page_id: str
 ) -> object:
     context = _WorkflowContextLoader(repository).load(project_id, str(int(page_id)))
-    if context is None or getattr(context, "state", None) != PageState.PROMPT_BUILT:
+    if context is None or getattr(context, "state", None) not in {
+        PageState.PROMPT_BUILT,
+        PageState.GENERATED,
+    }:
         raise ValueError("real image generation requires one PromptBuilt page")
     return context
 
@@ -520,3 +582,35 @@ def _target_reference(project_id: str, page_id: str) -> str:
 
 def _known(value: str) -> EvidenceValueDTO:
     return EvidenceValueDTO(availability="known", value=value)
+
+
+def _mode_blocked(
+    attempt_id: str, project_id: str, page_id: str
+) -> NormalExecutionCompositionReport:
+    return NormalExecutionCompositionReport(
+        attempt_id=attempt_id,
+        findings=(
+            NormalExecutionCompositionFindingDTO(
+                code="GENERATION_MODE_ADMISSION_BLOCKED",
+                status="blocked",
+                message="generation mode authority rejected the request",
+                attempt_id=attempt_id,
+                project_id=project_id,
+                page_id=page_id,
+            ),
+        ),
+        status="blocked",
+        provider_invocation_performed=False,
+        external_application_delegated=False,
+        completed=False,
+    )
+
+
+def _replay_completed(attempt_id: str) -> NormalExecutionCompositionReport:
+    return NormalExecutionCompositionReport(
+        attempt_id=attempt_id,
+        status="completed",
+        provider_invocation_performed=False,
+        external_application_delegated=True,
+        completed=True,
+    )

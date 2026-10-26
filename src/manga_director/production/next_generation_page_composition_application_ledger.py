@@ -115,6 +115,16 @@ class PageCompositionAppliedBindingLookupResult:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PageCompositionApplicationObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous", "prepared"]
+    plan_ids: tuple[str, ...] = ()
+    composition_attempt_ids: tuple[str, ...] = ()
+    bindings: tuple[PageCompositionApplicationBinding, ...] = field(
+        default=(), repr=False
+    )
+
+
 class LocalPageCompositionApplicationLedger:
     """Separate versioned sidecar; never creates Provider application rows."""
 
@@ -214,6 +224,74 @@ class LocalPageCompositionApplicationLedger:
         finally:
             if connection is not None:
                 connection.close()
+
+    def observe_page(
+        self, project_id: str, page_id: str
+    ) -> PageCompositionApplicationObservation:
+        path_status = _readonly_application_status(self._root, self._database_path)
+        if path_status == "missing":
+            return PageCompositionApplicationObservation("missing")
+        if path_status == "corrupt":
+            return PageCompositionApplicationObservation("corrupt")
+        try:
+            uri = f"{self._database_path.as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if int(connection.execute("PRAGMA user_version").fetchone()[0]) != _SCHEMA_VERSION:
+                    return PageCompositionApplicationObservation("corrupt")
+                columns = tuple(
+                    (str(row[1]), str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
+                    for row in connection.execute(
+                        "PRAGMA table_info(composition_application)"
+                    )
+                )
+                if not _application_schema_objects_are_exact(connection) or columns != (
+                    ("application_id", "TEXT", 0, None, 1),
+                    ("project_id", "TEXT", 1, None, 0),
+                    ("page_id", "TEXT", 1, None, 0),
+                    ("page_revision", "TEXT", 1, None, 0),
+                    ("lifecycle", "TEXT", 1, None, 0),
+                    ("payload_json", "TEXT", 1, None, 0),
+                    ("payload_digest", "TEXT", 1, None, 0),
+                    ("binding_fingerprint", "TEXT", 1, None, 0),
+                ):
+                    return PageCompositionApplicationObservation("corrupt")
+                rows = connection.execute(
+                    "SELECT project_id, page_id, page_revision, lifecycle, payload_json, "
+                    "payload_digest, binding_fingerprint FROM composition_application"
+                ).fetchall()
+            verified = tuple(_verified_row(row) for row in rows)
+            if any(item is None for item in verified):
+                return PageCompositionApplicationObservation("corrupt")
+            matching = tuple(
+                item
+                for item in verified
+                if item is not None
+                and item[0].project_id == project_id
+                and item[0].page_id == page_id
+            )
+        except Exception:
+            return PageCompositionApplicationObservation("corrupt")
+        if not matching:
+            return PageCompositionApplicationObservation("missing")
+        if len(matching) != 1:
+            return PageCompositionApplicationObservation("ambiguous")
+        binding, lifecycle = matching[0]
+        return PageCompositionApplicationObservation(
+            "prepared" if lifecycle == "prepared" else "found",
+            (binding.plan_id,),
+            (binding.composition_attempt_id,),
+            (binding,),
+        )
+
+    @classmethod
+    def observe_page_at(
+        cls, owner_root: Path, project_id: str, page_id: str
+    ) -> PageCompositionApplicationObservation:
+        ledger = object.__new__(cls)
+        ledger._root = owner_root
+        ledger._database_path = owner_root / _DATABASE_FILENAME
+        return ledger.observe_page(project_id, page_id)
 
     def _write(  # noqa: C901
         self,
@@ -349,6 +427,80 @@ class LocalPageCompositionApplicationLedger:
             raise ValueError("composition application ledger is unavailable")
         connection.execute("PRAGMA synchronous = FULL")
         return connection
+
+
+def _readonly_application_status(
+    root: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != root.resolve(strict=True)
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
+
+
+def _application_schema_objects_are_exact(connection: sqlite3.Connection) -> bool:
+    objects = connection.execute(
+        "SELECT type, name, tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    if objects != [
+        ("table", "composition_application", "composition_application")
+    ]:
+        return False
+    indexes = connection.execute(
+        "PRAGMA index_list(composition_application)"
+    ).fetchall()
+    observed: set[tuple[int, str, int, tuple[str, ...]]] = set()
+    for index in indexes:
+        if len(index) != 5 or not isinstance(index[1], str):
+            return False
+        columns = tuple(
+            str(row[2])
+            for row in connection.execute(
+                f"PRAGMA index_info({index[1]})"
+            ).fetchall()
+        )
+        observed.add((int(index[2]), str(index[3]), int(index[4]), columns))
+    return observed == {
+        (1, "pk", 0, ("application_id",)),
+        (1, "u", 0, ("project_id", "page_id", "page_revision")),
+    }
 
 
 def _result(

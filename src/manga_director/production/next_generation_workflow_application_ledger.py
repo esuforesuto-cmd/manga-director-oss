@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -201,6 +202,15 @@ class WorkflowApplicationLedgerExactLookupResult:
     """Private exact-binding lifecycle lookup for reconciliation only."""
 
     outcome: ExactLookupOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowApplicationInventoryObservation:
+    outcome: Literal["found", "missing", "corrupt", "ambiguous", "prepared"]
+    attempt_ids: tuple[str, ...] = ()
+    bindings: tuple[WorkflowApplicationLedgerBindingDTO, ...] = field(
+        default=(), repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,6 +644,109 @@ class LocalWorkflowApplicationLedgerStore(WorkflowApplicationLedgerStorePort):
         finally:
             _close_quietly(connection)
 
+    @classmethod
+    def observe_page(
+        cls, owner_root: Path, project_id: str, page_id: str
+    ) -> WorkflowApplicationInventoryObservation:
+        """Verify one Page's complete application inventory, read-only."""
+
+        database = owner_root / _DATABASE_FILENAME
+        path_status = _readonly_ledger_status(owner_root, database)
+        if path_status == "missing":
+            return WorkflowApplicationInventoryObservation("missing")
+        if path_status == "corrupt":
+            return WorkflowApplicationInventoryObservation("corrupt")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = _open_r21_readonly_connection(database)
+            connection.execute("PRAGMA query_only = ON")
+            _validate_r21_schema(connection)
+            rows = connection.execute(
+                f"SELECT {_select_columns(connection)} FROM {_TABLE_NAME}"
+            ).fetchall()
+            records = tuple(_record_from_row(row) for row in rows)
+            if any(record is None for record in records):
+                return WorkflowApplicationInventoryObservation("corrupt")
+            matching = tuple(
+                record
+                for record in records
+                if record is not None
+                and record.binding.project_id == project_id
+                and record.binding.page_id == page_id
+            )
+        except Exception:
+            return WorkflowApplicationInventoryObservation("corrupt")
+        finally:
+            _close_quietly(connection)
+        if not matching:
+            return WorkflowApplicationInventoryObservation("missing")
+        ordered = tuple(sorted(matching, key=lambda item: item.binding.attempt_id))
+        attempt_ids = tuple(item.binding.attempt_id for item in ordered)
+        bindings = tuple(item.binding for item in ordered)
+        if len(attempt_ids) != len(set(attempt_ids)) or len(ordered) != 1:
+            return WorkflowApplicationInventoryObservation(
+                "ambiguous", attempt_ids, bindings
+            )
+        if ordered[0].lifecycle == "prepared":
+            return WorkflowApplicationInventoryObservation(
+                "prepared", attempt_ids, bindings
+            )
+        return WorkflowApplicationInventoryObservation("found", attempt_ids, bindings)
+
+    @classmethod
+    def observe_attempts(
+        cls, owner_root: Path, attempt_ids: tuple[str, ...]
+    ) -> WorkflowApplicationInventoryObservation:
+        if len(attempt_ids) != len(set(attempt_ids)):
+            return WorkflowApplicationInventoryObservation("ambiguous")
+        database = owner_root / _DATABASE_FILENAME
+        path_status = _readonly_ledger_status(owner_root, database)
+        if path_status == "missing":
+            return WorkflowApplicationInventoryObservation("missing")
+        if path_status == "corrupt":
+            return WorkflowApplicationInventoryObservation("corrupt")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = _open_r21_readonly_connection(database)
+            connection.execute("PRAGMA query_only = ON")
+            _validate_r21_schema(connection)
+            records: list[_LedgerRecord] = []
+            for attempt_id in attempt_ids:
+                rows = connection.execute(
+                    f"SELECT {_select_columns(connection)} FROM {_TABLE_NAME} "
+                    "WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchall()
+                if len(rows) > 1:
+                    return WorkflowApplicationInventoryObservation("ambiguous")
+                if rows:
+                    record = _record_from_row(rows[0])
+                    if record is None:
+                        return WorkflowApplicationInventoryObservation("corrupt")
+                    records.append(record)
+        except Exception:
+            return WorkflowApplicationInventoryObservation("corrupt")
+        finally:
+            _close_quietly(connection)
+        if not records:
+            return WorkflowApplicationInventoryObservation("missing")
+        found = tuple(sorted(record.binding.attempt_id for record in records))
+        bindings = tuple(
+            sorted(records, key=lambda item: item.binding.attempt_id)
+        )
+        observed_bindings = tuple(record.binding for record in bindings)
+        if len(found) != len(attempt_ids):
+            return WorkflowApplicationInventoryObservation(
+                "ambiguous", found, observed_bindings
+            )
+        if any(record.lifecycle == "prepared" for record in records):
+            return WorkflowApplicationInventoryObservation(
+                "prepared", found, observed_bindings
+            )
+        return WorkflowApplicationInventoryObservation(
+            "found", found, observed_bindings
+        )
+
     def _observe_exact_readonly_v1(
         self, binding: object
     ) -> _WorkflowApplicationLedgerObservationV1:
@@ -977,7 +1090,69 @@ def _valid_r21_binding(binding: object) -> bool:
 
 def _r21_regular_file(path: Path) -> bool:
     try:
-        return path.is_file() and not path.is_symlink()
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return (
+            path.is_file()
+            and not path.is_symlink()
+            and not bool(
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            )
+        )
+    except OSError:
+        return False
+
+
+def _readonly_ledger_status(
+    root: Path, database: Path
+) -> Literal["found", "missing", "corrupt"]:
+    try:
+        root_kind = _readonly_path_kind(root)
+        if root_kind == "missing":
+            return "missing"
+        parent = root.parent
+        if (
+            not root.is_absolute()
+            or root_kind != "directory"
+            or _readonly_path_kind(parent) != "directory"
+        ):
+            return "corrupt"
+        if (
+            _readonly_path_kind(database) != "file"
+            or database.resolve(strict=True).parent != root.resolve(strict=True)
+        ):
+            return "corrupt"
+        return "found"
+    except OSError:
+        return "corrupt"
+
+
+def _readonly_path_kind(
+    path: Path,
+) -> Literal["missing", "file", "directory", "unsafe"]:
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return "unsafe"
+    if stat.S_ISREG(status.st_mode):
+        return "file"
+    if stat.S_ISDIR(status.st_mode):
+        return "directory"
+    return "unsafe"
+
+
+def _r21_regular_directory(path: Path) -> bool:
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return path.is_dir() and not bool(
+            attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
     except OSError:
         return False
 

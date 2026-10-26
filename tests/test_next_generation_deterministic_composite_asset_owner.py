@@ -65,6 +65,54 @@ def test_strict_composite_registration_replay_and_readback(tmp_path: Path) -> No
     assert readback.image_bytes == image_bytes
 
 
+def test_exact_inventory_observation_is_read_only_and_verifies_asset_bytes(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing"
+    missing = DeterministicCompositeAssetOwner.observe_attempts_at(
+        missing_root, ("composition-1",)
+    )
+    assert missing.outcome == "missing"
+    assert missing.missing_composition_attempt_ids == ("composition-1",)
+    assert not missing_root.exists()
+    missing_root.mkdir()
+    assert DeterministicCompositeAssetOwner.observe_attempts_at(
+        missing_root, ("composition-1",)
+    ).outcome == "corrupt"
+
+    image_bytes = _png()
+    root = tmp_path / "owner"
+    owner = DeterministicCompositeAssetOwner(root)
+    owner.register(_asset(image_bytes), image_bytes)
+    assert owner.observe_attempts(("composition-1",)).outcome == "found"
+    page = owner.observe_page("project-1", "page-1")
+    assert page.outcome == "found"
+    assert page.composition_attempt_ids == ("composition-1",)
+    assert owner.observe_page("project-1", "page-other").outcome == "missing"
+    partial = owner.observe_attempts(("composition-1", "composition-2"))
+    assert partial.outcome == "found"
+    assert partial.composition_attempt_ids == ("composition-1",)
+    assert partial.missing_composition_attempt_ids == ("composition-2",)
+    assert partial.assets == (_asset(image_bytes),)
+    with sqlite3.connect(
+        root / "deterministic-composite-assets.sqlite3"
+    ) as connection:
+        connection.execute(
+            "CREATE TRIGGER unexpected_trigger AFTER INSERT ON composite_assets "
+            "BEGIN SELECT 1; END"
+        )
+    assert owner.observe_page("project-1", "page-1").outcome == "corrupt"
+    with sqlite3.connect(
+        root / "deterministic-composite-assets.sqlite3"
+    ) as connection:
+        connection.execute("DROP TRIGGER unexpected_trigger")
+    with sqlite3.connect(
+        root / "deterministic-composite-assets.sqlite3"
+    ) as connection:
+        connection.execute("PRAGMA user_version = 99")
+    assert owner.observe_attempts(("composition-1",)).outcome == "corrupt"
+
+
 def test_same_attempt_or_asset_difference_conflicts(tmp_path: Path) -> None:
     image_bytes = _png()
     owner = DeterministicCompositeAssetOwner(tmp_path / "owner")
