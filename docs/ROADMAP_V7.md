@@ -1723,6 +1723,57 @@ does not authorize public routing, release, publication, live Provider or
 ComfyUI execution, I02, another implementation slice, dependency or lockfile
 changes, public API changes, branch deletion, force push, or history rewriting.
 
+## V7-14 — Safe Panel-Aware Activation Bridge
+
+### Planning status
+
+Planning Draft only. The proposed design is recorded in
+[RFC-V7-012: Safe Panel-Aware Activation Bridge](RFC_V7_012_SAFE_PANEL_AWARE_ACTIVATION_BRIDGE.md).
+It proposes a private deterministic converter from persisted Storyboard and
+PromptBuilt artifacts to the V7-13 private `PageGenerationPlan`, plus a private
+adapter from the V7-13 `PanelProviderExecutionPort` to the existing V7-04
+`ComfyUIImagePrivateTransport`.
+
+The design preserves V7-13 mode exclusion, durable admission and provider-start
+ordering, at-most-once execution, fail-closed restart recovery, exact evidence
+binding, and disabled public routing. The known Storyboard default action
+`advance the page purpose` is invalid under the concrete prompt contract, and
+the default character identity `protagonist` is also rejected. Current
+Storyboard artifacts do not supply panel rectangles. The bridge must require
+an already-present explicit concrete action and exact supported layout input;
+it must not infer or auto-fill either. These are prominent stop conditions,
+alongside missing required plan values `narrative_intent`,
+`continuity_bindings`, and `constraints`. Storyboard also has no explicit
+`panel_id`, which the bridge derives deterministically from the content binding
+and panel order; it is not a required explicit source field. `Page.storyboard`
+and `Page.prompt` are plain dict artifacts without stable reference fields, so
+the bridge derives safe source references from their full canonical content
+digests. The exact revision and page fingerprint enter the `source_binding_v1`
+digest that determines `plan_id`; the V7-13 mode claim binds revision and page
+fingerprint directly, and the operation binds revision directly. These are not
+new `PageGenerationPlan` fields. RFC-V7-012 fixes one unambiguous seven-field
+transport `raw_prompt` preimage, a distinct full `panel_prompt`, and literal
+canonical full-digest derivations for every generated request, attempt,
+panel-output/evidence, composition attempt (the frozen operation identity),
+composition provenance/evidence, composite asset, and application ID; see it for
+the full closed mapping and fail-closed rules. Missing or invalid required
+input blocks conversion. The proposed ComfyUI sequence is read-only
+preflight/prepare after reservation, authority recheck and durable
+provider-start, then one prepared submit; implementation must add the
+orchestration and focused test files to its future allowlist.
+
+This planning entry does not mark V7-14 implemented or authorize implementation.
+HTTP/Web/Application public activation remains V7-15+; I02, live ComfyUI,
+release, `main`, dependencies/lockfiles, schema/migration, and public API remain
+out of scope.
+
+### Authorization gate
+
+Only the two RFC/roadmap documentation files are authorized for this planning
+draft. Any implementation needs separate user approval after review of an
+exact implementation allowlist and validation plan. Proposed future files and
+STOP conditions are documented in RFC-V7-012.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -1739,6 +1790,7 @@ changes, public API changes, branch deletion, force push, or history rewriting.
 | V7-11 Safe Local Human Visual Review Evidence History | Complete and verified | Completed V7-08 through V7-10, accepted RFC-V7-009, and explicit approval of the exact fifteen-file implementation package | PR #45 final head `32a0386dce4101606fd1c66e748eef3ffa213e62` merged into `v7-dev` at `7ef060d98b631ed2b9492ee9c3e0b0560c70b08e`; full pytest passed (3215 passed / 20 skipped); PR checks passed 24/24; post-merge CI run #156 passed 10/10 with CodeQL run #59 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact fifteen-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Complete and verified | Completed V7-07 through V7-11, accepted RFC-V7-010, and explicit approval of the exact twenty-one-file implementation package | PR #48 final head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` merged into `v7-dev` at `a02eedf38cd79c43c2add68ac08c332dab5eefb8`; full pytest passed (3238 passed / 16 skipped); PR CI run #166 passed 10/10 with CodeQL run #65 passing 3/3; post-merge CI run #167 passed 10/10 with CodeQL run #66 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact twenty-one-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-13 Private Panel-Aware Page Generation Foundation | Complete and verified; public routing disabled | Completed V7-12, accepted RFC-V7-011, and completed Slice 1 through Slice 4 validation | PR #54 merged Slice 4 into `validation/rfc-v7-011-slice-3` at `4719c55a3ade5b3f10f75d4432f07bcbc958d6a0`; PR #55 merged that branch into `v7-dev` at `a760488f43f84e28978fe5b3bf1d25e44b9b8396`; PR #55 CI passed; post-merge CI run `40273044192` passed 10/10 jobs; final independent closure P0/P1/P2 = 0/0/0; release, public activation, live Provider/ComfyUI, and I02 remained out of scope |
+| V7-14 Safe Panel-Aware Activation Bridge | Planning Draft only; implementation not authorized; public routing disabled | Completed V7-13 foundation; RFC-V7-012 design review and separate explicit approval required before implementation | Docs-only planning entry; RFC-V7-012 defines the private persisted-artifact converter, V7-13-to-V7-04 adapter, strict source/action/layout preconditions, literal canonical object and full-digest derivations, exact documentation allowlist, proposed future implementation allowlist, validation, and STOP conditions; no implementation claimed |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
