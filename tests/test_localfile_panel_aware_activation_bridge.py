@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -12,10 +13,14 @@ from pydantic import ValidationError
 
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_page_generation_mode_claim import (
+    PageGenerationModeClaim,
+)
 from manga_director.production.next_generation_page_generation_plan import PanelRectangle
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.local_file_durability import RevisionedProjectSnapshot
 from manga_director.workflow.localfile_panel_aware_activation_bridge import (
+    _build_panel_aware_page_generation_operation,
     _convert_revisioned_page_snapshot,
     _snapshot_page_binding,
 )
@@ -64,9 +69,7 @@ def _snapshot(
         ),
         dialogue={},
         prompt=(
-            prompt
-            if prompt is not None
-            else {"prompt_markdown": "夜明けの鍵 🔑", "tokens": 12}
+            prompt if prompt is not None else {"prompt_markdown": "夜明けの鍵 🔑", "tokens": 12}
         ),
     )
     project = Project(
@@ -99,6 +102,235 @@ def _convert(
         layout_profile_version=layout_profile_version,
         rectangles=rectangles,
     )
+
+
+def _mode_claim(
+    source: tuple[LocalFileRepository, RevisionedProjectSnapshot], plan_id: str
+) -> PageGenerationModeClaim:
+    repository, snapshot = source
+    project_id, page_id, _number, page_revision, page_fingerprint, _page = _snapshot_page_binding(
+        snapshot, 1
+    )
+    return PageGenerationModeClaim(
+        claim_id="claim-v7-014-test",
+        project_id=project_id,
+        page_id=page_id,
+        page_revision=page_revision,
+        page_fingerprint=page_fingerprint,
+        mode="panel_aware",
+        mode_binding_reference=plan_id,
+        authorizer_reference="mode-authorizer-v7-014-test",
+    )
+
+
+def _build_operation(
+    tmp_path: Path,
+    source: tuple[LocalFileRepository, RevisionedProjectSnapshot] | None = None,
+    *,
+    mode_claim: PageGenerationModeClaim | None = None,
+    authorization_references: tuple[str, ...] = ("authorization-v7-014-panel-1",),
+):
+    resolved_source = source or _snapshot(tmp_path)
+    conversion = _convert(tmp_path, resolved_source)
+    claim = mode_claim or _mode_claim(resolved_source, conversion.plan.plan_id)
+    return _build_panel_aware_page_generation_operation(
+        *resolved_source,
+        page_number=1,
+        layout_profile_id="md-page-compositor-v1",
+        layout_profile_version=1,
+        rectangles=(_rectangle(),),
+        mode_claim=claim,
+        authorization_references=authorization_references,
+        composition_authorization_reference="composition-authorization-v7-014-test",
+        checkpoint_name="checkpoint_test.safetensors",
+    )
+
+
+def test_operation_composition_is_deterministic_and_exactly_bound(
+    tmp_path: Path,
+) -> None:
+    source = _snapshot(tmp_path)
+    first = _build_operation(tmp_path, source)
+    second = _build_operation(tmp_path, source)
+
+    assert first == second
+    assert first.page_revision == first.mode_claim.page_revision
+    assert first.mode_claim.page_fingerprint == _snapshot_page_binding(source[1], 1)[4]
+    assert first.mode_claim.mode == "panel_aware"
+    assert first.mode_claim.mode_binding_reference == first.plan.plan_id
+    assert len(first.panel_units) == first.plan.panel_count == 1
+    request = first.panel_units[0].request
+    reservation = first.panel_units[0].reservation
+    assert request.panel_prompt == first.plan.panels[0]
+    assert request.request_fingerprint == reservation.request_fingerprint
+    assert request.request_id == reservation.request_id
+    raw_prompt_object = {
+        "action": "Aki places the brass key into the archive lock.",
+        "background": "The east archive corridor before sunrise.",
+        "character_identities": ["character-aki-v1"],
+        "composition": "Medium shot with Aki left and the lock in the foreground.",
+        "constraints": ["Keep the blue coat and brass key visible."],
+        "continuity_bindings": ["costume-aki-blue-coat-v2"],
+        "narrative_intent": "Aki discovers the sealed archive door.",
+    }
+    raw_prompt = json.dumps(
+        raw_prompt_object, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert raw_prompt == (
+        '{"action":"Aki places the brass key into the archive lock.",'
+        '"background":"The east archive corridor before sunrise.",'
+        '"character_identities":["character-aki-v1"],'
+        '"composition":"Medium shot with Aki left and the lock in the foreground.",'
+        '"constraints":["Keep the blue coat and brass key visible."],'
+        '"continuity_bindings":["costume-aki-blue-coat-v2"],'
+        '"narrative_intent":"Aki discovers the sealed archive door."}'
+    )
+    assert hashlib.sha256(raw_prompt.encode("utf-8")).hexdigest() == (
+        "32d40e478262ff87ee3fa44b47883f76a8f963b260bd668d85fa03618ff91629"
+    )
+    assert request.input_sha256 == (
+        "32d40e478262ff87ee3fa44b47883f76a8f963b260bd668d85fa03618ff91629"
+    )
+    assert request.input_reference == (
+        "input-v7-014-32d40e478262ff87ee3fa44b47883f76a8f963b260bd668d85fa03618ff91629"
+    )
+    assert request.request_id == (
+        "request-v7-014-8c9b73caeeb2af3e6321f965cea175e568197aaa6384da96eb1080b6fa257a2f"
+    )
+    assert request.request_fingerprint == (
+        "0be3469e90ba95d2ea2cea90c940d802f2b8cd2ae5a4af62869c28de5411ec3c"
+    )
+    assert request.provenance_reference == (
+        "panel-provenance-v7-014-cd6dfa540c522a9c4c89ee8de6f951381fdf473fa7b4ad6142630700c7e3f719"
+    )
+    assert reservation.attempt_id == (
+        "attempt-v7-014-ab955689dd7e096140be73d461489e97df3e642ff17b4ec5ef66972033a25466"
+    )
+    assert reservation.provider_reference == "provider-comfyui-v7-014"
+    assert reservation.authorization_reference == "authorization-v7-014-panel-1"
+    assert reservation.execution_fingerprint == (
+        "f2616813a83b972e6165da50b0d43b4842c455a3095e50fc38d9f0c312171516"
+    )
+    assert first.composition_provenance_reference == (
+        "composition-provenance-v7-014-0933af381a12615b78d05863bf2fb6c57b98d22f9f0f79ddd3b26129be11a0ed"
+    )
+    assert first.composition_attempt_id == (
+        "composition-attempt-v7-014-bed237de1e4b7200766105b87bbd9ef969d5fe811bffb91cb6742d3f1f9b64b7"
+    )
+    assert first.composition_evidence_id == (
+        "composition-evidence-v7-014-8cbf891802143d8a2d244af022b542605adfec19fad063dcda432fba0714ac03"
+    )
+    assert first.composite_asset_id == (
+        "composite-asset-v7-014-2cf7e0d57f070e5fed48fb1022e4fdb639ebd019dfb94530414c2998d89d89cc"
+    )
+    assert first.application_id == (
+        "composition-application-v7-014-5544b719a856ac8b9cc7ab65eb1a5bc5fa5451cf6baf3472951b22f5b6ed3df8"
+    )
+
+
+def test_two_panel_operation_pins_ordered_composition_golden_bindings(
+    tmp_path: Path,
+) -> None:
+    rectangles = (
+        _rectangle(50_000, 450_000),
+        PanelRectangle(left=500_000, top=40_000, right=950_000, bottom=960_000),
+    )
+    source = _snapshot(
+        tmp_path,
+        storyboard={"panels": [_panel(number=1), _panel(number=2)], "title": "夜明け"},
+    )
+    conversion = _convert(tmp_path, source, rectangles=rectangles)
+    operation = _build_panel_aware_page_generation_operation(
+        *source,
+        page_number=1,
+        layout_profile_id="md-page-compositor-v1",
+        layout_profile_version=1,
+        rectangles=rectangles,
+        mode_claim=_mode_claim(source, conversion.plan.plan_id),
+        authorization_references=(
+            "authorization-v7-014-panel-1",
+            "authorization-v7-014-panel-2",
+        ),
+        composition_authorization_reference="composition-authorization-v7-014-test",
+        checkpoint_name="checkpoint_test.safetensors",
+    )
+    units = operation.panel_units
+    assert tuple(unit.request.panel_order for unit in units) == (1, 2)
+    assert tuple(unit.request.panel_id for unit in units) == tuple(
+        panel.panel_id for panel in operation.plan.panels
+    )
+    assert tuple(unit.request.request_fingerprint for unit in units) == (
+        "8437485c6960fbd89277dcdf7319df41fb2602f592a0af3660aa5e314932a4a3",
+        "32f173c6c5563ab7ea9e176f5bf46cc36e060d16217ff068926d734dd125ea95",
+    )
+    assert tuple(unit.reservation.attempt_id for unit in units) == (
+        "attempt-v7-014-2f841cac874830381d3255aa445d94837076f5984aab040a5ad1ff96a602f809",
+        "attempt-v7-014-14383269ba4b618c2f258e67ca384024fdb5ade934887e8b0a7f93cd6b8c4819",
+    )
+
+    composition_provenance_preimage = (
+        '{"kind":"composition_provenance_v1","ordered_attempt_ids":['
+        '"attempt-v7-014-2f841cac874830381d3255aa445d94837076f5984aab040a5ad1ff96a602f809",'
+        '"attempt-v7-014-14383269ba4b618c2f258e67ca384024fdb5ade934887e8b0a7f93cd6b8c4819"],'
+        '"ordered_request_fingerprints":['
+        '"8437485c6960fbd89277dcdf7319df41fb2602f592a0af3660aa5e314932a4a3",'
+        '"32f173c6c5563ab7ea9e176f5bf46cc36e060d16217ff068926d734dd125ea95"],'
+        '"plan_fingerprint":"055e3240ea86535bfbf2f16cbf7c413e8a550afc22396274b1f325cd9c32087f",'
+        '"plan_id":"plan-v7-014-1d9a2a5fca619b0f9990d4bf59ec57b725af36b12c25340b3284388bf47e8d43",'
+        '"source_binding_sha256":"1d9a2a5fca619b0f9990d4bf59ec57b725af36b12c25340b3284388bf47e8d43",'
+        '"version":1}'
+    )
+    assert hashlib.sha256(composition_provenance_preimage.encode("utf-8")).hexdigest() == (
+        "c3c76c65ebef9fd9aa6076901e9d352f97e8a2e4a8dae2f94b1721a06e0e80e8"
+    )
+    assert operation.composition_provenance_reference == (
+        "composition-provenance-v7-014-c3c76c65ebef9fd9aa6076901e9d352f97e8a2e4a8dae2f94b1721a06e0e80e8"
+    )
+
+    composition_attempt_preimage = (
+        '{"composition_authorization_reference":"composition-authorization-v7-014-test",'
+        '"composition_provenance_reference":"composition-provenance-v7-014-c3c76c65ebef9fd9aa6076901e9d352f97e8a2e4a8dae2f94b1721a06e0e80e8",'
+        '"compositor_profile_id":"md-page-compositor-v1","compositor_profile_version":1,'
+        '"kind":"composition_attempt_v1","ordered_attempt_ids":['
+        '"attempt-v7-014-2f841cac874830381d3255aa445d94837076f5984aab040a5ad1ff96a602f809",'
+        '"attempt-v7-014-14383269ba4b618c2f258e67ca384024fdb5ade934887e8b0a7f93cd6b8c4819"],'
+        '"ordered_request_fingerprints":['
+        '"8437485c6960fbd89277dcdf7319df41fb2602f592a0af3660aa5e314932a4a3",'
+        '"32f173c6c5563ab7ea9e176f5bf46cc36e060d16217ff068926d734dd125ea95"],'
+        '"page_revision":"revision-1",'
+        '"plan_fingerprint":"055e3240ea86535bfbf2f16cbf7c413e8a550afc22396274b1f325cd9c32087f",'
+        '"plan_id":"plan-v7-014-1d9a2a5fca619b0f9990d4bf59ec57b725af36b12c25340b3284388bf47e8d43",'
+        '"version":1}'
+    )
+    assert hashlib.sha256(composition_attempt_preimage.encode("utf-8")).hexdigest() == (
+        "6afd8c214d5a4f5ad0718eb4996c2de37ebbc121aa71aabde4ac0169af17ffb0"
+    )
+    assert operation.composition_attempt_id == (
+        "composition-attempt-v7-014-6afd8c214d5a4f5ad0718eb4996c2de37ebbc121aa71aabde4ac0169af17ffb0"
+    )
+
+
+def test_operation_composition_rejects_mode_claim_snapshot_mismatch(
+    tmp_path: Path,
+) -> None:
+    source = _snapshot(tmp_path)
+    conversion = _convert(tmp_path, source)
+    claim = _mode_claim(source, conversion.plan.plan_id).model_copy(
+        update={"page_fingerprint": "0" * 64}
+    )
+
+    with pytest.raises(ValueError, match="mode claim must bind"):
+        _build_operation(tmp_path, source, mode_claim=claim)
+
+
+def test_operation_composition_requires_one_safe_authorization_per_panel(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="one issued authorization"):
+        _build_operation(tmp_path, authorization_references=())
+
+    with pytest.raises(ValueError, match="unsafe|secret|credential|logical"):
+        _build_operation(tmp_path, authorization_references=("token-secret-abc",))
 
 
 def test_valid_snapshot_has_literal_canonical_hashes_and_deterministic_plan(
@@ -305,9 +537,7 @@ def test_page_id_is_derived_and_separate_or_alias_input_is_rejected(
 
 
 @pytest.mark.parametrize("page_number", [True, 0, -1, "01"])
-def test_page_number_must_be_a_strict_positive_integer(
-    tmp_path: Path, page_number: object
-) -> None:
+def test_page_number_must_be_a_strict_positive_integer(tmp_path: Path, page_number: object) -> None:
     with pytest.raises(ValueError, match="page_number"):
         _convert(tmp_path, page_number=page_number)  # type: ignore[arg-type]
 
@@ -384,8 +614,7 @@ def test_missing_layout_or_rectangle_fails_closed(tmp_path: Path) -> None:
     ],
 )
 def test_existing_v7_13_prompt_validation_rejects_abstract_values(
-    tmp_path: Path,
-    field: str, value: object
+    tmp_path: Path, field: str, value: object
 ) -> None:
     with pytest.raises(ValidationError):
         _convert(
@@ -548,9 +777,7 @@ def test_source_page_number_must_be_an_exact_positive_integer(
     tmp_path: Path, source_page_number: object
 ) -> None:
     _, snapshot = _snapshot(tmp_path)
-    page = snapshot.project.page(1).model_copy(
-        update={"page_number": source_page_number}
-    )
+    page = snapshot.project.page(1).model_copy(update={"page_number": source_page_number})
     project = snapshot.project.model_copy(update={"pages": [page]})
 
     with pytest.raises(ValueError, match="requested PromptBuilt Page"):

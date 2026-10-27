@@ -9,6 +9,12 @@ from typing import Final, Literal, TypedDict, cast
 
 from manga_director.domain.project import Page
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_comfyui_fixed_workflow import (
+    validate_comfyui_checkpoint_name,
+)
+from manga_director.production.next_generation_page_generation_mode_claim import (
+    PageGenerationModeClaim,
+)
 from manga_director.production.next_generation_page_generation_plan import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -18,14 +24,32 @@ from manga_director.production.next_generation_page_generation_plan import (
     PageGenerationPlan,
     PagePanelSpecification,
     PanelRectangle,
+    canonical_digest,
     logical_reference,
     sha256_digest,
 )
+from manga_director.production.next_generation_panel_execution_attempt import (
+    PanelAttemptReservation,
+    PanelGenerationRequest,
+)
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.local_file_durability import RevisionedProjectSnapshot
+from manga_director.workflow.localfile_panel_aware_page_generation import (
+    PanelAwarePageGenerationOperation,
+    PanelGenerationUnit,
+)
 
 _LAYOUT_PROFILE_VERSION: Final[Literal[1]] = 1
 _MARGINS = (MIN_MARGIN_PX, MIN_MARGIN_PX, MIN_MARGIN_PX, MIN_MARGIN_PX)
+_PROVIDER_REFERENCE = "provider-comfyui-v7-014"
+_PROVIDER_ID = "comfyui"
+_PROFILE_ID = "profile:v7-04:prompt-only-png"
+_PROFILE_VERSION = "v1"
+_WORKFLOW_ID = "workflow:v7-04:fixed-core-png"
+_WORKFLOW_VERSION = "v1"
+_MODEL_VERSION = "local-checkpoint"
+_OUTPUT_SIZE = "1024x1024"
+_OUTPUT_QUALITY = "medium"
 
 
 class _SourcePanelV1(TypedDict):
@@ -64,9 +88,7 @@ def _convert_revisioned_page_snapshot(
     project_id, page_id, source_page_number, page_revision, page_fingerprint, page = (
         _snapshot_page_binding(authoritative_snapshot, page_number)
     )
-    rectangles = _require_supported_layout(
-        layout_profile_id, layout_profile_version, rectangles
-    )
+    rectangles = _require_supported_layout(layout_profile_id, layout_profile_version, rectangles)
 
     storyboard, storyboard_json = _capture_artifact(page.storyboard, "Page.storyboard")
     prompt_built, prompt_built_json = _capture_artifact(page.prompt, "Page.prompt")
@@ -156,6 +178,278 @@ def _convert_revisioned_page_snapshot(
     )
 
 
+def _build_panel_aware_page_generation_operation(
+    repository: LocalFileRepository,
+    snapshot: RevisionedProjectSnapshot,
+    *,
+    page_number: int,
+    layout_profile_id: str,
+    layout_profile_version: int,
+    rectangles: tuple[PanelRectangle, ...],
+    mode_claim: PageGenerationModeClaim,
+    authorization_references: tuple[str, ...],
+    composition_authorization_reference: str,
+    checkpoint_name: str,
+) -> PanelAwarePageGenerationOperation:
+    """Compose exact private request, reservation, and composition bindings."""
+
+    conversion = _convert_revisioned_page_snapshot(
+        repository,
+        snapshot,
+        page_number=page_number,
+        layout_profile_id=layout_profile_id,
+        layout_profile_version=layout_profile_version,
+        rectangles=rectangles,
+    )
+    source_binding = json.loads(conversion.source_binding_json)
+    if type(source_binding) is not dict:
+        raise ValueError("canonical source binding must be an object")
+    page_revision = logical_reference(source_binding.get("page_revision"), "page_revision")
+    page_fingerprint_value = source_binding.get("page_fingerprint")
+    if type(page_fingerprint_value) is not str:
+        raise ValueError("canonical source binding page fingerprint must be a string")
+    page_fingerprint = sha256_digest(page_fingerprint_value)
+    _require_mode_claim_matches(
+        mode_claim,
+        plan=conversion.plan,
+        page_revision=page_revision,
+        page_fingerprint=page_fingerprint,
+    )
+    if (
+        type(authorization_references) is not tuple
+        or len(authorization_references) != conversion.plan.panel_count
+    ):
+        raise ValueError("one issued authorization reference is required per panel")
+    panel_authorizations = tuple(
+        logical_reference(value, "panel authorization reference")
+        for value in authorization_references
+    )
+    composition_authorization_reference = logical_reference(
+        composition_authorization_reference, "composition authorization reference"
+    )
+    checkpoint_name = validate_comfyui_checkpoint_name(checkpoint_name)
+
+    requests: list[PanelGenerationRequest] = []
+    reservations: list[PanelAttemptReservation] = []
+    for panel, authorization_reference in zip(
+        conversion.plan.panels, panel_authorizations, strict=True
+    ):
+        raw_prompt_object = {
+            "action": panel.action,
+            "background": panel.background,
+            "character_identities": list(panel.character_identities),
+            "composition": panel.composition,
+            "constraints": list(panel.constraints),
+            "continuity_bindings": list(panel.continuity_bindings),
+            "narrative_intent": panel.narrative_intent,
+        }
+        raw_prompt = _canonical_json(raw_prompt_object)
+        input_sha256 = _sha256(raw_prompt.encode("utf-8"))
+        input_reference = f"input-v7-014-{input_sha256}"
+        panel_prompt = panel.model_dump(mode="json")
+        provenance_reference = _prefixed_digest(
+            "panel-provenance-v7-014-",
+            {
+                "kind": "panel_provenance_v1",
+                "version": 1,
+                "source_binding_sha256": conversion.source_binding_sha256,
+                "plan_id": conversion.plan.plan_id,
+                "plan_fingerprint": conversion.plan.plan_fingerprint,
+                "panel_id": panel.panel_id,
+                "panel_order": panel.order,
+            },
+        )
+        request_id = _prefixed_digest(
+            "request-v7-014-",
+            {
+                "kind": "panel_request_v1",
+                "version": 1,
+                "plan_id": conversion.plan.plan_id,
+                "plan_fingerprint": conversion.plan.plan_fingerprint,
+                "project_id": conversion.plan.project_id,
+                "page_id": conversion.plan.page_id,
+                "panel_id": panel.panel_id,
+                "panel_order": panel.order,
+                "panel_prompt": panel_prompt,
+                "capability_requirements": ["text-prompt", "png-output"],
+                "input_reference": input_reference,
+                "input_sha256": input_sha256,
+                "provenance_reference": provenance_reference,
+            },
+        )
+        request = PanelGenerationRequest(
+            request_id=request_id,
+            plan_id=conversion.plan.plan_id,
+            plan_fingerprint=conversion.plan.plan_fingerprint or "",
+            project_id=conversion.plan.project_id,
+            page_id=conversion.plan.page_id,
+            panel_id=panel.panel_id,
+            panel_order=panel.order,
+            panel_prompt=panel,
+            capability_requirements=("text-prompt", "png-output"),
+            input_reference=input_reference,
+            input_sha256=input_sha256,
+            provenance_reference=provenance_reference,
+        )
+        attempt_id = _prefixed_digest(
+            "attempt-v7-014-",
+            {
+                "kind": "panel_attempt_v1",
+                "version": 1,
+                "request_fingerprint": request.request_fingerprint,
+                "provider_reference": _PROVIDER_REFERENCE,
+                "authorization_reference": authorization_reference,
+            },
+        )
+        provider_configuration_fingerprint = canonical_digest(
+            {
+                "kind": "provider_configuration_v1",
+                "version": 1,
+                "attempt_id": attempt_id,
+                "provider_reference": _PROVIDER_REFERENCE,
+                "provider_id": _PROVIDER_ID,
+                "model_id": checkpoint_name,
+                "model_version": _MODEL_VERSION,
+                "profile_id": _PROFILE_ID,
+                "profile_version": _PROFILE_VERSION,
+                "workflow_id": _WORKFLOW_ID,
+                "workflow_version": _WORKFLOW_VERSION,
+                "preset_id": None,
+                "preset_version": None,
+                "requested_seed": "derived-from-attempt",
+                "output_size": _OUTPUT_SIZE,
+                "output_quality": _OUTPUT_QUALITY,
+            }
+        )
+        execution_fingerprint = canonical_digest(
+            {
+                "kind": "panel_execution_v1",
+                "version": 1,
+                "attempt_id": attempt_id,
+                "request_fingerprint": request.request_fingerprint,
+                "provider_reference": _PROVIDER_REFERENCE,
+                "authorization_reference": authorization_reference,
+                "provider_configuration_fingerprint": provider_configuration_fingerprint,
+            }
+        )
+        reservation = PanelAttemptReservation(
+            attempt_id=attempt_id,
+            plan_id=request.plan_id,
+            plan_fingerprint=request.plan_fingerprint,
+            project_id=request.project_id,
+            page_id=request.page_id,
+            panel_id=request.panel_id,
+            panel_order=request.panel_order,
+            request_id=request.request_id,
+            request_fingerprint=request.request_fingerprint or "",
+            provider_reference=_PROVIDER_REFERENCE,
+            authorization_reference=authorization_reference,
+            execution_fingerprint=execution_fingerprint,
+        )
+        requests.append(request)
+        reservations.append(reservation)
+
+    ordered_request_fingerprints = [request.request_fingerprint for request in requests]
+    ordered_attempt_ids = [reservation.attempt_id for reservation in reservations]
+    composition_provenance_reference = _prefixed_digest(
+        "composition-provenance-v7-014-",
+        {
+            "kind": "composition_provenance_v1",
+            "version": 1,
+            "source_binding_sha256": conversion.source_binding_sha256,
+            "plan_id": conversion.plan.plan_id,
+            "plan_fingerprint": conversion.plan.plan_fingerprint,
+            "ordered_request_fingerprints": ordered_request_fingerprints,
+            "ordered_attempt_ids": ordered_attempt_ids,
+        },
+    )
+    composition_attempt_id = _prefixed_digest(
+        "composition-attempt-v7-014-",
+        {
+            "kind": "composition_attempt_v1",
+            "version": 1,
+            "plan_id": conversion.plan.plan_id,
+            "plan_fingerprint": conversion.plan.plan_fingerprint,
+            "page_revision": page_revision,
+            "composition_authorization_reference": composition_authorization_reference,
+            "composition_provenance_reference": composition_provenance_reference,
+            "compositor_profile_id": COMPOSITOR_PROFILE_ID,
+            "compositor_profile_version": _LAYOUT_PROFILE_VERSION,
+            "ordered_request_fingerprints": ordered_request_fingerprints,
+            "ordered_attempt_ids": ordered_attempt_ids,
+        },
+    )
+    composition_evidence_id = _prefixed_digest(
+        "composition-evidence-v7-014-",
+        {
+            "kind": "composition_evidence_id_v1",
+            "version": 1,
+            "composition_attempt_id": composition_attempt_id,
+            "plan_id": conversion.plan.plan_id,
+            "plan_fingerprint": conversion.plan.plan_fingerprint,
+        },
+    )
+    composite_asset_id = _prefixed_digest(
+        "composite-asset-v7-014-",
+        {
+            "kind": "composite_asset_id_v1",
+            "version": 1,
+            "composition_attempt_id": composition_attempt_id,
+            "plan_id": conversion.plan.plan_id,
+            "plan_fingerprint": conversion.plan.plan_fingerprint,
+            "media_type": "image/png",
+        },
+    )
+    application_id = _prefixed_digest(
+        "composition-application-v7-014-",
+        {
+            "kind": "composition_application_id_v1",
+            "version": 1,
+            "composition_attempt_id": composition_attempt_id,
+            "plan_id": conversion.plan.plan_id,
+            "plan_fingerprint": conversion.plan.plan_fingerprint,
+            "project_id": conversion.plan.project_id,
+            "page_id": conversion.plan.page_id,
+            "page_revision": page_revision,
+        },
+    )
+    return PanelAwarePageGenerationOperation(
+        plan=conversion.plan,
+        mode_claim=mode_claim,
+        panel_units=tuple(
+            PanelGenerationUnit(request, reservation)
+            for request, reservation in zip(requests, reservations, strict=True)
+        ),
+        page_revision=page_revision,
+        composition_attempt_id=composition_attempt_id,
+        composition_authorization_reference=composition_authorization_reference,
+        composition_provenance_reference=composition_provenance_reference,
+        composition_evidence_id=composition_evidence_id,
+        composite_asset_id=composite_asset_id,
+        application_id=application_id,
+    )
+
+
+def _require_mode_claim_matches(
+    claim: PageGenerationModeClaim,
+    *,
+    plan: PageGenerationPlan,
+    page_revision: str,
+    page_fingerprint: str,
+) -> None:
+    if type(claim) is not PageGenerationModeClaim or (
+        claim.mode != "panel_aware"
+        or claim.project_id != plan.project_id
+        or claim.page_id != plan.page_id
+        or claim.page_revision != page_revision
+        or claim.page_fingerprint != page_fingerprint
+        or claim.source_state != "PromptBuilt"
+        or claim.mode_binding_reference != plan.plan_id
+        or claim.status != "active"
+    ):
+        raise ValueError("mode claim must bind the exact Page snapshot and plan")
+
+
 def _require_authoritative_snapshot(
     repository: LocalFileRepository, snapshot: RevisionedProjectSnapshot
 ) -> RevisionedProjectSnapshot:
@@ -211,10 +505,7 @@ def _require_supported_layout(
 ) -> tuple[PanelRectangle, ...]:
     if layout_profile_id != COMPOSITOR_PROFILE_ID:
         raise ValueError("layout profile is unsupported")
-    if (
-        type(layout_profile_version) is not int
-        or layout_profile_version != _LAYOUT_PROFILE_VERSION
-    ):
+    if type(layout_profile_version) is not int or layout_profile_version != _LAYOUT_PROFILE_VERSION:
         raise ValueError("layout profile version is unsupported")
     if type(rectangles) is not tuple or any(
         type(rectangle) is not PanelRectangle for rectangle in rectangles
@@ -255,12 +546,8 @@ def _source_panels(
             {
                 "number": number,
                 "narrative_intent": _required_string(panel_values, "narrative_intent"),
-                "character_identities": _required_string_list(
-                    panel_values, "characters"
-                ),
-                "continuity_bindings": _required_string_list(
-                    panel_values, "continuity_bindings"
-                ),
+                "character_identities": _required_string_list(panel_values, "characters"),
+                "continuity_bindings": _required_string_list(panel_values, "continuity_bindings"),
                 "action": _required_string(panel_values, "action"),
                 "background": _required_string(panel_values, "background"),
                 "composition": _required_string(panel_values, "composition"),
@@ -321,3 +608,7 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _prefixed_digest(prefix: str, value: object) -> str:
+    return f"{prefix}{_sha256(_canonical_json(value).encode('utf-8'))}"
