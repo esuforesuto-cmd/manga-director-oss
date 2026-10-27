@@ -204,6 +204,39 @@ class _Provider:
         return PanelProviderExecution("succeeded", asset, evidence, image_bytes)
 
 
+class _PreparatoryProvider(_Provider):
+    def __init__(self, reader: _Reader) -> None:
+        super().__init__(reader)
+        self.preparations = 0
+        self.legacy_calls = 0
+        self.fail_preparation = False
+        self.on_prepare: Callable[[], None] | None = None
+        self.on_prepared_invoke: Callable[[], None] | None = None
+
+    def prepare(
+        self, request: PanelGenerationRequest, reservation: PanelAttemptReservation
+    ) -> Callable[[], PanelProviderExecution] | None:
+        self.preparations += 1
+        if self.on_prepare is not None:
+            self.on_prepare()
+        if self.fail_preparation:
+            return None
+
+        def invoke_prepared() -> PanelProviderExecution:
+            if self.on_prepared_invoke is not None:
+                self.on_prepared_invoke()
+            return super(_PreparatoryProvider, self).invoke(request, reservation)
+
+        return invoke_prepared
+
+    def invoke(
+        self, request: PanelGenerationRequest, reservation: PanelAttemptReservation
+    ) -> PanelProviderExecution:
+        del request, reservation
+        self.legacy_calls += 1
+        raise AssertionError("preparatory provider must never use legacy invoke")
+
+
 class _Generate:
     def __init__(
         self,
@@ -557,6 +590,152 @@ def test_ambiguous_provider_result_requires_recovery_without_retry(
     stored = authority.lookup_attempt("panel-attempt-1")
     assert stored.record is not None
     assert stored.record.state == "RECOVERY_REQUIRED"
+
+
+def test_preparation_failure_keeps_exact_attempt_reserved_without_start(
+    tmp_path: Path,
+) -> None:
+    provider = _PreparatoryProvider(_Reader())
+    provider.fail_preparation = True
+    authority = LocalPanelGenerationAuthority(tmp_path / "panels")
+    result = _service(
+        tmp_path,
+        provider,
+        _Generate(),
+        panel_authority=authority,
+    ).execute(_operation(), admission_fence=_Fence())
+
+    stored = authority.lookup_attempt("panel-attempt-1")
+    assert result.status == "blocked"
+    assert result.code == "panel_provider_preparation_failed"
+    assert result.provider_calls == provider.calls == provider.legacy_calls == 0
+    assert provider.preparations == 1
+    assert stored.record is not None
+    assert stored.record.state == "RESERVED"
+    assert stored.record.provider_start_consumed is False
+
+
+def test_prepared_provider_invokes_only_after_durable_provider_start(
+    tmp_path: Path,
+) -> None:
+    provider = _PreparatoryProvider(_Reader())
+    authority = LocalPanelGenerationAuthority(tmp_path / "panels")
+    observed_states: list[tuple[str, bool]] = []
+
+    def assert_reserved_before_start() -> None:
+        stored = authority.lookup_attempt("panel-attempt-1")
+        assert stored.record is not None
+        observed_states.append((stored.record.state, stored.record.provider_start_consumed))
+
+    def assert_started_before_invoke() -> None:
+        stored = authority.lookup_attempt("panel-attempt-1")
+        assert stored.record is not None
+        observed_states.append((stored.record.state, stored.record.provider_start_consumed))
+
+    provider.on_prepare = assert_reserved_before_start
+    provider.on_prepared_invoke = assert_started_before_invoke
+    result = _service(
+        tmp_path,
+        provider,
+        _Generate(),
+        panel_authority=authority,
+    ).execute(_operation(), admission_fence=_Fence())
+
+    assert result.status == "generated"
+    assert provider.preparations == provider.calls == 1
+    assert provider.legacy_calls == 0
+    assert observed_states == [("RESERVED", False), ("PROVIDER_STARTED", True)]
+
+
+def test_same_reserved_attempt_can_be_prepared_again_without_reserving_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _PreparatoryProvider(_Reader())
+    provider.fail_preparation = True
+    authority = LocalPanelGenerationAuthority(tmp_path / "panels")
+    reserve_calls = 0
+    original_reserve = authority.reserve
+
+    def count_reserve(reservation: PanelAttemptReservation) -> PanelGenerationAuthorityResult:
+        nonlocal reserve_calls
+        reserve_calls += 1
+        return original_reserve(reservation)
+
+    monkeypatch.setattr(authority, "reserve", count_reserve)
+    service = _service(
+        tmp_path,
+        provider,
+        _Generate(),
+        panel_authority=authority,
+    )
+    operation = _operation()
+    first = service.execute(operation, admission_fence=_Fence())
+    provider.fail_preparation = False
+    second = service.execute(operation, admission_fence=_Fence())
+
+    assert first.code == "panel_provider_preparation_failed"
+    assert second.status == "generated"
+    assert reserve_calls == 1
+    assert provider.preparations == 2
+    assert provider.calls == 1
+    assert provider.legacy_calls == 0
+
+
+def test_preparatory_provider_rechecks_page_after_preparation(
+    tmp_path: Path,
+) -> None:
+    provider = _PreparatoryProvider(_Reader())
+    observation = _MutableObservation()
+    provider.on_prepare = lambda: setattr(observation, "page_fingerprint", "0" * 64)
+    authority = LocalPanelGenerationAuthority(tmp_path / "panels")
+    result = _service(
+        tmp_path,
+        provider,
+        _Generate(),
+        observation=observation,
+        panel_authority=authority,
+    ).execute(_operation(), admission_fence=_Fence())
+
+    stored = authority.lookup_attempt("panel-attempt-1")
+    assert result.status == "blocked"
+    assert result.code == "page_authority_mismatch"
+    assert provider.preparations == 1
+    assert provider.calls == provider.legacy_calls == 0
+    assert stored.record is not None
+    assert stored.record.state == "RESERVED"
+    assert stored.record.provider_start_consumed is False
+
+
+@pytest.mark.parametrize("existing_state", ("started", "different_reservation"))
+def test_preparation_reuse_rejects_non_reserved_or_mismatched_attempt(
+    tmp_path: Path, existing_state: str
+) -> None:
+    provider = _PreparatoryProvider(_Reader())
+    authority = LocalPanelGenerationAuthority(tmp_path / "panels")
+    operation = _operation()
+    original = operation.panel_units[0].reservation
+    assert authority.reserve(original).outcome == "created"
+    if existing_state == "started":
+        assert authority.start_provider(original).outcome == "updated"
+    else:
+        changed = original.model_copy(
+            update={"authorization_reference": "authorization-other"}
+        )
+        operation = replace(
+            operation,
+            panel_units=(PanelGenerationUnit(operation.panel_units[0].request, changed),),
+        )
+
+    result = _service(
+        tmp_path,
+        provider,
+        _Generate(),
+        panel_authority=authority,
+    ).execute(operation, admission_fence=_Fence())
+
+    assert result.status == "recovery_required"
+    assert result.code == "panel_attempt_requires_recovery"
+    assert provider.preparations == provider.calls == provider.legacy_calls == 0
 
 
 @pytest.mark.parametrize("raises", (False, True))

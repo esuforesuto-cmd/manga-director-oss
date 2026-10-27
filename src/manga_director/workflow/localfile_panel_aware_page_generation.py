@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from manga_director.production.next_generation_deterministic_composite_asset_owner import (
     DeterministicCompositeAssetOwner,
@@ -66,6 +67,15 @@ class PanelProviderExecutionPort(Protocol):
     def invoke(
         self, request: PanelGenerationRequest, reservation: PanelAttemptReservation
     ) -> PanelProviderExecution: ...
+
+
+@runtime_checkable
+class _PreparatoryPanelProviderExecutionPort(PanelProviderExecutionPort, Protocol):
+    """Private capability for read-only preparation before durable provider-start."""
+
+    def prepare(
+        self, request: PanelGenerationRequest, reservation: PanelAttemptReservation
+    ) -> Callable[[], PanelProviderExecution] | None: ...
 
 
 class AcceptedPanelAssetReaderPort(Protocol):
@@ -186,36 +196,78 @@ class LocalFilePanelAwarePageGeneration:
             lookup = self._panel_authority.lookup_attempt(
                 unit.reservation.attempt_id
             )
+            reuse_reserved = False
             if lookup.outcome == "confirmed":
-                return _result(
-                    "recovery_required",
-                    "panel_attempt_requires_recovery",
-                    provider_calls,
-                    tuple(item[0].panel_id for item in accepted),
+                record = lookup.record
+                reuse_reserved = bool(
+                    isinstance(self._provider, _PreparatoryPanelProviderExecutionPort)
+                    and record is not None
+                    and record.reservation == unit.reservation
+                    and record.state == "RESERVED"
+                    and not record.provider_start_consumed
                 )
-            if lookup.outcome not in {"missing"}:
+                if not reuse_reserved:
+                    return _result(
+                        "recovery_required",
+                        "panel_attempt_requires_recovery",
+                        provider_calls,
+                        tuple(item[0].panel_id for item in accepted),
+                    )
+            elif lookup.outcome not in {"missing"}:
                 return _result(
                     "blocked",
                     "panel_attempt_unavailable",
                     provider_calls,
                     tuple(item[0].panel_id for item in accepted),
                 )
-            reserved = self._panel_authority.reserve(unit.reservation)
-            if reserved.outcome not in {"created", "confirmed"}:
-                return _result(
-                    "blocked",
-                    "panel_attempt_not_reserved",
-                    provider_calls,
-                    tuple(item[0].panel_id for item in accepted),
+            if not reuse_reserved:
+                reserved = self._panel_authority.reserve(unit.reservation)
+                if reserved.outcome not in {"created", "confirmed"}:
+                    return _result(
+                        "blocked",
+                        "panel_attempt_not_reserved",
+                        provider_calls,
+                        tuple(item[0].panel_id for item in accepted),
+                    )
+                confirmed = self._panel_authority.lookup_attempt(
+                    unit.reservation.attempt_id
                 )
-            start_admission, started = (
-                self._mode_admission.run_provider_start_admitted(
-                    operation.mode_claim,
-                    admission_fence,
-                    partial(
-                        self._panel_authority.start_provider, unit.reservation
-                    ),
-                )
+                if (
+                    confirmed.outcome != "confirmed"
+                    or confirmed.record is None
+                    or confirmed.record.reservation != unit.reservation
+                    or confirmed.record.state != "RESERVED"
+                    or confirmed.record.provider_start_consumed
+                ):
+                    return _result(
+                        "recovery_required",
+                        "panel_reservation_not_authoritative",
+                        provider_calls,
+                        tuple(item[0].panel_id for item in accepted),
+                    )
+
+            preparatory_provider = (
+                self._provider
+                if isinstance(self._provider, _PreparatoryPanelProviderExecutionPort)
+                else None
+            )
+            prepared: Callable[[], PanelProviderExecution] | None = None
+            if preparatory_provider is not None:
+                try:
+                    prepared = preparatory_provider.prepare(unit.request, unit.reservation)
+                except Exception:
+                    prepared = None
+                if prepared is None:
+                    return _result(
+                        "blocked",
+                        "panel_provider_preparation_failed",
+                        provider_calls,
+                        tuple(item[0].panel_id for item in accepted),
+                    )
+            start_admission, started = self._mode_admission.run_provider_start_admitted(
+                operation.mode_claim,
+                admission_fence,
+                partial(self._panel_authority.start_provider, unit.reservation),
             )
             if not start_admission.admitted:
                 return _result(
@@ -233,7 +285,11 @@ class LocalFilePanelAwarePageGeneration:
                 )
             provider_calls += 1
             try:
-                execution = self._provider.invoke(unit.request, unit.reservation)
+                execution = (
+                    prepared()
+                    if preparatory_provider is not None and prepared is not None
+                    else self._provider.invoke(unit.request, unit.reservation)
+                )
             except Exception:
                 recovery_recorded = _require_panel_recovery_durable(
                     self._panel_authority, unit.reservation
