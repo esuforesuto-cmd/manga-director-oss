@@ -1,10 +1,31 @@
 # RFC-V7-012: Safe Panel-Aware Activation Bridge
 
-- Status: Planning Draft; design only; implementation is not authorized
+- Status: Complete and verified; private LocalFile-only bridge; public routing disabled
 - Related roadmap item: V7-14 Safe Panel-Aware Activation Bridge
 - Baseline: `v7-dev` commit `1b1c28bc2a18d70e6b5cec23c6f7bc869e24f51f`
+- Completion baseline: `v7-dev` commit `1daff9e58bd52058e44175c99b4248ea321a30f5`
 - Prerequisite: V7-13 Private Panel-Aware Page Generation Foundation is complete
 - Public activation: disabled; HTTP/Web/Application activation remains V7-15+
+
+## Completion Evidence
+
+V7-14 is complete across Slices 1–3. GitHub records confirm the merged PRs,
+merge commits, and PR-head CI checks listed below. The final independent review
+is recorded in the Codex task `slice3_final_review`.
+
+| Slice | Pull request | PR head | Merge commit | PR-head CI |
+| --- | --- | --- | --- | --- |
+| 1 — deterministic converter | [#61](https://github.com/esuforesuto-cmd/manga-director-oss/pull/61) | `cd125b550b55ff016a737a8e2e022c02196e6f9c` | `c9b0c27ef1df8104f70b573c9dd7c10266b523df` | 24/24 succeeded |
+| 2 — private ComfyUI adapter | [#62](https://github.com/esuforesuto-cmd/manga-director-oss/pull/62) | `133d3c17860817a37e5fe66b489b46469104b3c9` | `4feeae65cab5a48397f274164422588d4e2f7adc` | 24/24 succeeded |
+| 3 — operation composition | [#63](https://github.com/esuforesuto-cmd/manga-director-oss/pull/63) | `383c94ec3c14f67b48aed4ac484dfd81d6326d26` | `1daff9e58bd52058e44175c99b4248ea321a30f5` | 24/24 succeeded |
+
+The `slice3_final_review` record reports P0 = 0, P1 = 0, and P2 = 0 for the
+completed Slice 3 diff. CI counts
+above are for the respective PR heads; no post-merge CI result is claimed. The
+three slices changed the seven unique implementation/test files listed below.
+No live ComfyUI call, I02 action, `main` change, release or publication,
+dependency/lockfile change, schema/migration change, or branch deletion was
+performed or authorized by V7-14. The feature branches remain present.
 
 ## Title
 
@@ -12,18 +33,18 @@ V7-14 — Safe Panel-Aware Activation Bridge
 
 ## Objectives
 
-Design a private, deterministic bridge that can later convert the existing
+Design and implement a private, deterministic bridge that converts the existing
 persisted LocalFile `Storyboard` and `PromptBuilt` artifacts to the already
 frozen private `PageGenerationPlan`, and adapt the V7-13
 `PanelProviderExecutionPort` to the existing V7-04
 `ComfyUIImagePrivateTransport`. The bridge must use V7-13 orchestration and
 durable authorities without introducing another activation or persistence
-authority. This RFC records planning only and does not authorize
-implementation.
+authority. Implementation is complete under the separately approved V7-14
+Slice 1–3 scopes recorded in Completion Evidence.
 
 ## Scope
 
-The proposed future slice is private and LocalFile-only. It covers exact
+The implemented slices are private and LocalFile-only. They cover exact
 source-artifact conversion, plan/request binding, private provider adaptation,
 and composition with existing V7-13 authorities. It does not add a public
 activation route or change existing workflow entry points.
@@ -419,7 +440,7 @@ provider-configuration, evidence-value, and fixed-workflow validators. Preserve
 and validate them under those contracts; do not incorrectly apply the stricter
 V7-13 `logical_reference` regex or rewrite them to remove colons.
 
-Freeze this two-phase sequence for the future ComfyUI adapter:
+Freeze this two-phase sequence for the V7-14 ComfyUI adapter:
 
 1. V7-13 mode admission succeeds for the exact Page revision.
 2. The existing panel authority durably reserves the exact attempt.
@@ -456,10 +477,10 @@ post-start `invoke` if its preflight or preparation fails. This keeps its
 network submission behind durable start while moving all known fallible
 read-only preparation ahead of that durable one-shot boundary.
 
-The current orchestrator routes every confirmed non-accepted existing attempt
-to recovery before provider invocation. Future implementation must add only
-the narrow exact-`RESERVED` reuse case above before that generic recovery path;
-all mismatched and non-`RESERVED` existing-attempt behavior remains unchanged.
+The V7-14 orchestrator routes every confirmed non-accepted existing attempt
+to recovery before provider invocation, except for the narrow exact-`RESERVED`
+reuse case above; that case is handled before the generic recovery path. All
+mismatched and non-`RESERVED` existing-attempt behavior remains unchanged.
 
 ## Inputs
 
@@ -538,10 +559,10 @@ conversion or invocation with no inferred replacement.
     remains an API-boundary stub.
 12. No I02, schema/migration, dependency/lockfile, public API, release, `main`,
     publication, or unrelated implementation change is included.
-13. Implementation starts only after this design is reviewed and the user
-    explicitly approves a separate exact implementation allowlist and
-    validation plan.
-14. Future focused tests pin literal canonical JSON bytes and golden full-SHA256
+13. Satisfied: implementation started only after review and explicit user
+    approval of separate exact implementation allowlists and validation plans
+    for Slices 1–3; see Completion Evidence.
+14. Focused tests pin literal canonical JSON bytes and golden full-SHA256
     vectors for source dicts/references, `source_binding_v1`, plan/panel IDs,
     raw prompt/input binding, panel provenance/request ID and request
     fingerprint, panel attempt ID, provider-configuration and execution
@@ -554,8 +575,9 @@ conversion or invocation with no inferred replacement.
 
 ## Out of Scope
 
-- Implementation in this planning task; code, tests, configuration,
-  dependencies, lockfiles, schemas, migrations, exports, or public APIs.
+- Further implementation beyond the completed private V7-14 scope; changes to
+  configuration, dependencies, lockfiles, schemas, migrations, exports, or
+  public APIs.
 - HTTP, Web, Application, CLI, MCP, SDK, Plugin, or any other public
   activation. Public activation is V7-15+ and needs its own approved design.
 - Changing StoryboardAgent defaults or adding LLM repair/enrichment.
@@ -579,17 +601,18 @@ conversion or invocation with no inferred replacement.
 - V7-03 provider-neutral invocation composition and existing V7-04
   configuration/output binding remain the adapter boundary.
 - Persisted source artifacts must already contain explicit concrete panel
-  actions and exact supported layout input before a future implementation can
-  activate a Page. This RFC does not authorize changing upstream artifact
-  production to fill either gap.
+  actions and exact supported layout input before a private V7-14 Page
+  generation operation can proceed. This RFC does not authorize changing
+  upstream artifact production to fill either gap.
 
 ## Validation
 
-This design-only draft is checked against current V7-13 and V7-04 source,
-their focused tests, the roadmap, and repository instructions. Run
-`git diff --check` and inspect the final diff against the exact documentation
-allowlist. No implementation tests, provider call, or code-quality checks
-apply to this docs-only draft.
+Slices 1–3 passed the recorded PR-head CI checks listed in Completion Evidence,
+with 24/24 checks succeeding for each PR. The Codex task record
+`slice3_final_review` reports P0 = 0, P1 = 0, and P2 = 0. Direct live ComfyUI
+calls were not made. These are PR-head results; no post-merge CI result is
+claimed. This closure update is limited to the two documentation files listed
+below.
 
 Any future implementation proposal must include focused tests for deterministic
 conversion and artifact binding; every closed source mapping and missing-field
@@ -635,7 +658,7 @@ until all exact inputs already exist.
   authority and durably record provider-start, then invoke the prepared
   callable once. Preparation failure leaves the attempt `RESERVED` and blocked;
   only the exact same `RESERVED` reservation with unconsumed provider-start may
-  repeat bounded read-only preparation. The future orchestrator must distinguish
+  repeat bounded read-only preparation. The V7-14 orchestrator distinguishes
   that narrow case from its current generic recovery handling for confirmed
   existing attempts. After start, every uncertain outcome is recovery-required.
   Never fall back from preparatory ComfyUI to ordinary `invoke`.
@@ -653,18 +676,16 @@ until all exact inputs already exist.
 - Explicit concrete action and supported exact layout input are preconditions,
   never inferred outputs.
 
-## Exact documentation allowlist for this planning draft
+## Exact documentation allowlist for this V7-14 closure record
 
 1. `docs/RFC_V7_012_SAFE_PANEL_AWARE_ACTIVATION_BRIDGE.md`
 2. `docs/ROADMAP_V7.md`
 
 No other file is in scope.
 
-## Proposed future implementation allowlist
+## Completed V7-14 implementation file set
 
-Planning proposal only; this is not implementation authorization. Review the
-exact files and validation again against the then-current `v7-dev` head before
-work starts:
+The approved Slices 1–3 changed exactly these seven unique files:
 
 1. `src/manga_director/workflow/localfile_panel_aware_activation_bridge.py` —
    private snapshot-bound converter and operation composition.
@@ -710,18 +731,17 @@ invoke the prepared callable. After durable start, any exception or uncertain
 submit is recovery-required; never retry, misclassify it as preparation
 failure, fall back, or switch providers.
 
-Stop implementation and seek new explicit approval if proposed work needs
-files outside the future implementation allowlist or affects public routing,
+Stop any follow-up implementation and seek new explicit approval if it needs
+files outside the completed V7-14 implementation set or affects public routing,
 schema/migration, dependencies/lockfiles, public API, V7-13/V7-04 authorities,
 I02, live ComfyUI, release, `main`, or publication.
 
 ## Authorization Gate
 
-This document and its roadmap entry authorize planning only. Implementation
-requires the user's explicit approval after review of a separate concrete
-implementation proposal naming the exact file allowlist, invariants,
-validation plan, and stop conditions. Approval of this draft, roadmap
-sequencing, or V7-13/V7-04 completion does not imply implementation approval.
-Public HTTP/Web/Application activation remains V7-15+ and requires a separate
-design and explicit authorization. I02 remains outside this work and requires
-its own explicit approval.
+V7-14 implementation is complete only within the delivered private scope and
+the separately approved Slice 1–3 allowlists. This closure does not authorize
+follow-up implementation or expand any scope. Public HTTP/Web/Application
+activation remains V7-15+ and requires a separate design and explicit
+authorization. Live ComfyUI, I02, `main`, release/publication,
+dependency/lockfile, schema/migration, and branch deletion remain unperformed
+and unapproved. Any follow-up work requires its own explicit approval.
