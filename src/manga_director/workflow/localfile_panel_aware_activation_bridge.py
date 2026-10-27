@@ -64,7 +64,9 @@ def _convert_revisioned_page_snapshot(
     project_id, page_id, source_page_number, page_revision, page_fingerprint, page = (
         _snapshot_page_binding(authoritative_snapshot, page_number)
     )
-    _require_supported_layout(layout_profile_id, layout_profile_version, rectangles)
+    rectangles = _require_supported_layout(
+        layout_profile_id, layout_profile_version, rectangles
+    )
 
     storyboard, storyboard_json = _capture_artifact(page.storyboard, "Page.storyboard")
     prompt_built, prompt_built_json = _capture_artifact(page.prompt, "Page.prompt")
@@ -206,7 +208,7 @@ def _require_supported_layout(
     layout_profile_id: str,
     layout_profile_version: int,
     rectangles: tuple[PanelRectangle, ...],
-) -> None:
+) -> tuple[PanelRectangle, ...]:
     if layout_profile_id != COMPOSITOR_PROFILE_ID:
         raise ValueError("layout profile is unsupported")
     if (
@@ -218,6 +220,15 @@ def _require_supported_layout(
         type(rectangle) is not PanelRectangle for rectangle in rectangles
     ):
         raise ValueError("layout rectangles must be an ordered PanelRectangle tuple")
+    return tuple(
+        PanelRectangle(
+            left=rectangle.left,
+            top=rectangle.top,
+            right=rectangle.right,
+            bottom=rectangle.bottom,
+        )
+        for rectangle in rectangles
+    )
 
 
 def _source_panels(

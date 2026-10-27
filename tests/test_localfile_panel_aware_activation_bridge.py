@@ -187,6 +187,61 @@ def test_valid_snapshot_has_literal_canonical_hashes_and_deterministic_plan(
     assert not first.source_binding_json.endswith("\n")
 
 
+def test_valid_multi_panel_snapshot_has_literal_golden_bindings(tmp_path: Path) -> None:
+    panels = [_panel(number=1), _panel(number=2)]
+    rectangles = (_rectangle(50_000, 450_000), _rectangle(500_000, 950_000))
+
+    result = _convert(
+        tmp_path,
+        _snapshot(tmp_path, storyboard={"panels": panels, "title": "夜明け"}),
+        rectangles=rectangles,
+    )
+
+    assert result.source_binding_json == (
+        '{"kind":"source_binding_v1","layout":{"canvas_height":3072,'
+        '"canvas_width":2048,"gutter_px":48,"margins":[96,96,96,96],'
+        '"profile_id":"md-page-compositor-v1","profile_version":1},'
+        '"page_fingerprint":"e77da743a64637a11c2ae0fa26144d9bef7912b331882d76ecc856b36f1a1180",'
+        '"page_id":"1","page_number":1,"page_revision":"revision-1","panels":'
+        '[{"action":"Aki places the brass key into the archive lock.",'
+        '"background":"The east archive corridor before sunrise.",'
+        '"character_identities":["character-aki-v1"],'
+        '"composition":"Medium shot with Aki left and the lock in the foreground.",'
+        '"constraints":["Keep the blue coat and brass key visible."],'
+        '"continuity_bindings":["costume-aki-blue-coat-v2"],'
+        '"narrative_intent":"Aki discovers the sealed archive door.","number":1,'
+        '"rectangle":{"bottom":960000,"left":50000,"right":450000,"top":40000}},'
+        '{"action":"Aki places the brass key into the archive lock.",'
+        '"background":"The east archive corridor before sunrise.",'
+        '"character_identities":["character-aki-v1"],'
+        '"composition":"Medium shot with Aki left and the lock in the foreground.",'
+        '"constraints":["Keep the blue coat and brass key visible."],'
+        '"continuity_bindings":["costume-aki-blue-coat-v2"],'
+        '"narrative_intent":"Aki discovers the sealed archive door.","number":2,'
+        '"rectangle":{"bottom":960000,"left":500000,"right":950000,"top":40000}}],'
+        '"project_id":"project-v7-014","prompt_built_reference":'
+        '"prompt-v7-014-26f4eb8261b409e81e99b9de6b016a2cb6bef90d6547b4fdf3c10743527ac23a",'
+        '"prompt_built_sha256":"26f4eb8261b409e81e99b9de6b016a2cb6bef90d6547b4fdf3c10743527ac23a",'
+        '"storyboard_reference":'
+        '"storyboard-v7-014-7350cb5e9a74e99ad819ad7bfd95e383d17282755c0ff93b87b75b56ca08937f",'
+        '"storyboard_sha256":"7350cb5e9a74e99ad819ad7bfd95e383d17282755c0ff93b87b75b56ca08937f",'
+        '"version":1}'
+    )
+    assert result.source_binding_sha256 == (
+        "1d9a2a5fca619b0f9990d4bf59ec57b725af36b12c25340b3284388bf47e8d43"
+    )
+    assert result.plan.plan_id == (
+        "plan-v7-014-1d9a2a5fca619b0f9990d4bf59ec57b725af36b12c25340b3284388bf47e8d43"
+    )
+    assert result.plan.plan_fingerprint == (
+        "055e3240ea86535bfbf2f16cbf7c413e8a550afc22396274b1f325cd9c32087f"
+    )
+    assert tuple(panel.panel_id for panel in result.plan.panels) == (
+        "panel-v7-014-747c5b4750ec6a3a4ce5e9d42bd95f47cae498029de5fb76643ecbcfff11f509",
+        "panel-v7-014-f421dd4cb891b2b8fee1465128f7b30b8f64ac6c017c8d403c08a2768284beb3",
+    )
+
+
 def test_dict_key_order_does_not_change_canonical_hashes(tmp_path: Path) -> None:
     panel = _panel()
     reordered_panel = dict(reversed(tuple(panel.items())))
@@ -289,7 +344,11 @@ def test_panel_numbers_must_be_strict_contiguous_and_persisted_ordered(
     "mutation",
     [
         lambda panel: panel.pop("narrative_intent"),
+        lambda panel: panel.pop("characters"),
         lambda panel: panel.pop("continuity_bindings"),
+        lambda panel: panel.pop("action"),
+        lambda panel: panel.pop("background"),
+        lambda panel: panel.pop("composition"),
         lambda panel: panel.pop("constraints"),
     ],
 )
@@ -404,6 +463,25 @@ def test_existing_v7_13_geometry_validation_rejects_invalid_layout(
 def test_malformed_rectangle_is_rejected_by_existing_v7_13_validator() -> None:
     with pytest.raises(ValidationError):
         PanelRectangle(left=True, top=40_000, right=950_000, bottom=960_000)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("left", 50_000.5),
+        ("left", -1),
+        ("top", -1),
+        ("right", 1_000_001),
+        ("bottom", 1_000_001),
+    ],
+)
+def test_unvalidated_rectangle_model_copy_fails_closed_at_converter_boundary(
+    tmp_path: Path, field: str, value: int | float
+) -> None:
+    rectangle = _rectangle().model_copy(update={field: value})
+
+    with pytest.raises(ValidationError):
+        _convert(tmp_path, rectangles=(rectangle,))
 
 
 def test_unmapped_storyboard_fields_are_never_used_for_missing_values(
