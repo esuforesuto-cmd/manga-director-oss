@@ -887,3 +887,72 @@ def test_raw_prompt_input_hash_mismatch_blocks_before_transport_creation(
 
     assert provider.prepare(request, reservation) is None
     assert events == []
+
+
+@pytest.mark.parametrize("wrong_result", [False, True])
+def test_exact_owner_binding_is_required_at_capture_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong_result: bool
+) -> None:
+    from dataclasses import replace
+
+    from manga_director.production.next_generation_local_durable_asset_owner import (
+        LocalDurableAssetOwner,
+    )
+
+    request, reservation, _ = _operation_inputs()
+    events: list[str] = []
+    provider = LocalFileComfyUIPanelProvider(
+        checkpoint_name="test-checkpoint.safetensors",
+        owner_root=tmp_path / "assets",
+        configuration_report_factory=_configuration_report,
+        transport_factory=lambda _checkpoint, _report: _PreparedTransport(
+            _valid_panel_png(), events
+        ),
+    )
+    if wrong_result:
+        real_register = LocalDurableAssetOwner._register_v714_panel_asset
+
+        def wrong_id(owner, material, asset_id):
+            result = real_register(owner, material, asset_id)
+            assert result.output is not None
+            return replace(
+                result, output=result.output.model_copy(update={"output_asset_id": "wrong-id"})
+            )
+
+        monkeypatch.setattr(LocalDurableAssetOwner, "_register_v714_panel_asset", wrong_id)
+    prepared = provider.prepare(request, reservation)
+    assert prepared is not None
+    execution = prepared()
+    assert events.count("submit") == 1
+    if wrong_result:
+        assert execution.outcome == "recovery_required"
+        assert execution.asset is None and execution.evidence is None
+    else:
+        assert execution.outcome == "succeeded"
+        assert execution.asset is not None and execution.evidence is not None
+        inventory = LocalDurableAssetOwner.observe_attempts(
+            tmp_path / "assets", (reservation.attempt_id,)
+        )
+        assert inventory.outcome == "found"
+        assert inventory.bindings[0].output_asset_id == execution.asset.asset_id
+        assert execution.evidence.output_asset_id == execution.asset.asset_id
+        assert provider.read(execution.asset.model_copy(update={"asset_id": "wrong-id"})) is None
+
+
+def test_read_fails_closed_without_owner_binding(tmp_path: Path) -> None:
+    import sqlite3
+
+    request, reservation, _ = _operation_inputs()
+    provider = LocalFileComfyUIPanelProvider(
+        checkpoint_name="test-checkpoint.safetensors",
+        owner_root=tmp_path / "assets",
+        configuration_report_factory=_configuration_report,
+        transport_factory=lambda _checkpoint, _report: _PreparedTransport(_valid_panel_png(), []),
+    )
+    prepared = provider.prepare(request, reservation)
+    assert prepared is not None
+    execution = prepared()
+    assert execution.asset is not None
+    with sqlite3.connect(provider._registration._registry_path) as connection:
+        connection.execute("DELETE FROM asset_registry")
+    assert provider.read(execution.asset) is None

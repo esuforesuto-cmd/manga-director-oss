@@ -453,6 +453,29 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
     def register(self, material: OwnerRegistrationMaterial) -> AssetRegistrationRuntimeResult:
         """Durably register valid material or return a redacted failed result."""
 
+        return self._register_material(material)
+
+    def _register_v714_panel_asset(
+        self, material: OwnerRegistrationMaterial, asset_id: str
+    ) -> AssetRegistrationRuntimeResult:
+        """Register only a server-derived V7-14 Panel ID without I02 authority."""
+
+        prefix = "panel-asset-v7-014-"
+        if (
+            not _is_valid_material(material)
+            or type(asset_id) is not str
+            or not asset_id.startswith(prefix)
+            or len(asset_id) != len(prefix) + 64
+            or any(char not in "0123456789abcdef" for char in asset_id[len(prefix) :])
+            or material.provider_reference != "provider-comfyui-v7-014"
+            or self._issue_i02_commitment
+        ):
+            return _failed_result(material)
+        return self._register_material(material, exact_asset_id=asset_id)
+
+    def _register_material(
+        self, material: OwnerRegistrationMaterial, *, exact_asset_id: str | None = None
+    ) -> AssetRegistrationRuntimeResult:
         if not _is_valid_material(material):
             return _failed_result(material)
         digest = hashlib.sha256(material.image_bytes).hexdigest()
@@ -470,12 +493,23 @@ class LocalDurableAssetOwner(ProviderNeutralAssetOwner):
             ).fetchone()
             if existing is not None:
                 connection.rollback()
+                if exact_asset_id is not None and existing[0] != exact_asset_id:
+                    return _conflict_result(material)
                 # A replay remains compatible with the owner result contract,
                 # but it never receives a new I02 commitment.
                 return self._existing_result(material, digest, existing)
 
+            if (
+                exact_asset_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM asset_registry WHERE asset_id = ?", (exact_asset_id,)
+                ).fetchone()
+                is not None
+            ):
+                connection.rollback()
+                return _conflict_result(material)
             asset_uuid = uuid.uuid4()
-            asset_id = f"asset-generated-{asset_uuid}"
+            asset_id = exact_asset_id or f"asset-generated-{asset_uuid}"
             storage_name = f"{asset_uuid.hex}.png"
             staging_path = self._staging_path(asset_uuid)
             final_path = self._final_path(storage_name)
