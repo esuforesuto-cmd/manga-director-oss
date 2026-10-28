@@ -1786,16 +1786,21 @@ implementation or expand the scope above.
 
 ### Slice status
 
-Slice 1 — private Local/Application activation — is Complete and verified. The
-design and remaining-slice plan are in
+Slice 1 — private Local/Application activation — is Complete and verified.
+Slice 2 — dedicated HTTP route — is implemented under its separate seven-file
+approval; focused and full local verification and independent review are
+pending. Slice 3 — explicit Web activation — is not implemented or authorized.
+The design and staged plan are in
 [RFC-V7-013: Safe Local Panel-Aware Generation Activation](RFC_V7_013_SAFE_LOCAL_PANEL_AWARE_GENERATION_ACTIVATION.md).
-Slice 2 — dedicated HTTP route — and Slice 3 — explicit Web activation — are
-not implemented or authorized. V7-15 is the first public activation stage
-after V7-14; public routing remains disabled until the remaining implementation
-slices have their own reviewed exact allowlists and explicit approvals.
+V7-15 Slice 2 enables the dedicated route only in the concrete LocalFile HTTP
+composition. Remote deployment remains disabled, and the existing lack of
+authentication is unchanged; CORS and same-origin request checks are not
+authentication. Slice 3 still requires its own reviewed exact allowlist and
+explicit approval.
 
-The design preserves the existing generic `/generate` behavior and proposes a
-separate panel-aware HTTP route plus an explicit Web “Generate panels” action.
+The implementation preserves the existing generic `/generate` behavior and
+adds a separate panel-aware HTTP route; an explicit Web “Generate panels”
+action remains planned for Slice 3.
 The browser may provide only bounded `authorizedBy` attribution, a V7-04
 validated `checkpointName`, and explicit ordered rectangles for the supported
 layout profile. It cannot provide authorization/attempt IDs, provider endpoint,
@@ -1812,10 +1817,11 @@ make zero provider calls and no writes. Changed inputs, ambiguous authority
 state, or unsupported inputs fail closed without a new executable attempt.
 
 Sequence: Slice 1 private Local/Application activation and safe Page
-application is complete; Slice 2 is the dedicated HTTP route; Slice 3 is the
-explicit Web interaction. Each remaining slice requires its own exact
-implementation allowlist and approval. This record authorizes no further code,
-route, Web, configuration, schema, dependency, or persistence changes. Live
+application is complete; Slice 2 route implementation is in progress through
+local validation and review; Slice 3 is the explicit Web interaction. Slice 3
+requires its own exact implementation allowlist and approval. This record
+authorizes no further code, Web, configuration, schema, dependency, or
+persistence changes. Live
 ComfyUI, I02, `main`, release/publication, dependency/lockfile changes,
 schema/migration, and branch deletion remain unperformed and unapproved; no
 further branch operations are authorized.

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -53,6 +54,8 @@ from manga_director.domain.exceptions import (
 )
 from manga_director.domain.project import Chapter, Page, Project
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_page_generation_plan import PanelRectangle
+from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow.contracts import WorkflowStatus
 from manga_director.workflow.hierarchy_contracts import ChapterContext, ProjectContext
 
@@ -81,12 +84,14 @@ _VISUAL_REVIEW_HEADERS = {
 _VISUAL_REVIEW_SUFFIX = "/visual-review-readiness"
 _VISUAL_REVIEW_EVIDENCE_SUFFIX = "/visual-review-evidence"
 _EVIDENCE_LINKED_APPROVAL_SUFFIX = "/evidence-linked-approval"
+_PANEL_AWARE_GENERATION_SUFFIX = "/panel-aware-generation"
 _VISUAL_REVIEW_SUFFIXES = (
     _VISUAL_REVIEW_SUFFIX,
     _VISUAL_REVIEW_EVIDENCE_SUFFIX,
     _EVIDENCE_LINKED_APPROVAL_SUFFIX,
 )
 _VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
+_PANEL_AWARE_GENERATION_MAX_CONTENT_LENGTH = 32_768
 _VISUAL_REVIEW_HISTORY_MAX_RESPONSE_BYTES = 1_048_576
 _VISUAL_REVIEW_HISTORY_REJECTED_HEADERS = (
     "range",
@@ -251,6 +256,35 @@ class EvidenceLinkedApprovalRequest(_ClosedHttpRequestModel):
         return value
 
 
+class PanelAwareGenerationRequest(_ClosedHttpRequestModel):
+    request_version: Literal[1] = Field(alias="requestVersion")
+    authorized_by: str = Field(alias="authorizedBy", min_length=1, max_length=128)
+    checkpoint_name: str = Field(alias="checkpointName", min_length=1, max_length=128)
+    layout_profile_id: Literal["md-page-compositor-v1"] = Field(alias="layoutProfileId")
+    layout_profile_version: Literal[1] = Field(alias="layoutProfileVersion")
+    rectangles: tuple[PanelRectangle, ...] = Field(min_length=1, max_length=16)
+
+    @field_validator("request_version", "layout_profile_version", mode="before")
+    @classmethod
+    def _require_integer_versions(cls, value: Any) -> Any:
+        if type(value) is not int:
+            raise ValueError("request versions must be integers")
+        return value
+
+    @field_validator("authorized_by", "checkpoint_name", mode="before")
+    @classmethod
+    def _require_string_fields(cls, value: Any) -> Any:
+        if type(value) is not str:
+            raise ValueError("activation fields must be strings")
+        return value
+
+
+PanelAwareGenerationActivation = Callable[
+    [str, int, str, str, tuple[PanelRectangle, ...], str, int],
+    Any,
+]
+
+
 class VisualReviewChecklistItemRequest(_ClosedHttpRequestModel):
     criterion: ReviewCriterion
     outcome: ReviewOutcome
@@ -359,8 +393,15 @@ class VisualReviewEvidenceHistoryResponse(_ClosedHttpModel):
     records: tuple[VisualReviewHistoryRecordDTO, ...]
 
 
-def create_workflow_app(application: WorkflowApplicationService) -> Any:
+def create_workflow_app(
+    application: WorkflowApplicationService,
+    *,
+    panel_aware_activation: PanelAwareGenerationActivation | None = None,
+) -> Any:
     """Create a localhost CORS-scoped workflow API without importing MCP."""
+
+    if type(getattr(application, "_repository", None)) is not LocalFileRepository:
+        panel_aware_activation = None
 
     try:
         from fastapi import FastAPI
@@ -394,6 +435,7 @@ def create_workflow_app(application: WorkflowApplicationService) -> Any:
         response_type=Response,
         json_response=JSONResponse,
         background_task_type=BackgroundTask,
+        panel_aware_activation=panel_aware_activation,
     )
     return app
 
@@ -404,9 +446,12 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
             request.method == "POST"
             and request.url.path.endswith(_EVIDENCE_LINKED_APPROVAL_SUFFIX)
         )
+        panel_aware_generation = request.method == "POST" and request.url.path.endswith(
+            _PANEL_AWARE_GENERATION_SUFFIX
+        )
         content_length = (
             _single_request_header(request, "content-length")
-            if evidence_linked_approval
+            if evidence_linked_approval or panel_aware_generation
             else request.headers.get("content-length")
         )
         if (
@@ -419,7 +464,15 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
             )
         ):
             return _visual_review_error(json_response, 422, "invalid_input")
-        if evidence_linked_approval:
+        if panel_aware_generation and (
+            request.query_params
+            or "transfer-encoding" in request.headers
+            or not _bounded_panel_generation_content_length(
+                content_length,
+            )
+        ):
+            return _panel_aware_generation_error(json_response, 422, "invalid_input")
+        if evidence_linked_approval or panel_aware_generation:
             try:
                 value = json.loads(
                     await request.body(),
@@ -429,8 +482,12 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
                     ),
                 )
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                if panel_aware_generation:
+                    return _panel_aware_generation_error(json_response, 422, "invalid_input")
                 return _visual_review_error(json_response, 422, "invalid_input")
             if not isinstance(value, dict):
+                if panel_aware_generation:
+                    return _panel_aware_generation_error(json_response, 422, "invalid_input")
                 return _visual_review_error(json_response, 422, "invalid_input")
         return await call_next(request)
 
@@ -535,7 +592,11 @@ def _http_error_content(status_code: int) -> tuple[str, str]:
 
 def _visual_review_headers_for(request: Any) -> dict[str, str] | None:
     path = getattr(getattr(request, "url", None), "path", "")
-    return _VISUAL_REVIEW_HEADERS if path.endswith(_VISUAL_REVIEW_SUFFIXES) else None
+    return (
+        _VISUAL_REVIEW_HEADERS
+        if path.endswith(_VISUAL_REVIEW_SUFFIXES) or path.endswith(_PANEL_AWARE_GENERATION_SUFFIX)
+        else None
+    )
 
 
 def _register_routes(
@@ -546,6 +607,7 @@ def _register_routes(
     response_type: Any,
     json_response: Any,
     background_task_type: Any,
+    panel_aware_activation: PanelAwareGenerationActivation | None,
 ) -> None:
 
     def health() -> HealthDTO:
@@ -625,6 +687,11 @@ def _register_routes(
         request_type=request_type,
         json_response=json_response,
     )
+    generate_panels = _panel_aware_generation_route(
+        panel_aware_activation,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -680,8 +747,126 @@ def _register_routes(
         response_model=PageDetailDTO,
     )(approve_with_evidence)
     app.post(
+        "/projects/{project_id}/pages/{page_number}/panel-aware-generation",
+    )(generate_panels)
+    app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
+
+
+def _panel_aware_generation_route(
+    activation: PanelAwareGenerationActivation | None,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def generate_panels(
+        project_id: str,
+        page_number: str,
+        body: PanelAwareGenerationRequest,
+        request: Any,
+    ) -> Any:
+        if (
+            request.query_params
+            or "transfer-encoding" in request.headers
+            or not _bounded_panel_generation_content_length(
+                _single_request_header(request, "content-length"),
+            )
+            or not _evidence_linked_approval_admission(request)
+        ):
+            return _panel_aware_generation_error(json_response, 422, "invalid_input")
+        try:
+            validated_project_id = _validated_project_id(project_id)
+            raw_page_number = _raw_fixed_page_number(
+                request,
+                validated_project_id,
+                page_number,
+                expected_suffix=b"panel-aware-generation",
+            )
+            validated_page_number = _validated_download_page_number(raw_page_number)
+        except ValidationError:
+            return _panel_aware_generation_error(json_response, 422, "invalid_input")
+        if activation is None:
+            return _panel_aware_generation_error(json_response, 404, "not_found")
+        return _panel_aware_generation_activation_response(
+            activation,
+            json_response,
+            validated_project_id,
+            validated_page_number,
+            body,
+        )
+
+    generate_panels.__annotations__["request"] = request_type
+    return generate_panels
+
+
+def _panel_aware_generation_activation_response(
+    activation: PanelAwareGenerationActivation,
+    json_response: Any,
+    project_id: str,
+    page_number: int,
+    body: PanelAwareGenerationRequest,
+) -> Any:
+    try:
+        result = activation(
+            project_id,
+            page_number,
+            body.authorized_by,
+            body.checkpoint_name,
+            body.rectangles,
+            body.layout_profile_id,
+            body.layout_profile_version,
+        )
+        result_status = result.status
+        result_code = result.code
+    except Exception:
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if type(result_status) is not str or type(result_code) is not str:
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_status == "generated":
+        if result_code == "generated":
+            return json_response(
+                status_code=200,
+                content={"status": "generated"},
+                headers=_VISUAL_REVIEW_HEADERS,
+            )
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_code == "generated":
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_status == "blocked":
+        if result_code == "activation_input_invalid":
+            return _panel_aware_generation_error(json_response, 422, "invalid_input")
+        if result_code == "revision_conflict":
+            return _panel_aware_generation_error(json_response, 409, "revision_conflict")
+        if result_code == "activation_unavailable":
+            return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+        return _panel_aware_generation_error(json_response, 409, "generation_blocked")
+    if result_status == "recovery_required":
+        return _panel_aware_generation_error(json_response, 409, "recovery_required")
+    if result_status == "partial":
+        return _panel_aware_generation_error(json_response, 409, "generation_incomplete")
+    return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+
+
+def _panel_aware_generation_error(
+    json_response: Any,
+    status_code: int,
+    code: str,
+) -> Any:
+    messages = {
+        "not_found": "Not found.",
+        "invalid_input": "Request validation failed.",
+        "revision_conflict": "The Page changed and generation was not started.",
+        "recovery_required": "Generation requires recovery before another attempt.",
+        "generation_incomplete": "Generation did not complete.",
+        "generation_blocked": "Generation is blocked.",
+        "activation_unavailable": "Generation is unavailable.",
+    }
+    return json_response(
+        status_code=status_code,
+        content={"code": code, "message": messages[code]},
+        headers=_VISUAL_REVIEW_HEADERS,
+    )
 
 
 def _evidence_linked_approval_route(
@@ -986,14 +1171,29 @@ def _visual_review_evidence_history_route(
     return read_visual_review_evidence_history
 
 
-def _bounded_content_length(value: str | None) -> bool:
+def _bounded_content_length(
+    value: str | None,
+    *,
+    maximum: int = _VISUAL_REVIEW_MAX_CONTENT_LENGTH,
+) -> bool:
     if value is None:
         return False
     try:
         length = int(value)
     except ValueError:
         return False
-    return 0 < length <= _VISUAL_REVIEW_MAX_CONTENT_LENGTH
+    return 0 < length <= maximum
+
+
+def _bounded_panel_generation_content_length(value: str | None) -> bool:
+    return bool(
+        value is not None
+        and re.fullmatch(r"[0-9]+", value) is not None
+        and _bounded_content_length(
+            value,
+            maximum=_PANEL_AWARE_GENERATION_MAX_CONTENT_LENGTH,
+        )
+    )
 
 
 def _safe_visual_review_text(value: str, label: str) -> str:
@@ -1376,6 +1576,34 @@ def _raw_evidence_linked_approval_page_number(
         or parts[1] != b"projects"
         or parts[3] != b"pages"
         or parts[5] != b"evidence-linked-approval"
+        or raw_project_id != project_id
+        or raw_page_number != page_number
+    ):
+        raise ValidationError("pageNumber is invalid.")
+    return raw_page_number
+
+
+def _raw_fixed_page_number(
+    request: Any,
+    project_id: str,
+    page_number: str,
+    *,
+    expected_suffix: bytes,
+) -> str:
+    raw_path = request.scope.get("raw_path")
+    if not isinstance(raw_path, bytes):
+        raise ValidationError("pageNumber is invalid.")
+    parts = raw_path.split(b"/")
+    try:
+        raw_project_id = parts[2].decode("ascii")
+        raw_page_number = parts[4].decode("ascii")
+    except (IndexError, UnicodeDecodeError) as error:
+        raise ValidationError("pageNumber is invalid.") from error
+    if (
+        len(parts) != 6
+        or parts[1] != b"projects"
+        or parts[3] != b"pages"
+        or parts[5] != expected_suffix
         or raw_project_id != project_id
         or raw_page_number != page_number
     ):
