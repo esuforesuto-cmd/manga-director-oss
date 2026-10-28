@@ -11,15 +11,8 @@ from typing import Protocol
 from manga_director.production.future_real_delivery_i01 import (
     StrictPngStructuralValidatorV1,
 )
-from manga_director.production.next_generation_asset_registration import (
-    AssetRegistrationRequest,
-)
 from manga_director.production.next_generation_comfyui_fixed_workflow import (
     validate_comfyui_checkpoint_name,
-)
-from manga_director.production.next_generation_comfyui_output_asset_registration import (
-    ComfyUIAssetOwnerSinkBridge,
-    ComfyUIOutputAssetRegistrationAdapter,
 )
 from manga_director.production.next_generation_comfyui_provider_adapter import (
     ComfyUIHttpClientPort,
@@ -28,6 +21,7 @@ from manga_director.production.next_generation_comfyui_provider_adapter import (
 )
 from manga_director.production.next_generation_local_durable_asset_owner import (
     LocalDurableAssetOwner,
+    OwnerRegistrationMaterial,
 )
 from manga_director.production.next_generation_panel_execution_attempt import (
     PanelAttemptReservation,
@@ -40,9 +34,6 @@ from manga_director.production.next_generation_panel_generation_evidence import 
 from manga_director.production.next_generation_provider_adapter_composition import (
     ProviderPrivateTransportRequest,
     ProviderPrivateTransportResult,
-)
-from manga_director.production.next_generation_provider_invocation import (
-    OpaqueGeneratedOutputHandle,
 )
 from manga_director.production.next_generation_provider_output_configuration import (
     ProviderOutputConfigurationBindingReport,
@@ -94,11 +85,7 @@ class LocalFileComfyUIPanelProvider:
         self._configuration_report_factory = configuration_report_factory
         self._http_client = http_client
         self._transport_factory = transport_factory or self._default_transport
-        self._registration = ComfyUIOutputAssetRegistrationAdapter(
-            ComfyUIAssetOwnerSinkBridge(
-                LocalDurableAssetOwner(owner_root, _issue_i02_commitment=False)
-            )
-        )
+        self._registration = LocalDurableAssetOwner(owner_root, _issue_i02_commitment=False)
 
     def prepare(
         self, request: PanelGenerationRequest, reservation: PanelAttemptReservation
@@ -184,6 +171,7 @@ class LocalFileComfyUIPanelProvider:
             binding = inventory.bindings[0]
             if (
                 binding.attempt_id != asset.attempt_id
+                or binding.output_asset_id != asset.asset_id
                 or binding.provider_reference != _PROVIDER_REFERENCE
                 or binding.media_type != "image/png"
                 or binding.content_sha256 != asset.content_sha256
@@ -220,12 +208,14 @@ class LocalFileComfyUIPanelProvider:
         if info.width != 1024 or info.height != 1024:
             return PanelProviderExecution("recovery_required")
         output_sha256 = hashlib.sha256(image_bytes).hexdigest()
-        registered = self._registration.register(
-            AssetRegistrationRequest(
+        registered = self._registration._register_v714_panel_asset(
+            OwnerRegistrationMaterial(
                 attempt_id=reservation.attempt_id,
                 provider_reference=_PROVIDER_REFERENCE,
-                output_handle=OpaqueGeneratedOutputHandle(material),
-            )
+                image_bytes=image_bytes,
+                media_type=material.media_type,
+            ),
+            asset_id,
         )
         output = registered.output
         if (
@@ -236,7 +226,7 @@ class LocalFileComfyUIPanelProvider:
             or output.output_content_hash is None
             or output.output_content_hash.availability != "known"
             or output.output_content_hash.value != output_sha256
-            or not output.output_asset_id
+            or output.output_asset_id != asset_id
             or output.media_type != "image/png"
             or registered.durable_registration_confirmed is not True
         ):

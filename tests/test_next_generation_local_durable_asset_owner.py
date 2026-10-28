@@ -483,3 +483,89 @@ def test_source_keeps_public_surfaces_and_deferred_capabilities_out() -> None:
     root_init = (ROOT / "src/manga_director/__init__.py").read_text(encoding="utf-8")
     assert "next_generation_local_durable_asset_owner" not in production_init
     assert "next_generation_local_durable_asset_owner" not in root_init
+
+
+_PANEL_PROVIDER = "provider-comfyui-v7-014"
+_PANEL_ID = "panel-asset-v7-014-" + "a" * 64
+
+
+def test_private_panel_registration_exact_id_replay_and_legacy(tmp_path: Path) -> None:
+    owner = LocalDurableAssetOwner(tmp_path / "p", _issue_i02_commitment=False)
+    material = _material(provider_reference=_PANEL_PROVIDER)
+    first = owner._register_v714_panel_asset(material, _PANEL_ID)
+    replay = owner._register_v714_panel_asset(material, _PANEL_ID)
+    assert first.outcome == replay.outcome == "registered"
+    assert first.output is not None and replay.output == first.output
+    assert first.output.output_asset_id == _PANEL_ID
+    observed = owner.observe_attempts(tmp_path / "p", (material.attempt_id,))
+    assert observed.outcome == "found"
+    assert observed.bindings[0].output_asset_id == _PANEL_ID
+    assert (
+        owner._register_v714_panel_asset(material, "panel-asset-v7-014-" + "b" * 64).outcome
+        == "idempotency_conflict"
+    )
+    assert (
+        owner._register_v714_panel_asset(
+            _material(attempt_id="different-attempt", provider_reference=_PANEL_PROVIDER),
+            _PANEL_ID,
+        ).outcome
+        == "idempotency_conflict"
+    )
+    legacy_material = _material(attempt_id="legacy-attempt")
+    legacy = owner.register(legacy_material)
+    assert legacy.output is not None
+    assert legacy.output.output_asset_id.startswith("asset-generated-")
+    assert (
+        owner._register_v714_panel_asset(
+            _material(attempt_id="legacy-attempt", provider_reference=_PANEL_PROVIDER),
+            _PANEL_ID,
+        ).outcome
+        == "idempotency_conflict"
+    )
+
+
+@pytest.mark.parametrize("change", ["provider", "media", "hash", "tamper", "missing", "row-id"])
+def test_private_panel_registration_rejects_changed_binding(tmp_path: Path, change: str) -> None:
+    owner = LocalDurableAssetOwner(tmp_path / "p", _issue_i02_commitment=False)
+    material = _material(provider_reference=_PANEL_PROVIDER)
+    assert owner._register_v714_panel_asset(material, _PANEL_ID).outcome == "registered"
+    if change == "provider":
+        material = _material(provider_reference="another-provider")
+    elif change == "media":
+        material = _material(provider_reference=_PANEL_PROVIDER, media_type="image/jpeg")
+    elif change == "hash":
+        material = _material(provider_reference=_PANEL_PROVIDER, image_bytes=_PNG_BYTES + b"other")
+    elif change in {"tamper", "missing"}:
+        image = next(owner._assets_directory.glob("*.png"))
+        if change == "missing":
+            image.unlink()
+        else:
+            image.write_bytes(b"tampered")
+    else:
+        with sqlite3.connect(owner._registry_path) as connection:
+            connection.execute("UPDATE asset_registry SET asset_id = ?", ("changed-id",))
+    result = owner._register_v714_panel_asset(material, _PANEL_ID)
+    assert result.outcome != "registered"
+    assert result.output is None
+
+
+@pytest.mark.parametrize(
+    "asset_id",
+    ["asset-generated-fake", "panel-asset-v7-014-short", "panel-asset-v7-014-" + "A" * 64],
+)
+def test_private_panel_registration_rejects_noncanonical_ids(tmp_path: Path, asset_id: str) -> None:
+    owner = LocalDurableAssetOwner(tmp_path / "p", _issue_i02_commitment=False)
+    result = owner._register_v714_panel_asset(
+        _material(provider_reference=_PANEL_PROVIDER), asset_id
+    )
+    assert result.outcome == "failed"
+    assert list(owner._assets_directory.iterdir()) == []
+
+
+def test_private_panel_path_cannot_issue_i02_authority(tmp_path: Path) -> None:
+    owner = LocalDurableAssetOwner(tmp_path / "p")
+    result = owner._register_v714_panel_asset(
+        _material(provider_reference=_PANEL_PROVIDER), _PANEL_ID
+    )
+    assert result.outcome == "failed" and result.output is None
+    assert list(owner._assets_directory.iterdir()) == []

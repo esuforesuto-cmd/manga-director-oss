@@ -1782,6 +1782,41 @@ the seven unique files listed in RFC-V7-012. All three feature branches remain
 present; none was deleted. This completion record does not authorize follow-up
 implementation or expand the scope above.
 
+## V7-15 — Safe Local Panel-Aware Generation Activation
+
+### Planning status
+
+Planning Draft only; implementation not authorized. The proposed design is in
+[RFC-V7-013: Safe Local Panel-Aware Generation Activation](RFC_V7_013_SAFE_LOCAL_PANEL_AWARE_GENERATION_ACTIVATION.md).
+V7-15 is the first proposed public activation stage after V7-14; public routing
+remains disabled until each implementation slice has its own reviewed exact
+allowlist and explicit approval.
+
+The design preserves the existing generic `/generate` behavior and proposes a
+separate panel-aware HTTP route plus an explicit Web “Generate panels” action.
+The browser may provide only bounded `authorizedBy` attribution, a V7-04
+validated `checkpointName`, and explicit ordered rectangles for the supported
+layout profile. It cannot provide authorization/attempt IDs, provider endpoint,
+graph, prompt, or transport configuration. Layout is never inferred. The
+private application path must compose the completed V7-14 operation and V7-13
+authorities with real V7-04 validation, then apply the generated result through
+the existing StateMachine/EventBus/CAS/application boundary. Before the Page
+transition, identical retries at the same revision resolve to the same
+references, mode claim, and operation. After the Page is `Generated`, a retry
+returns only a bounded read-only `already_generated` result when existing
+durable authorities verify the exact original activation and completed output
+binding; otherwise it fails closed with `revision_conflict`. Both outcomes
+make zero provider calls and no writes. Changed inputs, ambiguous authority
+state, or unsupported inputs fail closed without a new executable attempt.
+
+Proposed sequence: Slice 1 private Local/Application activation and safe Page
+application; Slice 2 dedicated HTTP route; Slice 3 explicit Web interaction.
+Every slice requires its own exact implementation allowlist and approval. The
+design does not authorize code, route, Web, configuration, schema, dependency,
+or persistence changes. Live ComfyUI, I02, `main`, release/publication,
+dependency/lockfile changes, schema/migration, and branch operations remain
+unperformed and unapproved.
+
 ## Epic 1 sequencing
 
 | Issue | State | Dependency | Completion evidence |
@@ -1799,6 +1834,7 @@ implementation or expand the scope above.
 | V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Complete and verified | Completed V7-07 through V7-11, accepted RFC-V7-010, and explicit approval of the exact twenty-one-file implementation package | PR #48 final head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` merged into `v7-dev` at `a02eedf38cd79c43c2add68ac08c332dab5eefb8`; full pytest passed (3238 passed / 16 skipped); PR CI run #166 passed 10/10 with CodeQL run #65 passing 3/3; post-merge CI run #167 passed 10/10 with CodeQL run #66 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact twenty-one-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-13 Private Panel-Aware Page Generation Foundation | Complete and verified; public routing disabled | Completed V7-12, accepted RFC-V7-011, and completed Slice 1 through Slice 4 validation | PR #54 merged Slice 4 into `validation/rfc-v7-011-slice-3` at `4719c55a3ade5b3f10f75d4432f07bcbc958d6a0`; PR #55 merged that branch into `v7-dev` at `a760488f43f84e28978fe5b3bf1d25e44b9b8396`; PR #55 CI passed; post-merge CI run `40273044192` passed 10/10 jobs; final independent closure P0/P1/P2 = 0/0/0; release, public activation, live Provider/ComfyUI, and I02 remained out of scope |
 | V7-14 Safe Panel-Aware Activation Bridge | Complete and verified; public routing disabled | Completed V7-13 foundation and explicitly approved V7-14 Slices 1–3 | PR #61 merged at `c9b0c27ef1df8104f70b573c9dd7c10266b523df`, PR #62 at `4feeae65cab5a48397f274164422588d4e2f7adc`, and PR #63 at `1daff9e58bd52058e44175c99b4248ea321a30f5`; each PR-head CI passed 24/24; final independent review P0/P1/P2 = 0/0/0; exact seven unique implementation/test files; public activation remains V7-15+; live ComfyUI, I02, `main`, release/publication, dependency/lockfile, schema/migration, and branch deletion remain unperformed and unapproved |
+| V7-15 Safe Local Panel-Aware Generation Activation | Planning Draft; implementation not authorized | V7-14 complete; RFC-V7-013 planning design only | No implementation or public routing authorized; proposed Slices 1–3 each require separate review, exact allowlist, and explicit approval; generic `/generate` remains unchanged; live ComfyUI, I02, `main`, release/publication, dependency/lockfile, schema/migration, and branch operations remain unperformed and unapproved |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility
@@ -1810,3 +1846,29 @@ Every Epic 1 change requires architecture-boundary, backward-compatibility,
 workflow-invariant, LocalFile security, and delivery-contract review. P0 or P1
 findings block merge. Documentation acceptance does not establish release
 readiness, and release readiness does not authorize publication.
+
+## V7-14 / V7-15 Private Asset-ID Registration Amendment (2026-10-28)
+
+Documentation/specification amendment only; follow-up implementation approval
+is pending. The V7-14 completion/merge/CI/review record above is historical and
+does not verify this amendment. V7-15 Slice 1 remains uncommitted and blocked
+at the real-owner/final-mode integration gate; public routing remains disabled.
+
+The amendment in RFC-V7-012 and RFC-V7-013 requires the server-derived canonical
+`panel-asset-v7-014-*` to be the exact LocalDurableAssetOwner registry asset ID
+on the dedicated private V7-14 registration path. Legacy V7-04 keeps
+`asset-generated-*`. ID mismatch, tamper, another ID for the same attempt and
+cross-attempt ID reuse fail closed; no alias mapping, record relabeling or
+migration is permitted. Exact replay, at-most-once, Page fence, mode rechecks
+and no provider fallback/retry remain mandatory. Canonical derivations and
+existing mode equality checks remain unchanged.
+
+RFC-V7-013 lists the proposed exact six-file implementation allowlist: the
+LocalDurableAssetOwner, private ComfyUI panel adapter, their two focused test
+files, and the existing two Slice 1 activation files. Expanding the previously
+approved two-file Slice 1 scope to these six files requires separate explicit
+approval; this amendment does not authorize code editing now. No source/test changes or
+tests, public API/Web, generic `/generate`, schema/migration,
+dependency/lockfile, I02, live ComfyUI, `main`, branch/Git operations or
+release/publication are authorized by this docs amendment. Stop before code
+editing; any further file requires a revised allowlist and explicit approval.

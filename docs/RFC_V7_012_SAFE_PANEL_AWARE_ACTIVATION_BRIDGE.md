@@ -745,3 +745,51 @@ activation remains V7-15+ and requires a separate design and explicit
 authorization. Live ComfyUI, I02, `main`, release/publication,
 dependency/lockfile, schema/migration, and branch deletion remain unperformed
 and unapproved. Any follow-up work requires its own explicit approval.
+
+## Asset-ID Registration Contract Amendment (2026-10-28)
+
+Status: approved documentation/specification amendment only; implementation
+pending separate approval. This supplements Section B without changing the
+canonical derivation rules, including rule 9's full SHA-256 preimages/prefixes.
+The completion evidence above remains historical evidence for the delivered
+Slices 1-3; it does not establish implementation or verification of this
+amendment or completion of V7-15 Slice 1.
+
+For the V7-14-only private registration path, the server-derived
+`panel-asset-v7-014-*` ID computed before invocation under canonical rule 9
+MUST be registered as the exact `LocalDurableAssetOwner` registry `asset_id`
+and returned as `output_asset_id`. The same exact ID must bind the owner row,
+PanelAsset, panel attempt record, PanelGenerationEvidence, accepted composition
+source manifest, and panel source entries in subsequent composition/output
+proofs. A separate randomly issued logical ID
+with a hash-only alias lookup is not an acceptable substitute. Storage filenames
+remain opaque owner-controlled values independent of the logical asset ID;
+no logical ID becomes a filesystem path.
+
+This is a dedicated private V7-14 registration contract, not an optional ID
+parameter on the legacy public/provider-neutral registration contract. Only
+the server-bound V7-14 adapter may supply the derived ID after verifying the
+exact request/reservation, canonical derivation and provider configuration.
+Public/client input may not select or override it. Legacy V7-04 registration
+continues issuing `asset-generated-*`; its call forms, result contract and
+behavior remain unchanged. Reuse the existing owner validation, containment,
+staging, atomic placement, registry transaction and verified readback; introduce
+no schema, migration, alias table, alternate owner or persistence authority.
+
+An exact replay must verify the same attempt, derived asset ID, provider,
+media type, digest and verified registered bytes through the existing owner
+contract. It performs no new provider call or replacement registration. A
+same-attempt row with another asset ID (including an old `asset-generated-*`
+row), an ID bound to another attempt, missing bytes, tamper, or any binding
+mismatch fails closed. Do not rename, relabel, repair, overwrite, silently map,
+or migrate such existing records. Preserve existing blocked/recovery semantics.
+No owner observation or final mode check may ignore an ID mismatch.
+
+This amendment preserves at-most-once provider-start/submit, exact RESERVED
+re-preparation, read-only replay, Page fence and revision/CAS boundaries, mode
+rechecks, no provider fallback/retry, and existing fail-closed/STOP conditions.
+It authorizes no source/test edits or execution, public API or generic
+`/generate` change, schema/migration, dependency/lockfile, I02, live ComfyUI,
+`main`, release/publication, or Git/branch operation. The proposed follow-up
+implementation allowlist is recorded in RFC-V7-013's matching amendment; it
+requires separate explicit approval before code edits.
