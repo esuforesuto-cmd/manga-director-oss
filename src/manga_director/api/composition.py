@@ -30,11 +30,16 @@ from manga_director.application.human_visual_review_readiness import (
     attach_human_visual_review_readiness,
     build_human_visual_review_readiness,
 )
+from manga_director.production.next_generation_page_generation_plan import PanelRectangle
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.workflow.coordinator import WorkflowCoordinator
 from manga_director.workflow.engine import WorkflowEngine
+from manga_director.workflow.localfile_panel_aware_generation_activation import (
+    LocalFilePanelAwareActivationResult,
+    execute_localfile_panel_aware_generation,
+)
 
 
 def build_workflow_app(
@@ -52,6 +57,7 @@ def build_workflow_app(
         project_loader=project_loader,
         repository=repository,
     )
+    panel_aware_activation = None
     if isinstance(repository, LocalFileRepository):
         human_visual_review_readiness = build_human_visual_review_readiness(repository)
         attach_approved_asset_download(
@@ -85,4 +91,32 @@ def build_workflow_app(
                 human_visual_review_readiness,
             ),
         )
-    return create_workflow_app(application)
+
+        if type(repository) is LocalFileRepository:
+
+            def activate_panel_aware_generation(
+                project_id: str,
+                page_number: int,
+                authorized_by: str,
+                checkpoint_name: str,
+                rectangles: tuple[PanelRectangle, ...],
+                layout_profile_id: str,
+                layout_profile_version: int,
+            ) -> LocalFilePanelAwareActivationResult:
+                return execute_localfile_panel_aware_generation(
+                    repository,
+                    workflow_engine,
+                    project_id,
+                    page_number,
+                    authorized_by,
+                    checkpoint_name,
+                    rectangles,
+                    layout_profile_id=layout_profile_id,
+                    layout_profile_version=layout_profile_version,
+                )
+
+            panel_aware_activation = activate_panel_aware_generation
+    return create_workflow_app(
+        application,
+        panel_aware_activation=panel_aware_activation,
+    )

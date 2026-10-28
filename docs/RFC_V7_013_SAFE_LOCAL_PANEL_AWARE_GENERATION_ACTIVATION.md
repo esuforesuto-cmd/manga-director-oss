@@ -1,19 +1,20 @@
 # RFC-V7-013: Safe Local Panel-Aware Generation Activation
 
-- Status: Slice 1 complete and verified; Slices 2–3 not implemented or authorized
+- Status: Slice 1 complete and verified; Slice 2 implemented with local verification pending; Slice 3 not implemented or authorized
 - Related roadmap item: V7-15 Safe Local Panel-Aware Generation Activation
 - Baseline: `v7-dev` commit `6b956bbad0bda801ae696786fa93a76b9e850fb2`
-- Prerequisite: V7-14 Complete and verified; public routing disabled
-- Public activation: disabled; Slices 2–3 require separate approval
+- Prerequisite: V7-14 Complete and verified; remote/public deployment disabled
+- Public activation: dedicated LocalFile HTTP route implemented; Web and remote activation remain disabled
+- Authentication: unchanged and absent; loopback, CORS, and same-origin checks are not authentication
 - Live Provider/ComfyUI: not authorized
 
 ## Summary
 
-V7-15 proposes an explicitly activated LocalFile path from a `PromptBuilt`
+V7-15 provides an explicitly activated LocalFile path from a `PromptBuilt`
 Page to the completed private V7-14
-`PanelAwarePageGenerationOperation`. It will expose panel-aware generation as
-a separate HTTP action and an explicit Web action, while preserving the
-existing generic `/generate` action and its behavior unchanged.
+`PanelAwarePageGenerationOperation`. Slice 2 exposes panel-aware generation as
+a separate HTTP route; Slice 3 remains an explicit Web action. The route
+preserves the existing generic `/generate` action and its behavior unchanged.
 
 The private application entry point will take one authoritative revisioned
 Page snapshot, explicit user attribution (`authorizedBy`), a verified
@@ -211,9 +212,9 @@ Generate.
 
 Slice 1 was separately approved and is complete and verified as recorded in
 the Asset-ID Registration Amendment and Slice 1 Completion Evidence below.
-Slices 2 and 3 each require their own exact implementation allowlist and
-explicit approval. This RFC and roadmap update authorize neither remaining
-slice.
+Slice 2 was separately approved with the exact seven-file allowlist on
+2026-10-28. Slice 3 requires its own exact implementation allowlist and
+explicit approval and remains unauthorized.
 
 ### Slice 1 — Local/Application Activation
 
@@ -226,11 +227,19 @@ and temporary LocalFile roots; never localhost:8188 or live ComfyUI.
 
 ### Slice 2 — HTTP Route
 
-Add the separate panel-aware route and strict public DTO, wire only to the
-approved LocalFile application service, and map blocked/recovery outcomes to
-bounded responses. Keep generic `/generate` unchanged. Test closed input,
-canonical route/page binding, mode conflict, stable identical replay, changed
-request conflict, and prove no public fields control IDs or transport.
+The dedicated route and strict public DTO are implemented in the approved
+LocalFile HTTP composition and map blocked/recovery outcomes to bounded
+responses. Generic `/generate` remains unchanged. The request requires
+`requestVersion: 1`, `authorizedBy`, a validated `checkpointName`, the exact
+supported layout profile/version, and explicit ordered integer rectangles.
+Unknown fields, duplicate JSON members, non-canonical path values, query
+parameters, oversized bodies, and requests outside the existing same-origin
+browser admission are rejected. The route adds no authentication; local
+same-origin checks and CORS are not identity or authorization proof.
+
+The local verification plan covers closed input, canonical route/page binding,
+mode conflict, stable identical replay, changed request conflict, and proof
+that no public fields control IDs or transport.
 Register the fixed route before `/{action}`. Route-level tests must prove the
 dedicated handler is reached without invoking the legacy action dispatcher,
 and that `/generate` retains its handler, request DTO, and response contract.
@@ -340,11 +349,12 @@ separate explicit authorization.
 
 ## Authorization Gate
 
-Slice 1 is complete and verified. Each remaining implementation slice may
-start only after review of this RFC and separate explicit approval of its exact
-slice, file allowlist, and validation plan. No HTTP/Web/Application public
-activation, live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
-schema/migration, or branch operation is authorized by this RFC.
+Slice 1 is complete and verified. Slice 2 has separate explicit approval and
+its implementation is recorded below. Slice 3 may start only after review of
+this RFC and separate explicit approval of its exact slice, file allowlist,
+and validation plan. Live ComfyUI, I02, `main`, release/publication,
+dependency/lockfile, schema/migration, or branch operations are not authorized
+by this RFC.
 
 ## Asset-ID Registration Amendment and Slice 1 Gate (2026-10-28)
 
@@ -425,9 +435,11 @@ mode equality or introduce an alias mapping to stay inside this list.
 - Post-merge CI run #40650264745 passed 10/10; CodeQL run #40650264438 passed
   3/3.
 
-Slice 2 (dedicated HTTP route) and Slice 3 (Web activation) remain
-unimplemented and unapproved. Public routing remains disabled; the generic
-`/generate` contract is unchanged. Any remaining-slice implementation requires
-its own exact allowlist and explicit approval. Live ComfyUI, I02, `main`,
-release/publication, dependency/lockfile, schema/migration, branch deletion,
-and package publication remain unperformed and unauthorized.
+Slice 2 (dedicated HTTP route) is implemented locally under the separately
+approved seven-file allowlist; its full local verification and independent
+review are pending. It is wired only for the concrete LocalFile repository,
+preserves generic `/generate`, and does not add authentication. Slice 3 (Web
+activation) remains unimplemented and unapproved. Remote/public deployment,
+live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
+schema/migration, branch deletion, and package publication remain unperformed
+and unauthorized.
