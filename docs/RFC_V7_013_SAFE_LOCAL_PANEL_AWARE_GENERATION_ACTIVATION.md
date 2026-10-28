@@ -1,10 +1,10 @@
 # RFC-V7-013: Safe Local Panel-Aware Generation Activation
 
-- Status: Planning Draft; implementation not authorized
+- Status: Slice 1 complete and verified; Slices 2–3 not implemented or authorized
 - Related roadmap item: V7-15 Safe Local Panel-Aware Generation Activation
 - Baseline: `v7-dev` commit `6b956bbad0bda801ae696786fa93a76b9e850fb2`
 - Prerequisite: V7-14 Complete and verified; public routing disabled
-- Public activation: disabled until separately approved implementation slices
+- Public activation: disabled; Slices 2–3 require separate approval
 - Live Provider/ComfyUI: not authorized
 
 ## Summary
@@ -209,8 +209,11 @@ Generate.
 
 ## Slice Plan and Approval Gates
 
-Each slice requires its own exact implementation allowlist and explicit
-approval. This RFC and roadmap update authorize no implementation.
+Slice 1 was separately approved and is complete and verified as recorded in
+the Asset-ID Registration Amendment and Slice 1 Completion Evidence below.
+Slices 2 and 3 each require their own exact implementation allowlist and
+explicit approval. This RFC and roadmap update authorize neither remaining
+slice.
 
 ### Slice 1 — Local/Application Activation
 
@@ -337,19 +340,19 @@ separate explicit authorization.
 
 ## Authorization Gate
 
-This document records a planning design only. Implementation may start only
-after review of this RFC and separate explicit approval of the exact slice,
-file allowlist, and validation plan. No HTTP/Web/Application public activation,
-live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
+Slice 1 is complete and verified. Each remaining implementation slice may
+start only after review of this RFC and separate explicit approval of its exact
+slice, file allowlist, and validation plan. No HTTP/Web/Application public
+activation, live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
 schema/migration, or branch operation is authorized by this RFC.
 
 ## Asset-ID Registration Amendment and Slice 1 Gate (2026-10-28)
 
-Status: documentation/specification amendment only; the registration follow-up
-is not implemented or verified. The original two-file Slice 1 implementation
-remains uncommitted and blocked at its real-owner/final-mode integration gate.
-The planning/authorization text above does not authorize the additional owner
-or adapter changes below. Public routing remains disabled.
+Status: implemented and verified as V7-15 Slice 1 under PR #65. The approved
+Slice 1 scope comprised the six implementation/test files listed below plus
+the three approved documentation/specification files, nine files total. This
+completion records delivery of the amendment without changing its technical
+requirements. Public routing remains disabled.
 
 Apply RFC-V7-012's Asset-ID Registration Contract Amendment: the existing
 server-derived canonical `panel-asset-v7-014-*` ID is the exact
@@ -368,16 +371,22 @@ replacement, repair or migration. An existing mismatched legacy-ID row is not
 converted. Preserve current replay/recovery, at-most-once, Page fence, mode
 recheck, CAS/EventBus/application proof and no provider fallback/retry rules.
 Canonical ID derivations and V7-13 frozen DTOs/authorities remain unchanged.
-The only proposed owner extension is this private exact-ID registration path,
+The implemented owner extension is this private exact-ID registration path,
 using the existing registry schema and storage/security machinery. V7-04
 transport/security/configuration, generic registration contracts and I02
 behavior remain outside the follow-up scope.
 
-### Proposed exact implementation allowlist: six files, approval pending
+### Implemented exact Slice 1 implementation allowlist: six files
+
+The six implementation/test files below were delivered in PR #65 together
+with the three approved docs/spec amendment files. The source head was
+`5948562b89bb9fef1823800dc6365578c14e48a4`; squash merge commit was
+`aa89590498bc145e34db5cc77e1f83008df2e9d3`.
 
 1. `src/manga_director/production/next_generation_local_durable_asset_owner.py`
-   - Add the private V7-14 exact-ID path; preserve legacy registration, existing
-     persistence/security checks and schema, and reject conflicting replay.
+   - Added the private V7-14 exact-ID path; preserved legacy registration,
+     existing persistence/security checks and schema, and rejected conflicting
+     replay.
 2. `src/manga_director/workflow/localfile_comfyui_panel_provider.py`
    - Route only V7-14's verified canonical panel ID to that private owner path;
      require the returned owner ID to equal the derived ID before acceptance.
@@ -396,7 +405,7 @@ behavior remain outside the follow-up scope.
      to Page application; cover mismatches without Page/EventBus/ledger mutation,
      exact RESERVED reuse and uncertain-start recovery using fake transport.
 
-These are the complete proposed implementation files, not six additional files.
+These were the complete implementation files, not six additional files.
 No edit to the generic ComfyUI output-registration adapter, asset registration
 DTO/protocol, mode observation, repository/CAS, V7-13/V7-14 orchestrator,
 converter, public exports, API/Web or configuration is included. If safe reuse
@@ -404,10 +413,21 @@ of the existing registration/security machinery requires another file or a
 frozen-contract change, STOP and seek a revised design/allowlist. Do not weaken
 mode equality or introduce an alias mapping to stay inside this list.
 
-After separate implementation approval, validate focused owner/adapter/Slice 1
-integration, relevant regressions and full pytest, Ruff/format, Windows/Linux
-mypy, security/audit, exact allowlist/diff and fixed-doc hashes. Retain literal
-canonical golden vectors. Tests use fake transport and temporary local storage;
-no live ComfyUI or localhost:8188. No tests are executed by this docs amendment.
-Code editing, dependency/lockfile or schema/migration changes, I02, `main`, Git
-operations and release/publication remain unauthorized by this amendment.
+### Slice 1 completion evidence
+
+- PR #65 merged to `v7-dev`; PR-head required checks passed 24/24 before merge.
+- Focused tests: 54 passed / 3 skipped.
+- Authority regression: 114 passed / 2 skipped.
+- V6 LTS regression: 99 passed.
+- Full pytest: 3464 passed / 25 skipped.
+- GPT-6.1 Sol High independent review: P0/P1/P2/OTHER = 0/0/0/0.
+- Source branch `docs/v7-15-planning-rfc` was retained.
+- Post-merge CI run #40650264745 passed 10/10; CodeQL run #40650264438 passed
+  3/3.
+
+Slice 2 (dedicated HTTP route) and Slice 3 (Web activation) remain
+unimplemented and unapproved. Public routing remains disabled; the generic
+`/generate` contract is unchanged. Any remaining-slice implementation requires
+its own exact allowlist and explicit approval. Live ComfyUI, I02, `main`,
+release/publication, dependency/lockfile, schema/migration, branch deletion,
+and package publication remain unperformed and unauthorized.
