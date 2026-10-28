@@ -748,12 +748,21 @@ and unapproved. Any follow-up work requires its own explicit approval.
 
 ## Asset-ID Registration Contract Amendment (2026-10-28)
 
-Status: approved documentation/specification amendment only; implementation
-pending separate approval. This supplements Section B without changing the
-canonical derivation rules, including rule 9's full SHA-256 preimages/prefixes.
-The completion evidence above remains historical evidence for the delivered
-Slices 1-3; it does not establish implementation or verification of this
-amendment or completion of V7-15 Slice 1.
+Status: implemented and verified as V7-15 Slice 1 under PR #65. This records
+delivery evidence for the amendment without changing Section B or the canonical
+derivation rules, including rule 9's full SHA-256 preimages/prefixes.
+
+V7-15 Slice 1 completion evidence (2026-10-28): PR #65 merged the approved
+three documentation/specification files and six implementation/test files.
+Source head `5948562b89bb9fef1823800dc6365578c14e48a4` was squash-merged to
+`v7-dev` at `aa89590498bc145e34db5cc77e1f83008df2e9d3`. PR-head required checks
+passed 24/24 before merge. Focused tests passed 54 (3 skipped); authority
+regression passed 114 (2 skipped); V6 LTS regression passed 99; full pytest
+passed 3464 (25 skipped). GPT-6.1 Sol High independent review recorded
+P0/P1/P2/OTHER = 0/0/0/0. The source branch was retained. Post-merge CI run
+#40650264745 passed 10/10 and CodeQL run #40650264438 passed 3/3. This evidence
+completes Slice 1 only; Slices 2 and 3 remain unimplemented and unapproved, and
+public routing remains disabled.
 
 For the V7-14-only private registration path, the server-derived
 `panel-asset-v7-014-*` ID computed before invocation under canonical rule 9
@@ -788,8 +797,9 @@ No owner observation or final mode check may ignore an ID mismatch.
 This amendment preserves at-most-once provider-start/submit, exact RESERVED
 re-preparation, read-only replay, Page fence and revision/CAS boundaries, mode
 rechecks, no provider fallback/retry, and existing fail-closed/STOP conditions.
-It authorizes no source/test edits or execution, public API or generic
-`/generate` change, schema/migration, dependency/lockfile, I02, live ComfyUI,
-`main`, release/publication, or Git/branch operation. The proposed follow-up
-implementation allowlist is recorded in RFC-V7-013's matching amendment; it
-requires separate explicit approval before code edits.
+The separately approved Slice 1 implementation is recorded above. The
+amendment and its implementation authorize no Slice 2/3 source/test edits or
+execution, public API or generic `/generate` change, schema/migration,
+dependency/lockfile, I02, live ComfyUI, `main`, release/publication, or further
+Git/branch operation. Slices 2 and 3 require their own explicit scope and
+approval before implementation.
