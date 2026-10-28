@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -141,7 +142,7 @@ def test_dedicated_route_precedes_generic_action_and_fails_closed_without_localf
     def activation(*_args: object) -> LocalFilePanelAwareActivationResult:
         nonlocal calls
         calls += 1
-        return LocalFilePanelAwareActivationResult("generated", "activation_complete", 0)
+        return LocalFilePanelAwareActivationResult("generated", "generated", 0)
 
     app = create_workflow_app(application, panel_aware_activation=activation)
     paths = [route.path for route in app.routes]
@@ -240,7 +241,7 @@ def test_only_localfile_composition_wires_the_activation_service(
     )
     calls: list[tuple[object, ...]] = []
     results = [
-        LocalFilePanelAwareActivationResult("generated", "activation_complete", 0),
+        LocalFilePanelAwareActivationResult("generated", "generated", 0),
         LocalFilePanelAwareActivationResult("blocked", "revision_conflict"),
     ]
 
@@ -302,6 +303,71 @@ def test_only_localfile_composition_wires_the_activation_service(
     ("result", "status_code", "public_code"),
     [
         (
+            LocalFilePanelAwareActivationResult("generated", "generated"),
+            200,
+            "generated",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("generated", "unexpected_code"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("generated", "revision_conflict"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("blocked", "generated"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("partial", "generated"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("recovery_required", "generated"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("blocked", "activation_unavailable"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("blocked", "revision_conflict"),
+            409,
+            "revision_conflict",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("blocked", "unexpected_code"),
+            409,
+            "generation_blocked",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("partial", "revision_conflict"),
+            409,
+            "generation_incomplete",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("recovery_required", "activation_unavailable"),
+            409,
+            "recovery_required",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("unknown", "unexpected_code"),
+            503,
+            "activation_unavailable",
+        ),
+        (
+            LocalFilePanelAwareActivationResult("unknown", "activation_input_invalid"),
+            503,
+            "activation_unavailable",
+        ),
+        (
             LocalFilePanelAwareActivationResult("recovery_required", "private-attempt"),
             409,
             "recovery_required",
@@ -319,7 +385,7 @@ def test_only_localfile_composition_wires_the_activation_service(
         (
             LocalFilePanelAwareActivationResult("blocked", "private-endpoint-secret"),
             409,
-            "generation_unavailable",
+            "generation_blocked",
         ),
     ],
 )
@@ -357,7 +423,98 @@ def test_activation_outcomes_map_to_bounded_http_errors(
     )
 
     assert response.status_code == status_code
-    assert response.json()["code"] == public_code
+    if status_code == 200:
+        assert response.json() == {"status": "generated"}
+    else:
+        assert response.json() == {
+            "code": public_code,
+            "message": {
+                "recovery_required": "Generation requires recovery before another attempt.",
+                "generation_incomplete": "Generation did not complete.",
+                "generation_blocked": "Generation is blocked.",
+                "invalid_input": "Request validation failed.",
+                "revision_conflict": "The Page changed and generation was not started.",
+                "activation_unavailable": "Generation is unavailable.",
+            }[public_code],
+        }
+    assert "private" not in response.text
+    assert "secret" not in response.text
+
+
+class _FailingActivationResult:
+    def __init__(self, failing_attribute: str) -> None:
+        self.failing_attribute = failing_attribute
+
+    @property
+    def status(self) -> str:
+        if self.failing_attribute == "status":
+            raise RuntimeError("private status detail")
+        return "generated"
+
+    @property
+    def code(self) -> str:
+        if self.failing_attribute == "code":
+            raise RuntimeError("private code detail")
+        return "generated"
+
+
+@pytest.mark.parametrize(
+    ("result", "raises"),
+    [
+        (None, False),
+        (SimpleNamespace(status="generated"), False),
+        (SimpleNamespace(status=1, code="generated"), False),
+        (SimpleNamespace(status="blocked", code=None), False),
+        (_FailingActivationResult("status"), False),
+        (_FailingActivationResult("code"), False),
+        (None, True),
+    ],
+)
+def test_broken_activation_results_and_exceptions_fail_closed(
+    tmp_path: Path,
+    result: object,
+    raises: bool,
+) -> None:
+    calls = 0
+    repository = LocalFileRepository(tmp_path / "repository")
+    loader = ProjectLoader(repository)
+    events = MemoryEventBus()
+    engine = WorkflowEngine(state_machine=StateMachine(), event_bus=events, agents={})
+    coordinator = WorkflowCoordinator(
+        ProjectWorkflowEngine(repository, events),
+        ChapterWorkflowEngine(repository, events, PageNumberWorkflowScheduler()),
+        engine,
+        loader,
+    )
+    application = build_workflow_application(
+        workflow_engine=engine,
+        workflow_coordinator=coordinator,
+        project_loader=loader,
+        repository=repository,
+    )
+
+    def activation(*_args: object) -> object:
+        nonlocal calls
+        calls += 1
+        if raises:
+            raise RuntimeError("private endpoint secret")
+        return result
+
+    app = create_workflow_app(application, panel_aware_activation=activation)
+    response = TestClient(app).post(
+        "/projects/demo/pages/1/panel-aware-generation",
+        headers=_headers(),
+        json=_body(),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "activation_unavailable",
+        "message": "Generation is unavailable.",
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert calls == 1
     assert "private" not in response.text
     assert "secret" not in response.text
 
@@ -457,7 +614,10 @@ def test_http_mode_conflict_stops_before_fake_provider_preparation(
     )
 
     assert response.status_code == 409
-    assert response.json()["code"] == "generation_unavailable"
+    assert response.json() == {
+        "code": "generation_blocked",
+        "message": "Generation is blocked.",
+    }
     assert transport.prepare_count == 0
     assert transport.submit_count == 0
 

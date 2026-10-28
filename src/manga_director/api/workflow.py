@@ -788,33 +788,64 @@ def _panel_aware_generation_route(
             return _panel_aware_generation_error(json_response, 422, "invalid_input")
         if activation is None:
             return _panel_aware_generation_error(json_response, 404, "not_found")
-        result = activation(
+        return _panel_aware_generation_activation_response(
+            activation,
+            json_response,
             validated_project_id,
             validated_page_number,
+            body,
+        )
+
+    generate_panels.__annotations__["request"] = request_type
+    return generate_panels
+
+
+def _panel_aware_generation_activation_response(
+    activation: PanelAwareGenerationActivation,
+    json_response: Any,
+    project_id: str,
+    page_number: int,
+    body: PanelAwareGenerationRequest,
+) -> Any:
+    try:
+        result = activation(
+            project_id,
+            page_number,
             body.authorized_by,
             body.checkpoint_name,
             body.rectangles,
             body.layout_profile_id,
             body.layout_profile_version,
         )
-        if result.status == "generated":
+        result_status = result.status
+        result_code = result.code
+    except Exception:
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if type(result_status) is not str or type(result_code) is not str:
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_status == "generated":
+        if result_code == "generated":
             return json_response(
                 status_code=200,
                 content={"status": "generated"},
                 headers=_VISUAL_REVIEW_HEADERS,
             )
-        if result.status == "recovery_required":
-            return _panel_aware_generation_error(json_response, 409, "recovery_required")
-        if result.code == "revision_conflict":
-            return _panel_aware_generation_error(json_response, 409, "revision_conflict")
-        if result.code == "activation_input_invalid":
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_code == "generated":
+        return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+    if result_status == "blocked":
+        if result_code == "activation_input_invalid":
             return _panel_aware_generation_error(json_response, 422, "invalid_input")
-        if result.status == "partial":
-            return _panel_aware_generation_error(json_response, 409, "generation_incomplete")
-        return _panel_aware_generation_error(json_response, 409, "generation_unavailable")
-
-    generate_panels.__annotations__["request"] = request_type
-    return generate_panels
+        if result_code == "revision_conflict":
+            return _panel_aware_generation_error(json_response, 409, "revision_conflict")
+        if result_code == "activation_unavailable":
+            return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
+        return _panel_aware_generation_error(json_response, 409, "generation_blocked")
+    if result_status == "recovery_required":
+        return _panel_aware_generation_error(json_response, 409, "recovery_required")
+    if result_status == "partial":
+        return _panel_aware_generation_error(json_response, 409, "generation_incomplete")
+    return _panel_aware_generation_error(json_response, 503, "activation_unavailable")
 
 
 def _panel_aware_generation_error(
@@ -828,7 +859,8 @@ def _panel_aware_generation_error(
         "revision_conflict": "The Page changed and generation was not started.",
         "recovery_required": "Generation requires recovery before another attempt.",
         "generation_incomplete": "Generation did not complete.",
-        "generation_unavailable": "Generation is unavailable.",
+        "generation_blocked": "Generation is blocked.",
+        "activation_unavailable": "Generation is unavailable.",
     }
     return json_response(
         status_code=status_code,
