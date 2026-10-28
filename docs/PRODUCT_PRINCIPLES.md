@@ -200,26 +200,35 @@ adult-content generation.
 ## Codex model operating policy
 
 - When the specified model is available in the current Codex environment, use
-  **GPT-6 Luna High** by default for routine, lightweight work, including
-  documentation-only implementation and organization.
-- Use **GPT-5.6 Sol High** for important decisions involving frozen
-  specifications, public APIs, compatibility, or architecture; complex
-  implementation; P0/P1 work; security work; and the final independent
-  read-only review.
+  **GPT-6 Luna High** as the default mainline execution model. It handles
+  routine, lightweight work and authorized investigation, planning,
+  implementation, documentation, and validation that do not meet the
+  GPT-6 Astra escalation conditions below.
+- Before an important result involving frozen specifications, public APIs,
+  compatibility, architecture, complex implementation, P0/P1 work, or
+  security work is treated as complete or advances to the next write stage,
+  require an independent read-only review by **GPT-6.1 Sol High** in a
+  separate agent or context. The independent reviewer must not modify files.
+- Use **GPT-5.6 Sol High** only for an additional independent read-only review
+  when an unresolved disagreement that could change the conclusion remains
+  about correctness, severity, compatibility, security, required validation,
+  or an approval boundary.
+- Use **GPT-6 Astra** only for a critical, high-difficulty P0/P1, security,
+  frozen-contract, public-API, compatibility, or architecture issue that
+  remains unresolved after the preceding review stages. Record the escalation
+  reason and actual reasoning setting. Astra does not gain approval or
+  publication authority.
 - After an important stage is complete, return to **GPT-6 Luna High** for the
   next routine stage, when it is available in the current Codex environment.
-- Treat **GPT-6.1 Sol** only as a candidate for isolated comparative
-  evaluation. Do not adopt it automatically as the default or insert it into
-  an approved mainline workflow.
 - When practical, use different models for implementation and final review.
 - State the intended model explicitly in Codex prompts so the execution and
   review roles are auditable.
 - If a specified model is unavailable in the current Codex environment, stop
   before starting the stage that requires it, report the unavailability, and
   require explicit approval before using a substitute.
-- Model selection does not relax file allowlists, approval gates, the existing
-  safe read-only progress boundary, validation, privacy restrictions, v6 LTS
-  scope, or release controls.
+- Model selection does not relax file allowlists, approval gates, the
+  AUTO-PROGRESS and explicit-approval boundaries in `AGENTS.md`, validation,
+  privacy restrictions, v6 LTS scope, or release controls.
 
 Model availability may change. Never claim a substitute was the specified
 model, and preserve the role separation and review rigor above.
