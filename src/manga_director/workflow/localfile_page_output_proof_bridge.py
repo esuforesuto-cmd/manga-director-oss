@@ -21,10 +21,11 @@ from manga_director.production.next_generation_page_composition_application_ledg
     PageCompositionAppliedBindingLookupResult,
 )
 from manga_director.production.next_generation_page_output_proof import (
+    LocalCompositionApplicationBindingResolver,
+    LocalPageOutputProofResolver,
     PageOutputProofUnavailable,
     ProviderProofLookupResult,
     ResolvedPageOutput,
-    build_local_page_output_proof_resolver,
 )
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresenter,
@@ -174,14 +175,18 @@ class _ReadOnlyPageOutputProof:
             evidence_root=normal_root / "evidence",
             asset_root=normal_root / "assets",
         )
-        resolver = build_local_page_output_proof_resolver(
+        application_ledger = _CompositionApplicationLedger(
+            normal_root / "page-composition-application", scope
+        )
+        resolver = LocalPageOutputProofResolver(
             provider_proof_lookup=_ProviderLookup(ledger_root, presenter, scope),
             composition_authority=_CompositionAuthority(
                 normal_root / "page-composition-authority", scope
             ),
             composite_owner=_CompositeOwner(normal_root / "deterministic-composite-owner"),
-            composition_application_ledger=_CompositionApplicationLedger(
-                normal_root / "page-composition-application", scope
+            composition_application_ledger=application_ledger,
+            composition_application_binding_resolver=LocalCompositionApplicationBindingResolver(
+                application_ledger
             ),
         )
         return resolver.resolve(project_id, page_id, output_asset_id)
@@ -195,7 +200,11 @@ class _PageOutputQualityGate:
         image = context.artifacts.get("Generated")
         project_id, page_id = context.page.get("project_id"), context.page.get("page_id")
         output_id = image.get("output_asset_id") if isinstance(image, Mapping) else None
-        if not all(isinstance(value, str) for value in (project_id, page_id, output_id)):
+        if (
+            not isinstance(project_id, str)
+            or not isinstance(page_id, str)
+            or not isinstance(output_id, str)
+        ):
             return "LOGICAL_OUTPUT_ASSET_QUALITY_PROOF_UNAVAILABLE"
         if (
             context.state.value != "Generated"

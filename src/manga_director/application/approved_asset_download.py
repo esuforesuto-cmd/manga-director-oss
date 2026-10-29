@@ -15,6 +15,7 @@ from manga_director.production.next_generation_page_output_proof import (
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresentationError,
     SafeLocalGeneratedAssetPresenter,
+    _SafeLocalGeneratedAssetProof,
 )
 from manga_director.repositories.local_file import LocalFileRepository
 
@@ -52,7 +53,7 @@ class ApprovedAssetDownloadService:
         self._page_output_proof = page_output_proof
 
     def get(self, project_id: str, page_number: int) -> ApprovedAssetDownload:
-        proof = None
+        proof: ResolvedPageOutput | _SafeLocalGeneratedAssetProof | None = None
         try:
             page = self._repository._load_authoritative_page(project_id, page_number)
             output_asset_id = _approved_output_asset_id(page)
