@@ -1845,6 +1845,50 @@ API contracts, and frozen V7-13 specifications remain unchanged.
 
 ### Planning status
 
+Current V7-16 status (checked 2026-10-30 JST): implemented and verified at
+`3d655888565e86878f6b725299e41d9553a66f13`, proposed in
+[PR #71](https://github.com/esuforesuto-cmd/manga-director-oss/pull/71) against
+`v7-dev` at `7aec88910f427aaf577567988fc9375d9e5e1cca`. Its parent is
+`ef641ba6c00c333da64a210314830c0a13879bb0`; the two commits change 11 files.
+The branch is committed and pushed; the PR remains open and unmerged.
+
+[Push CI 40879933045](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40879933045)
+and [PR CI 40889434951](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889434951)
+each passed **10/10 jobs** at that head.
+[PR CodeQL 40889430435](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889430435)
+passed **3/3** analyses (Actions, Python, JavaScript/TypeScript).
+PR CI used synthetic merge `e20a7c58d09f3026f713b5ba0e6cfad648f487b6`
+with no file differences from the head; CodeQL used the head directly.
+Measured PR results: native Linux Python 3.11 and 3.12 each passed
+**3211 tests with 324 skipped**; native Windows Python 3.11 and 3.12 each
+passed **3513 tests with 22 skipped**. Linux/Windows mypy passed with
+**320/326 source files and zero errors**. Ruff, frontend lint/typecheck/unit
+tests/build, existing browser real-delivery E2E, pip-audit/npm audit/gitleaks,
+package, and Windows LocalFile security (**12 tests**) passed.
+
+The corrected local source/test snapshot passed Windows full pytest
+**3509 tests with 26 skipped**, focused regression **122 with 7 skipped**,
+isolated Linux-target/Windows-target mypy, Ruff and `git diff --check`.
+Local native Linux was unavailable; the hosted Linux runs above supply that
+separate evidence. Skips are not passes. Common fake panel generation keeps
+the initial two parallel POST success requirement and Provider at-most-once;
+Windows covers the full fake-provider review/approval/download chain, while
+Linux preserves the existing Quality fail-closed fence without mutation.
+
+Existing separate implementation/fix reviews reported **P0/P1/P2 = 0/0/0**.
+The documentation-freshness P2 is addressed in this documentation update.
+Hosted results above apply to the implementation head and do not establish
+validation of a later documentation commit. Merge and
+post-merge checks remain pending. Default Planning input completeness, live
+ComfyUI and full live production Page E2E remain incomplete; I02 and
+publication are outside this work. Detailed evidence and retained failure
+history are in RFC-V7-014 below.
+
+### Historical local stabilization snapshot (before CI fixes)
+
+The following records the earlier state only; its unavailable checks and
+uncommitted-branch statement are superseded by the current status above.
+
 Implementation and local stabilization are verified under the separately
 approved scope; overall validation is **WARN** because type/Web/audit tools
 are unavailable in the existing environment. The

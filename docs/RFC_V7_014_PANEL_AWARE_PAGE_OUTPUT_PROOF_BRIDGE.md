@@ -1,6 +1,6 @@
 # RFC-V7-014: Panel-Aware Page Output Proof Bridge
 
-- Status: Implemented; local pytest verified; unavailable environment checks remain pending
+- Status: Implemented; PR #71 CI 10/10 and CodeQL 3/3 verified at 3d655888565e86878f6b725299e41d9553a66f13; unmerged
 - Related roadmap item: V7-16
 - Prerequisites: completed V7-07 through V7-15 and RFC-V7-005 through RFC-V7-013
 - Scope: private LocalFile quality and approved-download proof composition
@@ -108,7 +108,10 @@ is otherwise explained. Existing LocalFile Windows security and v6 tests ran
 as part of the full suite, which had the single failure above; no separate
 clean security or v6-only run is recorded here.
 
-### Final stabilization evidence (2026-10-29)
+### Historical local stabilization evidence (2026-10-29, before CI fixes)
+
+This snapshot predates the typing/platform correction and hosted verification
+below. Its unavailable checks and pre-commit status describe that stage only.
 
 The separately approved source correction wraps the new reader connection in
 `contextlib.closing`. It preserves read-only/query-only access and closes the
@@ -143,7 +146,7 @@ missing rows, an early schema rejection, and an SQL exception.
   runtime identifies as GPT-6.1 Sol. The review was assigned GPT-6.1 Sol High;
   its serving model identity could not be independently attested.
 
-Current status is **WARN: local stabilization verified, unavailable checks
+Status at this historical snapshot was **WARN: local stabilization verified, unavailable checks
 pending**. No commit, push, PR, merge, CI rerun, dependency update, live
 Provider/ComfyUI, I02 activation, or publication was performed. Default
 Planning input completeness and live production Page E2E remain outside this
@@ -153,6 +156,71 @@ The approved implementation allowlist is exactly the twelve files stated in
 the task approval and recorded in the implementation review. Any need to
 change another file, persisted schema, public contract, dependency, live
 Provider, I02, v6, or `main` requires stopping and a separate approval.
+
+### Current PR verification (checked 2026-10-30 JST)
+
+The verified implementation head is
+`3d655888565e86878f6b725299e41d9553a66f13` on
+`feature/panel-output-proof-bridge`, with parent
+`ef641ba6c00c333da64a210314830c0a13879bb0`. These two commits are proposed in
+[PR #71](https://github.com/esuforesuto-cmd/manga-director-oss/pull/71) against
+`v7-dev` at `7aec88910f427aaf577567988fc9375d9e5e1cca` (11 changed files).
+The branch is committed and pushed; the PR remains open and unmerged.
+
+The first pushed implementation encountered eight mypy errors in two files
+and a Linux Quality E2E failure in CI run `40869804420`. The correction keeps
+the existing Protocol/None contracts and separates OS-specific test tails;
+it does not add Linux Quality support or change its Windows safety fence.
+
+Local evidence for the corrected source/test snapshot is **3509 passed,
+26 skipped** for Windows full pytest and **122 passed, 7 skipped** for the
+focused regression. Isolated Python 3.12.14 with mypy 1.20.2 and librt 0.16.0
+passed Linux-target mypy (320 source files) and Windows-target mypy
+(326 source files), both with zero errors. Ruff and `git diff --check`
+passed. Source/test SHA-256 checks matched the verified snapshot. These
+results supersede the earlier environment-blocked checks; they do not
+rewrite those historical failures. Local native Linux execution was
+unavailable, and is distinguished from the hosted native Linux results.
+
+[Push CI run 40879933045](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40879933045)
+passed 10/10 jobs at this head. Separately,
+[PR CI run 40889434951](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889434951)
+completed successfully with **10/10 jobs** for the same PR head. PR CI checked
+out GitHub's synthetic merge `e20a7c58d09f3026f713b5ba0e6cfad648f487b6`
+(head into the base above); GitHub compare reports no file changes between
+that merge and the head. CodeQL checked out the head directly. Measured PR
+CI results are:
+
+| PR CI validation | Result |
+| --- | --- |
+| Native Linux Python 3.11 / 3.12 | Each 3211 passed, 324 skipped |
+| Native Windows Python 3.11 / 3.12 | Each 3513 passed, 22 skipped |
+| static-analysis | Ruff PASS; Linux mypy: 320 source files, zero errors |
+| windows-localfile-security | Windows mypy: 326 source files, zero errors; 12 tests passed |
+| frontend | lint, typecheck, unit tests and build PASS |
+| real-delivery-e2e | Existing browser E2E job PASS |
+| security | pip-audit, npm audit and gitleaks PASS |
+| package | PASS |
+
+[CodeQL run 40889430435](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889430435)
+passed **3/3** analyses: Actions, Python, and JavaScript/TypeScript. Skipped
+tests are not PASS claims; job success is not proof of live production E2E.
+
+The real FastAPI tests use a fake panel transport. Common generation tests
+retain at least one 200 response in the first two concurrent POSTs and one
+Provider submission across retries. Windows verifies display, Quality,
+Visual QA, explicit human approval, download, and reconstruction. Linux
+verifies `PAGE_EXECUTION_FENCE_UNAVAILABLE` at Quality with unchanged state,
+files, events and zero Quality-agent calls. This preserves fail-closed
+behavior rather than claiming a complete Linux review workflow.
+
+Existing separate read-only implementation/fix reviews reported
+**P0/P1/P2 = 0/0/0**. The PR's documentation-freshness P2 is addressed by this
+documentation update. Hosted results above apply to the implementation head;
+they do not establish validation of a later documentation commit.
+Default Planning input completeness, live
+Provider/ComfyUI, full live production Page E2E and I02 remain outside the
+completion claim. Merge and post-merge verification remain pending.
 
 ## Authorization
 
