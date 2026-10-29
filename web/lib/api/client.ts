@@ -4,6 +4,8 @@ import type {
   EvidenceLinkedApprovalRequest,
   PageAction,
   PageDetail,
+  PanelAwareGenerationRequest,
+  PanelAwareGenerationResponse,
   ProjectDetail,
   ProjectSummary,
   VisualReviewEvidenceHistoryResponse,
@@ -98,6 +100,10 @@ export const api = {
   pages: {
     get: (projectId: string, pageNumber: number) =>
       request<PageDetail>(`/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}`),
+    generatePanels: (projectId: string, pageNumber: number, body: PanelAwareGenerationRequest) =>
+      request<PanelAwareGenerationResponse>(`/api/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/panel-aware-generation`, {
+        method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" }
+      }, ""),
     generatedAssetUrl: (projectId: string, pageNumber: number) =>
       `${loopbackApiBaseUrl()}/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/generated-asset`,
     approvedAssetDownloadUrl: (projectId: string, pageNumber: number) =>

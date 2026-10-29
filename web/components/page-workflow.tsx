@@ -5,6 +5,7 @@ import { ApprovalForm } from "./approval-form";
 import { HumanVisualReviewEvidenceHistory } from "./human-visual-review-evidence-history";
 import { HumanVisualReviewForm } from "./human-visual-review-form";
 import { PageActions } from "./page-actions";
+import { PanelAwareGenerationForm } from "./panel-aware-generation-form";
 import styles from "./page-workflow.module.css";
 import {
   availableWorkflowActions,
@@ -12,7 +13,8 @@ import {
   canShowApprovedAssetDownload,
   canShowGeneratedAsset,
   canShowVisualReview,
-  canShowVisualReviewEvidenceHistory
+  canShowVisualReviewEvidenceHistory,
+  persistedStoryboardPanels
 } from "@/lib/workflow-view";
 
 const stages = ["Page Design", "Review", "Storyboard", "Dialogue", "Prompt", "Generated Image", "Quality", "Continuity", "Approval"];
@@ -32,6 +34,11 @@ export function PageWorkflowView({
         <h2 id="actions-heading">Workflow actions</h2>
         <PageActions projectId={projectId} pageNumber={page.pageNumber} actions={availableWorkflowActions(page)} />
       </section>
+      {page.state === "PromptBuilt" && persistedStoryboardPanels(page) ? (
+        <section className={styles.panel}>
+          <PanelAwareGenerationForm projectId={projectId} pageNumber={page.pageNumber} panels={persistedStoryboardPanels(page)!} />
+        </section>
+      ) : null}
       {canShowGeneratedAsset(page) ? (
         <section className={styles.panel} aria-labelledby="generated-asset-heading">
           <h2 id="generated-asset-heading">Generated image</h2>

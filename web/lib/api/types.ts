@@ -66,6 +66,31 @@ export interface PageDetail extends PageSummary {
   approvalRequired: boolean;
 }
 
+export interface StoryboardPanelSummary {
+  number: number;
+  narrative_intent: string;
+  characters: string[];
+  continuity_bindings: string[];
+  action: string;
+  background: string;
+  composition: string;
+  constraints: string[];
+}
+
+export interface PanelRectangleInput { left: number; top: number; right: number; bottom: number }
+export interface PanelAwareGenerationRequest {
+  requestVersion: 1;
+  authorizedBy: string;
+  checkpointName: string;
+  layoutProfileId: "md-page-compositor-v1";
+  layoutProfileVersion: 1;
+  rectangles: PanelRectangleInput[];
+}
+export type PanelAwareGenerationErrorCode = "not_found" | "invalid_input" | "revision_conflict"
+  | "recovery_required" | "generation_incomplete" | "generation_blocked" | "activation_unavailable";
+export type PanelAwareGenerationResponse = { status: "generated" }
+  | { code: PanelAwareGenerationErrorCode; message: string };
+
 export type PageAction =
   | "design"
   | "review"

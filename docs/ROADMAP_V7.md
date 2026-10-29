@@ -1787,20 +1787,20 @@ implementation or expand the scope above.
 ### Slice status
 
 Slice 1 — private Local/Application activation — is Complete and verified.
-Slice 2 — dedicated HTTP route — is implemented under its separate seven-file
-approval; focused and full local verification and independent review are
-pending. Slice 3 — explicit Web activation — is not implemented or authorized.
+Slice 2 — dedicated HTTP route — is merged in PR #68; post-merge CI passed
+10/10 and CodeQL passed 3/3. Slice 3 — explicit Web activation — is being
+implemented in an isolated branch under the separately approved exact
+17-file allowlist. Local verification and independent review are pending.
 The design and staged plan are in
 [RFC-V7-013: Safe Local Panel-Aware Generation Activation](RFC_V7_013_SAFE_LOCAL_PANEL_AWARE_GENERATION_ACTIVATION.md).
 V7-15 Slice 2 enables the dedicated route only in the concrete LocalFile HTTP
 composition. Remote deployment remains disabled, and the existing lack of
 authentication is unchanged; CORS and same-origin request checks are not
-authentication. Slice 3 still requires its own reviewed exact allowlist and
-explicit approval.
+authentication. Slice 3 does not add authentication and remains local-only.
 
 The implementation preserves the existing generic `/generate` behavior and
 adds a separate panel-aware HTTP route; an explicit Web “Generate panels”
-action remains planned for Slice 3.
+action is the separate Slice 3 Web control.
 The browser may provide only bounded `authorizedBy` attribution, a V7-04
 validated `checkpointName`, and explicit ordered rectangles for the supported
 layout profile. It cannot provide authorization/attempt IDs, provider endpoint,
@@ -1817,11 +1817,10 @@ make zero provider calls and no writes. Changed inputs, ambiguous authority
 state, or unsupported inputs fail closed without a new executable attempt.
 
 Sequence: Slice 1 private Local/Application activation and safe Page
-application is complete; Slice 2 route implementation is in progress through
-local validation and review; Slice 3 is the explicit Web interaction. Slice 3
-requires its own exact implementation allowlist and approval. This record
-authorizes no further code, Web, configuration, schema, dependency, or
-persistence changes. Live
+application is complete; Slice 2 is merged; Slice 3 Web implementation and
+local validation are in progress within its approved 17-file allowlist. This
+record authorizes no changes outside that scope and does not change frozen
+contracts. Live
 ComfyUI, I02, `main`, release/publication, dependency/lockfile changes,
 schema/migration, and branch deletion remain unperformed and unapproved; no
 further branch operations are authorized.
@@ -1843,7 +1842,7 @@ further branch operations are authorized.
 | V7-12 Durable Local Human Visual Review Evidence-Linked Approval | Complete and verified | Completed V7-07 through V7-11, accepted RFC-V7-010, and explicit approval of the exact twenty-one-file implementation package | PR #48 final head `5835de2c5d890a40a232f1ff7ad9a7a690240eff` merged into `v7-dev` at `a02eedf38cd79c43c2add68ac08c332dab5eefb8`; full pytest passed (3238 passed / 16 skipped); PR CI run #166 passed 10/10 with CodeQL run #65 passing 3/3; post-merge CI run #167 passed 10/10 with CodeQL run #66 passing 3/3; independent review P0/P1/P2 = 0/0/0; exact twenty-one-file allowlist; feature branch retained; `main` unchanged; I02 remained out of scope |
 | V7-13 Private Panel-Aware Page Generation Foundation | Complete and verified; public routing disabled | Completed V7-12, accepted RFC-V7-011, and completed Slice 1 through Slice 4 validation | PR #54 merged Slice 4 into `validation/rfc-v7-011-slice-3` at `4719c55a3ade5b3f10f75d4432f07bcbc958d6a0`; PR #55 merged that branch into `v7-dev` at `a760488f43f84e28978fe5b3bf1d25e44b9b8396`; PR #55 CI passed; post-merge CI run `40273044192` passed 10/10 jobs; final independent closure P0/P1/P2 = 0/0/0; release, public activation, live Provider/ComfyUI, and I02 remained out of scope |
 | V7-14 Safe Panel-Aware Activation Bridge | Complete and verified; public routing disabled | Completed V7-13 foundation and explicitly approved V7-14 Slices 1–3 | PR #61 merged at `c9b0c27ef1df8104f70b573c9dd7c10266b523df`, PR #62 at `4feeae65cab5a48397f274164422588d4e2f7adc`, and PR #63 at `1daff9e58bd52058e44175c99b4248ea321a30f5`; each PR-head CI passed 24/24; final independent review P0/P1/P2 = 0/0/0; exact seven unique implementation/test files; public activation remains V7-15+; live ComfyUI, I02, `main`, release/publication, dependency/lockfile, schema/migration, and branch deletion remain unperformed and unapproved |
-| V7-15 Safe Local Panel-Aware Generation Activation | Slice 1 Complete and verified; public routing disabled | V7-14 complete; RFC-V7-013; separate Slice 1 approval | PR #65 source head `5948562b89bb9fef1823800dc6365578c14e48a4` squash-merged to `v7-dev` at `aa89590498bc145e34db5cc77e1f83008df2e9d3`; PR-head required checks passed 24/24; focused 54 passed / 3 skipped; authority regression 114 passed / 2 skipped; V6 LTS regression 99 passed; full pytest 3464 passed / 25 skipped; independent review P0/P1/P2/OTHER = 0/0/0/0; post-merge CI run #40650264745 passed 10/10 and CodeQL run #40650264438 passed 3/3; source branch retained; Slices 2–3 unimplemented and unapproved; generic `/generate` unchanged |
+| V7-15 Safe Local Panel-Aware Generation Activation | Slice 1 Complete and verified; public routing disabled | V7-14 complete; RFC-V7-013; separate Slice 1 approval | PR #65 source head `5948562b89bb9fef1823800dc6365578c14e48a4` squash-merged to `v7-dev` at `aa89590498bc145e34db5cc77e1f83008df2e9d3`; PR-head required checks passed 24/24; focused 54 passed / 3 skipped; authority regression 114 passed / 2 skipped; V6 LTS regression 99 passed; full pytest 3464 passed / 25 skipped; independent review P0/P1/P2/OTHER = 0/0/0/0; post-merge CI run #40650264745 passed 10/10 and CodeQL run #40650264438 passed 3/3; source branch retained; at the PR #65 record, Slices 2–3 were unimplemented and unapproved; generic `/generate` unchanged |
 
 No later Epic 1 implementation is authorized solely by this roadmap.
 Additional issues must be proposed with their own bounded scope, compatibility

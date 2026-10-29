@@ -1,6 +1,6 @@
 # RFC-V7-013: Safe Local Panel-Aware Generation Activation
 
-- Status: Slice 1 complete and verified; Slice 2 implemented with local verification pending; Slice 3 not implemented or authorized
+- Status: Slices 1 and 2 complete and merged; Slice 3 implementation is in progress under the separately approved 17-file local implementation scope
 - Related roadmap item: V7-15 Safe Local Panel-Aware Generation Activation
 - Baseline: `v7-dev` commit `6b956bbad0bda801ae696786fa93a76b9e850fb2`
 - Prerequisite: V7-14 Complete and verified; remote/public deployment disabled
@@ -213,8 +213,8 @@ Generate.
 Slice 1 was separately approved and is complete and verified as recorded in
 the Asset-ID Registration Amendment and Slice 1 Completion Evidence below.
 Slice 2 was separately approved with the exact seven-file allowlist on
-2026-10-28. Slice 3 requires its own exact implementation allowlist and
-explicit approval and remains unauthorized.
+2026-10-28. Slice 3 is separately authorized under the exact 17-file allowlist
+recorded in the active implementation task.
 
 ### Slice 1 — Local/Application Activation
 
@@ -250,9 +250,16 @@ calls; never rebuild from the new `Generated` snapshot.
 ### Slice 3 — Web Activation
 
 Add the explicit “Generate panels” interaction and user-entered/confirmed
-geometry for the supported profile. Keep legacy “Generate” intact. Test no
-inferred layout, exact ordered rectangle submission, error behavior, and
-accessibility. No automatic grid or layout defaults.
+geometry for the supported profile. Keep legacy “Generate” intact. Bind a
+same-origin Next.js proxy to a fixed loopback API destination, validate browser
+request metadata and exact body bytes, and forward only a strict header
+allowlist without redirects. Browser Web Locks and a persistent per-Page
+marker reduce accidental duplicate submissions across tabs and reloads; they
+are not durable authority, and uncertain results remain blocked in the UI.
+The existing V7-13/V7-15 authorities remain responsible for actual at-most-once
+provider-start and recovery. Test no inferred layout, exact ordered rectangles,
+errors, accessibility, reload/multi-tab and uncertain network outcomes. No
+automatic grid or layout defaults.
 
 ## Invariants and Fail-Closed Conditions
 
@@ -349,10 +356,9 @@ separate explicit authorization.
 
 ## Authorization Gate
 
-Slice 1 is complete and verified. Slice 2 has separate explicit approval and
-its implementation is recorded below. Slice 3 may start only after review of
-this RFC and separate explicit approval of its exact slice, file allowlist,
-and validation plan. Live ComfyUI, I02, `main`, release/publication,
+Slice 1 is complete and verified. Slice 2 was implemented and merged under
+separate approval. Slice 3 implementation is authorized only within the exact
+17-file allowlist and validation plan supplied for the current task. Live ComfyUI, I02, `main`, release/publication,
 dependency/lockfile, schema/migration, or branch operations are not authorized
 by this RFC.
 
@@ -435,11 +441,12 @@ mode equality or introduce an alias mapping to stay inside this list.
 - Post-merge CI run #40650264745 passed 10/10; CodeQL run #40650264438 passed
   3/3.
 
-Slice 2 (dedicated HTTP route) is implemented locally under the separately
-approved seven-file allowlist; its full local verification and independent
-review are pending. It is wired only for the concrete LocalFile repository,
-preserves generic `/generate`, and does not add authentication. Slice 3 (Web
-activation) remains unimplemented and unapproved. Remote/public deployment,
+At the time of this Slice 1 completion record, Slice 2 (dedicated HTTP route)
+was implemented locally under its separately approved seven-file allowlist;
+its full local verification and independent review were pending. It is wired
+only for the concrete LocalFile repository, preserves generic `/generate`, and
+does not add authentication. Slice 3 (Web activation) remained unimplemented
+and unapproved at that historical point. Remote/public deployment,
 live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
 schema/migration, branch deletion, and package publication remain unperformed
 and unauthorized.

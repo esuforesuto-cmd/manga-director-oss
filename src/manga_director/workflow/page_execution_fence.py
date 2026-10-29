@@ -91,16 +91,24 @@ class WindowsPageExecutionFence(PageExecutionFencePort):
         self._handle = None
         if handle is None:
             return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        released = not self._owned
         try:
             if self._owned:
-                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-                kernel32.ReleaseMutex(ctypes.c_void_p(handle))
+                # Keep the process claim until the OS mutex is released, while
+                # preventing a newly awakened thread from observing the stale
+                # claim between those two operations.
+                with self._process_guard:
+                    released = bool(kernel32.ReleaseMutex(ctypes.c_void_p(handle)))
+                    if released:
+                        self._process_owned.discard(self._identity)
         finally:
-            if self._owned:
-                self._release_process_ownership()
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.CloseHandle(ctypes.c_void_p(handle))
-            self._owned = False
+            try:
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+            finally:
+                self._owned = False
+        if not released:
+            raise PageExecutionFenceError("page_execution_fence_unavailable")
 
     def _r26_is_held_for(self, project_id: str, page_id: str) -> bool:
         """Report only this fence's live ownership for the private R26 inlet."""

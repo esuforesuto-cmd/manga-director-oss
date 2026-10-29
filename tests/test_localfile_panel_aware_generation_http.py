@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -659,6 +660,7 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
             updated_at=datetime(2026, 10, 28, tzinfo=UTC),
         )
     )
+    initial_revision = repository._load_revisioned("demo").revision
     events = MemoryEventBus()
     engine = WorkflowEngine(
         state_machine=StateMachine(),
@@ -702,7 +704,12 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
     )
     client = TestClient(app)
     route = "/projects/demo/pages/1/panel-aware-generation"
-    generated = client.post(route, headers=_headers(), json=_body())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        concurrent = list(
+            pool.map(lambda _index: client.post(route, headers=_headers(), json=_body()), range(2))
+        )
+    generated = next(response for response in concurrent if response.status_code == 200)
+    duplicate = next(response for response in concurrent if response.status_code != 200)
     after_generation = repository._load_revisioned("demo")
     revision_after_generation = after_generation.revision
     fingerprint_after_generation = hashlib.sha256(after_generation.fingerprint.encode()).hexdigest()
@@ -716,13 +723,21 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
 
     assert generated.status_code == 200
     assert generated.json() == {"status": "generated"}
+    assert duplicate.status_code in {409, 503}
+    assert duplicate.json()["code"] in {
+        "revision_conflict",
+        "recovery_required",
+        "activation_unavailable",
+        "generation_blocked",
+    }
     assert replay.status_code == 409
     assert replay.json()["code"] == "revision_conflict"
     assert changed_replay.status_code == 409
     assert changed_replay.json()["code"] == "revision_conflict"
-    assert service_calls == 3
+    assert service_calls == 4
     assert transport.submit_count == 1
     assert after_replay.revision == revision_after_generation
+    assert after_replay.revision == initial_revision + 1
     assert hashlib.sha256(after_replay.fingerprint.encode()).hexdigest() == (
         fingerprint_after_generation
     )
