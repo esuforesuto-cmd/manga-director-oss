@@ -59,6 +59,27 @@ authorization. The current HTTP server remains bound to loopback; do not treat
 this route as safe for remote exposure or as resolving the existing
 authentication gap.
 
+The Web application offers a separate “Generate panels” form on a `PromptBuilt`
+Page only when the saved Storyboard contains a complete, contiguous panel list.
+The user enters `authorizedBy`, `checkpointName`, and one rectangle per saved
+panel in that order; the Web client never infers or fills geometry. Its same-
+origin Next.js route accepts only a fixed POST, checks local Origin, Referer,
+Fetch Metadata, Host, content type, and exact body byte count (maximum 32 KiB),
+then forwards unchanged bytes and only validated browser headers to
+`127.0.0.1:8000` (or test-only `127.0.0.1:4010`). It rejects redirects and
+returns fixed safe responses. `MANGA_DIRECTOR_API_URL` is server-only; browser
+input cannot select the upstream. Start the Web server with its loopback-only
+scripts and keep the API on loopback.
+
+Before sending, the browser takes an origin-local Web Lock and persists a
+per-Page marker. A marker or unavailable lock/storage disables another
+submission, including after reload; network errors and uncertain responses
+keep the marker and instruct the user to inspect the Page or recovery state.
+The marker coordinates cooperating tabs but is not durable authority and can
+be lost if site data is cleared. The LocalFile API's existing durable
+at-most-once/provider-start fences remain the actual duplicate-execution
+protection. Human approval remains a separate explicit human action.
+
 Responses use dedicated camelCase HTTP DTOs. Expected errors are safe JSON:
 not found is 404, duplicates and invalid transitions are 409, invalid input is
 422, and unexpected failures are a generic 500 without internal paths,

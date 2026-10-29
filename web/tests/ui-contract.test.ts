@@ -8,10 +8,20 @@ import {
   canShowApprovedAssetDownload,
   canShowGeneratedAsset,
   canShowVisualReview,
-  canShowVisualReviewEvidenceHistory
+  canShowVisualReviewEvidenceHistory,
+  persistedStoryboardPanels
 } from "@/lib/workflow-view";
 
 describe("UI workflow contract", () => {
+  it("accepts only the persisted contiguous Storyboard panel sequence and never derives a layout", () => {
+    const page = { artifacts: { storyboard: { panels: [{
+      number: 1, narrative_intent: "A character arrives", characters: ["hero"], continuity_bindings: ["coat"],
+      action: "arrive", background: "room", composition: "wide", constraints: ["no text"]
+    }] } } };
+    expect(persistedStoryboardPanels(page)?.map((panel) => panel.number)).toEqual([1]);
+    expect(persistedStoryboardPanels({ artifacts: { storyboard: { panels: [{ ...page.artifacts.storyboard.panels[0], number: 2 }] } } })).toBeNull();
+    expect(persistedStoryboardPanels({ artifacts: { storyboard: { panels: [{ number: 1 }] } } })).toBeNull();
+  });
   it("exposes approval only through the API-provided approval flag", () => {
     const page = {
       approvalRequired: true,

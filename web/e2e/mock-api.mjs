@@ -7,6 +7,8 @@ let reviewEvidenceRecordCount = 0;
 let reviewEvidenceHistoryReadCount = 0;
 let reviewEvidenceRecord = null;
 let approvalArtifact = null;
+let panelGenerationCount = 0;
+let dropNextPanelResponse = false;
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 const nextState = {
@@ -38,7 +40,7 @@ function page() {
     },
     input: { page_number: 1 },
     artifacts: {
-      storyboard: pageState === "Draft" ? null : { persisted: true },
+      storyboard: pageState === "Draft" ? null : { panels: [{ number: 1, narrative_intent: "A character enters the room.", characters: ["hero"], continuity_bindings: ["coat"], action: "enter", background: "room", composition: "wide shot", constraints: ["no text"] }] },
       ...(pageState === "Generated" || pageState === "QualityChecked" || pageState === "Approved"
         ? { image: { artifact_kind: "logical_output_asset", output_asset_id: "asset:demo:001" } }
         : {}),
@@ -98,6 +100,8 @@ createServer(async (request, response) => {
     projectCreated = true;
     pageState = "Draft";
     reviewEvidenceRecordCount = 0;
+    panelGenerationCount = 0;
+    dropNextPanelResponse = false;
     reviewEvidenceHistoryReadCount = 0;
     reviewEvidenceRecord = null;
     approvalArtifact = null;
@@ -107,6 +111,18 @@ createServer(async (request, response) => {
   if (request.method === "GET" && pathname === "/projects/demo/pages/1") return json(response, 200, page());
   if (request.method === "GET" && pathname === "/test-only/review-evidence-count") {
     return json(response, 200, { count: reviewEvidenceRecordCount });
+  }
+  if (request.method === "GET" && pathname === "/test-only/panel-generation-count") return json(response, 200, { count: panelGenerationCount });
+  if (request.method === "POST" && pathname === "/test-only/drop-next-panel-response") { dropNextPanelResponse = true; return json(response, 200, { armed: true }); }
+  if (request.method === "POST" && pathname === "/projects/demo/pages/1/panel-aware-generation") {
+    const body = await requestBody(request);
+    if (pageState !== "PromptBuilt" || body.requestVersion !== 1 || body.rectangles?.length !== 1) {
+      return json(response, 422, { code: "invalid_input", message: "Request validation failed." });
+    }
+    panelGenerationCount += 1;
+    if (dropNextPanelResponse) { dropNextPanelResponse = false; response.destroy(); return; }
+    pageState = "Generated";
+    return json(response, 200, { status: "generated" }, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
   }
   if (request.method === "GET" && pathname === "/test-only/review-evidence-history-read-count") {
     return json(response, 200, { count: reviewEvidenceHistoryReadCount });

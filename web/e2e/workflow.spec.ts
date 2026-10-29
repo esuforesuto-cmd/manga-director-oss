@@ -107,3 +107,43 @@ test("shows human approval only for a QualityChecked page", async ({ page, reque
   expect(download.suggestedFilename()).toBe("page-1.png");
   expect(await reviewEvidenceCount()).toBe(1);
 });
+
+test("panel generation uses the same-origin proxy and does not change legacy Generate", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:4010/projects", { data: { id: "demo", title: "Demo manga" } });
+  for (const action of ["design", "review", "storyboard", "prompt"]) await request.post(`http://127.0.0.1:4010/projects/demo/pages/1/${action}`);
+  await page.goto("/projects/demo/pages/1");
+  await page.getByLabel("Authorized by").fill("editor:local");
+  await page.getByLabel("Checkpoint name").fill("checkpoint-local");
+  for (const [label, value] of [["left", "50000"], ["top", "40000"], ["right", "950000"], ["bottom", "960000"]]) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
+  const count = await request.get("http://127.0.0.1:4010/test-only/panel-generation-count");
+  expect((await count.json()).count).toBe(0);
+  const proxyResponse = page.waitForResponse((response) => response.url().includes("/panel-aware-generation"));
+  await page.getByRole("button", { name: "Generate panels" }).click();
+  expect((await proxyResponse).status()).toBe(200);
+  await expect.poll(async () => (await (await request.get("http://127.0.0.1:4010/test-only/panel-generation-count")).json()).count).toBe(1);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Generate panels" })).toHaveCount(0);
+});
+
+test("uncertain result remains blocked after reload and across tabs", async ({ page, context, request }) => {
+  await request.post("http://127.0.0.1:4010/projects", { data: { id: "demo", title: "Demo manga" } });
+  for (const action of ["design", "review", "storyboard", "prompt"]) await request.post(`http://127.0.0.1:4010/projects/demo/pages/1/${action}`);
+  await request.post("http://127.0.0.1:4010/test-only/drop-next-panel-response");
+  await page.goto("/projects/demo/pages/1");
+  await page.getByLabel("Authorized by").fill("editor:local");
+  await page.getByLabel("Checkpoint name").fill("checkpoint-local");
+  for (const [label, value] of [["left", "50000"], ["top", "40000"], ["right", "950000"], ["bottom", "960000"]]) await page.getByLabel(label, { exact: true }).fill(value);
+  await page.getByRole("button", { name: "Generate panels" }).click();
+  await expect(page.getByRole("status")).toContainText("result is uncertain");
+  await page.reload();
+  await expect(page.getByText(/Previous request marker found/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Generate panels" })).toBeDisabled();
+  const secondTab = await context.newPage();
+  await secondTab.goto("/projects/demo/pages/1");
+  await expect(secondTab.getByText(/Previous request marker found/)).toBeVisible();
+  await expect(secondTab.getByRole("button", { name: "Generate panels" })).toBeDisabled();
+  const count = await request.get("http://127.0.0.1:4010/test-only/panel-generation-count");
+  expect((await count.json()).count).toBe(1);
+});

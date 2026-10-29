@@ -25,6 +25,20 @@ describe("REST API client", () => {
     expect(fetchMock.mock.calls[0][1].body).toContain("page_design");
   });
 
+  it("sends panel activation only to the same-origin closed proxy DTO", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "generated" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = {
+      requestVersion: 1 as const, authorizedBy: "editor", checkpointName: "checkpoint-local",
+      layoutProfileId: "md-page-compositor-v1" as const, layoutProfileVersion: 1 as const,
+      rectangles: [{ left: 10, top: 20, right: 900, bottom: 950 }]
+    };
+    await api.pages.generatePanels("demo", 1, body);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/projects/demo/pages/1/panel-aware-generation");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
+  });
+
   it("maps a failed API response to a structured client error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Invalid state" }), { status: 409 })));
 
