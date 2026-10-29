@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 import inspect
 import os
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from multiprocessing import Event, get_context
 from pathlib import Path
 from typing import cast
@@ -199,6 +200,73 @@ def _hold_mutex(project_id: str, page_id: str, ready: Event) -> None:
     time.sleep(30)
 
 
+class _FakeWin32Function:
+    def __init__(self, callback: Callable[..., object]) -> None:
+        self.callback = callback
+        self.argtypes: object | None = None
+        self.restype: object | None = None
+
+    def __call__(self, *args: object) -> object:
+        return self.callback(*args)
+
+
+class _FakeKernel32:
+    def __init__(
+        self,
+        owner_thread: int,
+        claim_attempted: threading.Event,
+        claim_finished: threading.Event,
+        process_guard: threading.Lock,
+        *,
+        release_succeeds: bool = True,
+    ) -> None:
+        self._owner_thread = owner_thread
+        self._claim_attempted = claim_attempted
+        self._claim_finished = claim_finished
+        self._process_guard = process_guard
+        self._release_succeeds = release_succeeds
+        self._mutexes: dict[str, threading.Lock] = {}
+        self._handles: dict[int, threading.Lock] = {}
+        self.closed_handles: set[int] = set()
+        self._next_handle = 1
+        self.CreateMutexW = _FakeWin32Function(self._create_mutex)
+        self.WaitForSingleObject = _FakeWin32Function(self._wait_for_single_object)
+        self.ReleaseMutex = _FakeWin32Function(self._release_mutex)
+        self.CloseHandle = _FakeWin32Function(self._close_handle)
+
+    def _create_mutex(self, _security: object, _initial_owner: object, name: object) -> int:
+        identity = cast(str, name)
+        mutex = self._mutexes.setdefault(identity, threading.Lock())
+        handle = self._next_handle
+        self._next_handle += 1
+        self._handles[handle] = mutex
+        return handle
+
+    def _wait_for_single_object(self, raw_handle: object, timeout_ms: object) -> int:
+        handle = cast(int, getattr(raw_handle, "value", raw_handle))
+        mutex = self._handles[handle]
+        if not mutex.acquire(timeout=cast(int, timeout_ms) / 1_000):
+            return 0x102
+        return 0
+
+    def _release_mutex(self, raw_handle: object) -> bool:
+        handle = cast(int, getattr(raw_handle, "value", raw_handle))
+        if not self._release_succeeds:
+            return False
+        self._handles[handle].release()
+        if threading.get_ident() == self._owner_thread:
+            if self._process_guard.locked():
+                assert self._claim_attempted.wait(timeout=2)
+            else:
+                assert self._claim_finished.wait(timeout=2)
+        return True
+
+    def _close_handle(self, raw_handle: object) -> bool:
+        handle = cast(int, getattr(raw_handle, "value", raw_handle))
+        self.closed_handles.add(handle)
+        return True
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows named mutex contract")
 def test_windows_fence_is_hashed_bounded_idempotent_and_released_after_holder_termination() -> None:
     project_id = "project:mutex"
@@ -241,6 +309,99 @@ def test_windows_fence_is_hashed_bounded_idempotent_and_released_after_holder_te
     recovered = WindowsPageExecutionFence(project_id, "2")
     recovered.acquire()
     recovered.release()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named mutex contract")
+def test_windows_fence_release_hands_off_after_clearing_process_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claim_attempted = threading.Event()
+    claim_finished = threading.Event()
+    contender_acquired = threading.Event()
+    fake_kernel32 = _FakeKernel32(
+        threading.get_ident(),
+        claim_attempted,
+        claim_finished,
+        WindowsPageExecutionFence._process_guard,
+    )
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: fake_kernel32,
+    )
+    original_claim = WindowsPageExecutionFence._claim_process_ownership
+
+    def observe_contender_claim(fence: WindowsPageExecutionFence) -> bool:
+        if fence is contender:
+            claim_attempted.set()
+            result = original_claim(fence)
+            claim_finished.set()
+            return result
+        return original_claim(fence)
+
+    monkeypatch.setattr(
+        WindowsPageExecutionFence,
+        "_claim_process_ownership",
+        observe_contender_claim,
+    )
+
+    project_id = f"project:handoff-{time.monotonic_ns()}"
+    first = WindowsPageExecutionFence(project_id, "1")
+    contender = WindowsPageExecutionFence(project_id, "1")
+    first.acquire()
+    results: list[str] = []
+    failures: list[BaseException] = []
+
+    def acquire_and_release_contender() -> None:
+        try:
+            contender.acquire()
+            results.append("acquired")
+            contender_acquired.set()
+            contender.release()
+        except BaseException as exc:  # test harness only
+            failures.append(exc)
+
+    thread = threading.Thread(target=acquire_and_release_contender)
+    thread.start()
+    first.release()
+    assert contender_acquired.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert not failures
+    assert results == ["acquired"]
+    assert first._identity not in WindowsPageExecutionFence._process_owned
+
+    recovered = WindowsPageExecutionFence(project_id, "1")
+    recovered.acquire()
+    recovered.release()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named mutex contract")
+def test_windows_fence_release_failure_keeps_process_claim_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_kernel32 = _FakeKernel32(
+        threading.get_ident(),
+        threading.Event(),
+        threading.Event(),
+        WindowsPageExecutionFence._process_guard,
+        release_succeeds=False,
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_kernel32)
+    fence = WindowsPageExecutionFence(f"project:release-failure-{time.monotonic_ns()}", "1")
+    fence.acquire()
+    handle = fence._handle
+    assert handle is not None
+
+    with pytest.raises(PageExecutionFenceError, match="page_execution_fence_unavailable"):
+        fence.release()
+
+    assert fence._identity in WindowsPageExecutionFence._process_owned
+    assert not fence._owned
+    assert handle in fake_kernel32.closed_handles
+    with WindowsPageExecutionFence._process_guard:
+        WindowsPageExecutionFence._process_owned.discard(fence._identity)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux page fence fail-closed contract")
