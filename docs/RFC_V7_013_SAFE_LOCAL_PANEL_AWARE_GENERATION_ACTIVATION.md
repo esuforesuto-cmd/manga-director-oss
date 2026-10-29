@@ -1,10 +1,10 @@
 # RFC-V7-013: Safe Local Panel-Aware Generation Activation
 
-- Status: Slices 1 and 2 complete and merged; Slice 3 implementation is in progress under the separately approved 17-file local implementation scope
+- Status: Slices 1–3 complete and merged to `v7-dev`; local Web activation is implemented; end-to-end Page and live ComfyUI validation remain incomplete
 - Related roadmap item: V7-15 Safe Local Panel-Aware Generation Activation
 - Baseline: `v7-dev` commit `6b956bbad0bda801ae696786fa93a76b9e850fb2`
 - Prerequisite: V7-14 Complete and verified; remote/public deployment disabled
-- Public activation: dedicated LocalFile HTTP route implemented; Web and remote activation remain disabled
+- Activation: dedicated LocalFile HTTP route and separate local Web action implemented; remote deployment remains disabled
 - Authentication: unchanged and absent; loopback, CORS, and same-origin checks are not authentication
 - Live Provider/ComfyUI: not authorized
 
@@ -16,10 +16,10 @@ Page to the completed private V7-14
 a separate HTTP route; Slice 3 remains an explicit Web action. The route
 preserves the existing generic `/generate` action and its behavior unchanged.
 
-The private application entry point will take one authoritative revisioned
+The private application entry point takes one authoritative revisioned
 Page snapshot, explicit user attribution (`authorizedBy`), a verified
 `checkpointName`, and explicit panel rectangles for the supported V7-13 layout
-profile. It will use the real V7-04 checkpoint/configuration validation path,
+profile. It uses the real V7-04 checkpoint/configuration validation path,
 V7-14 conversion/operation binding, and V7-13 durable mode, attempt,
 composition, and application authorities. Browser input will never select an
 authorization ID, attempt ID, provider endpoint, workflow graph, or transport
@@ -356,11 +356,11 @@ separate explicit authorization.
 
 ## Authorization Gate
 
-Slice 1 is complete and verified. Slice 2 was implemented and merged under
-separate approval. Slice 3 implementation is authorized only within the exact
-17-file allowlist and validation plan supplied for the current task. Live ComfyUI, I02, `main`, release/publication,
-dependency/lockfile, schema/migration, or branch operations are not authorized
-by this RFC.
+Slices 1–3 are complete and merged under their separate approvals, as recorded
+in the V7-15 Closure Evidence below. The Slice 3 approval and its 17-file
+allowlist remain historical scope evidence; they do not authorize follow-up
+work. Live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
+schema/migration, or branch operations require separate authorization.
 
 ## Asset-ID Registration Amendment and Slice 1 Gate (2026-10-28)
 
@@ -450,3 +450,26 @@ and unapproved at that historical point. Remote/public deployment,
 live ComfyUI, I02, `main`, release/publication, dependency/lockfile,
 schema/migration, branch deletion, and package publication remain unperformed
 and unauthorized.
+
+## V7-15 Closure Evidence (2026-10-29)
+
+The three approved V7-15 slices are merged to `v7-dev`. The merge commits and
+post-merge CI evidence below were checked against the GitHub pull request and
+check-run records. Each merge has 10/10 successful CI jobs and 3/3 successful
+CodeQL jobs.
+
+| Slice | Pull request | Final PR head | Merge commit | PR-head checks | Post-merge checks |
+| --- | --- | --- | --- | --- | --- |
+| 1 — Local/Application activation | [#65](https://github.com/esuforesuto-cmd/manga-director-oss/pull/65) | `5948562b89bb9fef1823800dc6365578c14e48a4` | `aa89590498bc145e34db5cc77e1f83008df2e9d3` | 24/24 reported check runs passed | CI [#40650264745](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40650264745) 10/10; CodeQL [#40650264438](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40650264438) 3/3 |
+| 2 — HTTP route | [#68](https://github.com/esuforesuto-cmd/manga-director-oss/pull/68) | `2c0e22702c081420f768b64db352c0c95020aee9` | `d7e24d97c11071c42f9929ceac82d511fd29a28c` | 24/24 reported check runs passed | CI [#40751434201](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40751434201) 10/10; CodeQL [#40751433830](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40751433830) 3/3 |
+| 3 — local Web activation | [#69](https://github.com/esuforesuto-cmd/manga-director-oss/pull/69) | `158110f28ba57fad1e29a0058992a3d798b14db5` | `69eb001df0a0784ec08a5f89ee724513dab8b604` | 24/24 reported check runs passed | CI [#40818188469](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40818188469) 10/10; CodeQL [#40818189154](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40818189154) 3/3 |
+
+PR #69's final reviewed diff contained exactly 19 files. Its browser E2E
+exercises the local Web flow against a mock API, including reload and multi-tab
+duplicate protection. It does not establish complete one-Page production E2E
+through Planning, Generation Evidence, Visual QA, and Human Judgment/Approval.
+Production wiring to Visual QA, multiple-Page E2E, and live ComfyUI validation
+remain incomplete or unperformed. The generic `/generate` behavior, separate
+Human Approval boundary, public API, and frozen V7-13 DTOs and authorities are
+unchanged. No live Provider/ComfyUI, I02, remote deployment, release, or
+publication is authorized by this completion record.
