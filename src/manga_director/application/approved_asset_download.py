@@ -8,9 +8,14 @@ from typing import Any, cast
 
 from manga_director.domain.project import Page
 from manga_director.domain.state_machine import PageState
+from manga_director.production.next_generation_page_output_proof import (
+    PageOutputResolverPort,
+    ResolvedPageOutput,
+)
 from manga_director.production.next_generation_safe_local_generated_asset_presentation import (
     SafeLocalGeneratedAssetPresentationError,
     SafeLocalGeneratedAssetPresenter,
+    _SafeLocalGeneratedAssetProof,
 )
 from manga_director.repositories.local_file import LocalFileRepository
 
@@ -41,22 +46,33 @@ class ApprovedAssetDownloadService:
         self,
         repository: LocalFileRepository,
         presenter: SafeLocalGeneratedAssetPresenter,
+        page_output_proof: PageOutputResolverPort | None = None,
     ) -> None:
         self._repository = repository
         self._presenter = presenter
+        self._page_output_proof = page_output_proof
 
     def get(self, project_id: str, page_number: int) -> ApprovedAssetDownload:
-        proof = None
+        proof: ResolvedPageOutput | _SafeLocalGeneratedAssetProof | None = None
         try:
             page = self._repository._load_authoritative_page(project_id, page_number)
             output_asset_id = _approved_output_asset_id(page)
-            proof = self._presenter._prove(
-                project_id,
-                str(page.page_number),
-                output_asset_id,
-            )
+            if self._page_output_proof is not None:
+                proof = self._page_output_proof.resolve(
+                    project_id, str(page.page_number), output_asset_id
+                )
+            else:
+                proof = self._presenter._prove(
+                    project_id,
+                    str(page.page_number),
+                    output_asset_id,
+                )
             result = ApprovedAssetDownload(
-                image_bytes=proof._lease.image_bytes,
+                image_bytes=(
+                    proof.image_bytes
+                    if isinstance(proof, ResolvedPageOutput)
+                    else proof._lease.image_bytes
+                ),
                 _release=proof.release,
             )
             proof = None
@@ -152,6 +168,7 @@ def _is_transition(
 
 def build_approved_asset_download(
     repository: LocalFileRepository,
+    page_output_proof: PageOutputResolverPort | None = None,
 ) -> ApprovedAssetDownloadService:
     """Compose fixed private roots without opening or creating them."""
 
@@ -161,7 +178,7 @@ def build_approved_asset_download(
         evidence_root=normal_root / "evidence",
         asset_root=normal_root / "assets",
     )
-    return ApprovedAssetDownloadService(repository, presenter)
+    return ApprovedAssetDownloadService(repository, presenter, page_output_proof)
 
 
 def attach_approved_asset_download(

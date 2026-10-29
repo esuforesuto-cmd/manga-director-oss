@@ -388,6 +388,30 @@ def test_missing_authorities_create_nothing_on_read(tmp_path: Path) -> None:
     assert _manifest(repository._root) == before
 
 
+def test_shared_page_output_proof_bridge_preserves_legacy_download_bytes(
+    tmp_path: Path,
+) -> None:
+    from manga_director.workflow.localfile_page_output_proof_bridge import (
+        build_localfile_page_output_proof_bridge,
+    )
+
+    repository, _legacy_service, expected_png = _seed(tmp_path)
+    resolver, _quality_gate = build_localfile_page_output_proof_bridge(repository)
+    service = build_approved_asset_download(repository, resolver)
+    before = _manifest(repository._root)
+
+    result = service.get(_PROJECT, 1)
+    try:
+        assert result.image_bytes == expected_png
+        assert hashlib.sha256(result.image_bytes).hexdigest() == hashlib.sha256(
+            expected_png
+        ).hexdigest()
+    finally:
+        result.release()
+
+    assert _manifest(repository._root) == before
+
+
 class _DownloadService:
     def __init__(self, *, failure: bool = False) -> None:
         self.failure = failure

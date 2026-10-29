@@ -4,6 +4,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from manga_director.production.next_generation_deterministic_composite_asset_owner import (
     DeterministicCompositeAssetOwner,
 )
@@ -63,6 +65,25 @@ def test_strict_composite_registration_replay_and_readback(tmp_path: Path) -> No
     assert readback.outcome == "found"
     assert readback.asset == asset
     assert readback.image_bytes == image_bytes
+
+
+def test_read_verified_at_uses_existing_owner_without_creating_state(tmp_path: Path) -> None:
+    image_bytes = _png()
+    root = tmp_path / "owner"
+    assert DeterministicCompositeAssetOwner.read_verified_at(
+        root, "composite-1"
+    ).outcome == "missing"
+    assert not root.exists()
+
+    owner = DeterministicCompositeAssetOwner(root)
+    owner.register(_asset(image_bytes), image_bytes)
+    before = sorted(path.name for path in root.iterdir())
+    observed = DeterministicCompositeAssetOwner.read_verified_at(root, "composite-1")
+    after = sorted(path.name for path in root.iterdir())
+    assert observed.outcome == "found"
+    assert observed.asset == _asset(image_bytes)
+    assert observed.image_bytes == image_bytes
+    assert after == before
 
 
 def test_exact_inventory_observation_is_read_only_and_verifies_asset_bytes(
@@ -140,6 +161,10 @@ def test_wrong_hash_invalid_png_and_tampering_fail_closed(tmp_path: Path) -> Non
         ).fetchone()[0]
     (root / "deterministic-composite-assets" / storage_name).write_bytes(b"tampered")
     assert owner.read_verified("composite-1").outcome == "corrupt"
+    assert (
+        DeterministicCompositeAssetOwner.read_verified_at(root, "composite-1").outcome
+        == "corrupt"
+    )
 
 
 def test_replaced_asset_directory_fails_closed_without_writing(tmp_path: Path) -> None:
@@ -153,3 +178,51 @@ def test_replaced_asset_directory_fails_closed_without_writing(tmp_path: Path) -
 
     assert owner.register(_asset(image_bytes), image_bytes).outcome == "failed"
     assert tuple(moved.iterdir()) == ()
+
+
+@pytest.mark.parametrize("case", ["found", "missing", "schema", "exception"])
+def test_readonly_reader_closes_retained_connection_on_all_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    image_bytes = _png()
+    root = tmp_path / "owner"
+    owner = DeterministicCompositeAssetOwner(root)
+    assert owner.register(_asset(image_bytes), image_bytes).outcome == "registered"
+    real_connect = sqlite3.connect
+    if case == "schema":
+        connection = real_connect(root / "deterministic-composite-assets.sqlite3")
+        try:
+            connection.execute("PRAGMA user_version = 99")
+        finally:
+            connection.close()
+
+    class RetainedConnection(sqlite3.Connection):
+        close_count = 0
+
+        def close(self):
+            self.close_count += 1
+            super().close()
+
+        def execute(self, *args, **kwargs):
+            if case == "exception" and self.close_count == 0:
+                raise sqlite3.OperationalError("injected read failure")
+            return super().execute(*args, **kwargs)
+
+    retained: list[RetainedConnection] = []
+
+    def connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs, factory=RetainedConnection)
+        retained.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    result = DeterministicCompositeAssetOwner.read_verified_at(
+        root, "other-composite" if case == "missing" else "composite-1"
+    )
+    assert result.outcome == {
+        "found": "found", "missing": "missing", "schema": "corrupt", "exception": "corrupt"
+    }[case]
+    assert len(retained) == 1
+    assert retained[0].close_count == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        retained[0].execute("SELECT 1")

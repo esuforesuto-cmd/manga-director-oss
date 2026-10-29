@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from manga_director.agents import ApprovalAgent
 from manga_director.api import composition as api_composition
 from manga_director.api import workflow as workflow_api
 from manga_director.api.composition import build_workflow_app
@@ -44,6 +46,8 @@ from manga_director.workflow import (
     WorkflowCoordinator,
     WorkflowEngine,
 )
+from manga_director.workflow.contracts import AgentResult
+from manga_director.workflow.durable_execution import _DurableRoutingError
 from manga_director.workflow.localfile_page_generation_mode_admission import (
     LocalFilePageGenerationModeObservation,
 )
@@ -119,6 +123,17 @@ class _NeverRunAgent:
     def execute(self, context: object):
         del context
         raise AssertionError("only the proof-bound Generated agent may execute")
+
+
+class _SuccessAgent:
+    def __init__(self, state: PageState, payload: dict[str, object]) -> None:
+        self._state = state
+        self._payload = payload
+        self.calls = 0
+
+    def execute(self, _context: object) -> AgentResult:
+        self.calls += 1
+        return AgentResult(success=True, state=self._state, payload=self._payload)
 
 
 def test_dedicated_route_precedes_generic_action_and_fails_closed_without_localfile() -> None:
@@ -623,10 +638,11 @@ def test_http_mode_conflict_stops_before_fake_provider_preparation(
     assert transport.submit_count == 0
 
 
-def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
+@pytest.fixture
+def generated_panel_page(
     tmp_path: Path,
     monkeypatch,
-) -> None:
+) -> SimpleNamespace:
     page = Page(
         page_number=1,
         state=PageState.PROMPT_BUILT,
@@ -649,6 +665,22 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
         },
         dialogue={},
         prompt={"prompt_markdown": "Aki finds the archive key.", "tokens": 7},
+        metadata={
+            "previous_page": {
+                "page_id": "1",
+                "panel_id": "panel:before",
+                "props": ["prop:book"],
+                "location": "location:archive",
+                "time": "time:dawn",
+            },
+            "current_page": {
+                "page_id": "1",
+                "panel_id": "panel:current",
+                "props": ["prop:key"],
+                "location": "location:archive",
+                "time": "time:dawn",
+            },
+        },
     )
     repository = LocalFileRepository((tmp_path / "r").resolve())
     repository.save(
@@ -662,10 +694,15 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
     )
     initial_revision = repository._load_revisioned("demo").revision
     events = MemoryEventBus()
+    quality_agent = _SuccessAgent(PageState.QUALITY_CHECKED, {"passed": True})
     engine = WorkflowEngine(
         state_machine=StateMachine(),
         event_bus=events,
-        agents={PageState.GENERATED: _NeverRunAgent()},
+        agents={
+            PageState.GENERATED: _NeverRunAgent(),
+            PageState.QUALITY_CHECKED: quality_agent,
+            PageState.APPROVED: ApprovalAgent(),
+        },
     )
     loader = ProjectLoader(repository)
     coordinator = WorkflowCoordinator(
@@ -708,7 +745,9 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
         concurrent = list(
             pool.map(lambda _index: client.post(route, headers=_headers(), json=_body()), range(2))
         )
-    generated = next(response for response in concurrent if response.status_code == 200)
+    successful = [response for response in concurrent if response.status_code == 200]
+    assert successful, [(response.status_code, response.text) for response in concurrent]
+    generated = successful[0]
     duplicate = next(response for response in concurrent if response.status_code != 200)
     after_generation = repository._load_revisioned("demo")
     revision_after_generation = after_generation.revision
@@ -742,6 +781,160 @@ def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
         fingerprint_after_generation
     )
     assert after_replay.project.page(1).state == PageState.GENERATED
+    generated_asset = client.get("/projects/demo/pages/1/generated-asset")
+    assert generated_asset.status_code == 200
+
+    return SimpleNamespace(
+        client=client, repository=repository, transport=transport,
+        generated_asset=generated_asset, events=events, quality_agent=quality_agent,
+        engine=engine, coordinator=coordinator, loader=loader,
+    )
+
+
+def test_http_route_uses_slice1_fake_transport_and_generated_retry_is_read_only(
+    generated_panel_page: SimpleNamespace,
+) -> None:
+    assert generated_panel_page.transport.submit_count == 1
+    assert generated_panel_page.generated_asset.status_code == 200
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+def test_windows_panel_page_completes_quality_review_approval_and_download(
+    generated_panel_page: SimpleNamespace,
+) -> None:
+    client = generated_panel_page.client
+    repository = generated_panel_page.repository
+    transport = generated_panel_page.transport
+    generated_asset = generated_panel_page.generated_asset
+
+    quality = client.post("/projects/demo/pages/1/quality", json={})
+    assert quality.status_code == 200
+    assert quality.json()["state"] == "QualityChecked"
+    assert generated_panel_page.quality_agent.calls == 1
+
+    review_body = {
+        "reviewerId": "reviewer:local",
+        "reviewedAt": "2026-10-29T09:00:00Z",
+        "checklist": [
+            {
+                "criterion": criterion,
+                "outcome": "acceptable",
+                "rationale": "Reviewed the exact generated output.",
+            }
+            for criterion in (
+                "character_identity", "face", "costume", "props", "pose", "gaze",
+                "emotion", "screen_direction", "location", "time", "composition",
+                "panel_intent", "visible_corruption", "truncation", "watermark",
+                "unsafe_content", "unintended_text", "continuity_comparison",
+            )
+        ],
+        "overallJudgment": "acceptable_for_approval_consideration",
+        "rationale": "Complete local visual review.",
+    }
+    readiness = client.post(
+        "/projects/demo/pages/1/visual-review-readiness", json=review_body
+    )
+    assert readiness.status_code == 200
+    assert readiness.json()["ready"] is True
+    review = client.post(
+        "/projects/demo/pages/1/visual-review-evidence",
+        headers=_headers(),
+        json=review_body,
+    )
+    assert review.status_code == 200
+    quality_page = repository._load_authoritative_page("demo", 1)
+    assert quality_page.state is PageState.QUALITY_CHECKED
+    assert quality_page.approval is None
+    download_headers = {
+        "Referer": f"{LOCAL_WEB_ORIGINS[0]}/projects/demo/pages/1",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-User": "?1",
+    }
+    before_approval_download = client.get(
+        "/projects/demo/pages/1/approved-asset-download",
+        headers=download_headers,
+    )
+    assert before_approval_download.status_code == 404
+    history = client.get(
+        "/projects/demo/pages/1/visual-review-evidence",
+        headers=_headers(),
+    )
+    assert history.status_code == 200
+    review_id = history.json()["records"][0]["reviewId"]
+    approval = client.post(
+        "/projects/demo/pages/1/evidence-linked-approval",
+        headers=_headers(),
+        json={"approvedBy": "editor-17", "reviewId": review_id},
+    )
+    assert approval.status_code == 200
+    assert approval.json()["state"] == "Approved"
+
+    download = client.get(
+        "/projects/demo/pages/1/approved-asset-download",
+        headers=download_headers,
+    )
+    assert download.status_code == 200
+    assert download.content
+    assert generated_asset.content == download.content
+    assert len(hashlib.sha256(download.content).hexdigest()) == 64
+
+    from manga_director.workflow.localfile_page_output_proof_bridge import (
+        build_localfile_page_output_proof_bridge,
+    )
+
+    page_output_proof, _quality_gate = build_localfile_page_output_proof_bridge(repository)
+    approved_page = repository._load_authoritative_page("demo", 1)
+    output_asset_id = approved_page.image["output_asset_id"]
+    resolved = page_output_proof.resolve("demo", "1", output_asset_id)
+    assert resolved.image_bytes == download.content
+    assert resolved.proof.content_sha256 == hashlib.sha256(download.content).hexdigest()
+    resolved.release()
+
+    restarted_app = build_workflow_app(
+        workflow_engine=generated_panel_page.engine,
+        workflow_coordinator=generated_panel_page.coordinator,
+        project_loader=generated_panel_page.loader,
+        repository=repository,
+    )
+    restarted_download = TestClient(restarted_app).get(
+        "/projects/demo/pages/1/approved-asset-download",
+        headers=download_headers,
+    )
+    assert restarted_download.status_code == 200
+    assert restarted_download.content == download.content
+    assert transport.submit_count == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux durable Quality fail-closed contract")
+def test_linux_panel_page_quality_fails_closed_without_mutation(
+    generated_panel_page: SimpleNamespace,
+) -> None:
+    repository = generated_panel_page.repository
+    before = repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+
+    def snapshot() -> tuple[tuple[str, str | None], ...]:
+        return tuple(sorted(
+            (str(path.relative_to(repository._root)),
+             hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+            for path in repository._root.rglob("*")
+        ))
+
+    files_before = snapshot()
+    with pytest.raises(_DurableRoutingError, match="^PAGE_EXECUTION_FENCE_UNAVAILABLE$"):
+        generated_panel_page.client.post("/projects/demo/pages/1/quality", json={})
+
+    after = repository._load_revisioned("demo")
+    assert after.revision == before.revision
+    assert after.fingerprint == before.fingerprint
+    assert after.project == before.project
+    assert after.project.page(1).state is PageState.GENERATED
+    assert after.project.page(1).approval is None
+    assert snapshot() == files_before
+    assert tuple(generated_panel_page.events.published) == events_before
+    assert generated_panel_page.quality_agent.calls == 0
+    assert generated_panel_page.transport.submit_count == 1
 
 
 def test_generic_generate_still_uses_the_existing_action_dispatcher(monkeypatch) -> None:

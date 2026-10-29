@@ -1841,6 +1841,112 @@ API contracts, and frozen V7-13 specifications remain unchanged.
 
 ## Epic 1 sequencing
 
+## V7-16 — Panel-Aware Page Output Proof Bridge
+
+### Planning status
+
+Current V7-16 status (checked 2026-10-30 JST): implemented and verified at
+`3d655888565e86878f6b725299e41d9553a66f13`, proposed in
+[PR #71](https://github.com/esuforesuto-cmd/manga-director-oss/pull/71) against
+`v7-dev` at `7aec88910f427aaf577567988fc9375d9e5e1cca`. Its parent is
+`ef641ba6c00c333da64a210314830c0a13879bb0`; the two commits change 11 files.
+The branch is committed and pushed; the PR remains open and unmerged.
+
+[Push CI 40879933045](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40879933045)
+and [PR CI 40889434951](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889434951)
+each passed **10/10 jobs** at that head.
+[PR CodeQL 40889430435](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40889430435)
+passed **3/3** analyses (Actions, Python, JavaScript/TypeScript).
+PR CI used synthetic merge `e20a7c58d09f3026f713b5ba0e6cfad648f487b6`
+with no file differences from the head; CodeQL used the head directly.
+Measured PR results: native Linux Python 3.11 and 3.12 each passed
+**3211 tests with 324 skipped**; native Windows Python 3.11 and 3.12 each
+passed **3513 tests with 22 skipped**. Linux/Windows mypy passed with
+**320/326 source files and zero errors**. Ruff, frontend lint/typecheck/unit
+tests/build, existing browser real-delivery E2E, pip-audit/npm audit/gitleaks,
+package, and Windows LocalFile security (**12 tests**) passed.
+
+The corrected local source/test snapshot passed Windows full pytest
+**3509 tests with 26 skipped**, focused regression **122 with 7 skipped**,
+isolated Linux-target/Windows-target mypy, Ruff and `git diff --check`.
+Local native Linux was unavailable; the hosted Linux runs above supply that
+separate evidence. Skips are not passes. Common fake panel generation keeps
+the initial two parallel POST success requirement and Provider at-most-once;
+Windows covers the full fake-provider review/approval/download chain, while
+Linux preserves the existing Quality fail-closed fence without mutation.
+
+Existing separate implementation/fix reviews reported **P0/P1/P2 = 0/0/0**.
+The documentation-freshness P2 is addressed in this documentation update.
+Hosted results above apply to the implementation head and do not establish
+validation of a later documentation commit. Merge and
+post-merge checks remain pending. Default Planning input completeness, live
+ComfyUI and full live production Page E2E remain incomplete; I02 and
+publication are outside this work. Detailed evidence and retained failure
+history are in RFC-V7-014 below.
+
+### Historical local stabilization snapshot (before CI fixes)
+
+The following records the earlier state only; its unavailable checks and
+uncommitted-branch statement are superseded by the current status above.
+
+Implementation and local stabilization are verified under the separately
+approved scope; overall validation is **WARN** because type/Web/audit tools
+are unavailable in the existing environment. The
+design and validation evidence are recorded in
+[RFC-V7-014: Panel-Aware Page Output Proof Bridge](RFC_V7_014_PANEL_AWARE_PAGE_OUTPUT_PROOF_BRIDGE.md).
+
+The final 2026-10-29 Python 3.12.14 run used new short isolated basetemp paths:
+focused Proof Bridge plus the full R26 finalization module passed **127 tests
+with 1 skipped**; full pytest passed **3508 tests with 25 skipped**. The
+initial two concurrent POST condition and fake Provider at-most-once
+assertions remain unchanged and passed in both runs. The composite reader
+now explicitly closes its SQLite connection, with four exit-path regression
+cases. Independent static review reports **P0=0 / P1=0 / P2=0**. Ruff for all
+nine changed Python files and `git diff --check` passed.
+
+Earlier failed runs remain recorded in RFC-V7-014. The old R26 DB path was
+253 characters (261 including `-journal`); native SQLite reproduced its
+initialization failure at that length and passed at the new 243/251 lengths.
+This supports a local path-length cause for R26. It does not prove that all
+earlier concurrent HTTP failures had the same cause. Mypy cannot import the
+cached `librt.base64`; Web dependencies and audit tools are missing. These
+checks are pending, not passed. This branch remains uncommitted; live Page
+production E2E, default Planning input completeness, publication, and merge
+are not completion claims of this item.
+
+### Objective
+
+Connect LocalFile quality and approved-asset download to the existing
+read-only `LocalPageOutputProofResolver`, so either the exact legacy generated
+asset or the exact applied deterministic composite can be proved. Keep the
+resolver, approval action, StateMachine, HTTP contract, persisted schema, and
+Provider boundary unchanged.
+
+### Acceptance criteria
+
+- Exactly one valid legacy or deterministic-composition proof is accepted;
+  both-found, both-missing, corrupt, prepared, stale, ambiguous, orphaned, or
+  mismatched state fails closed.
+- Quality and approved download reuse the exact resolver output bytes and
+  release capability.
+- Read-only observations do not create or initialize owners, SQLite state,
+  sidecars, directories, or repair evidence.
+- Existing approved-download proof and release behavior, LocalFile Windows
+  security, frozen V7-13 inputs, v6 compatibility, and public APIs remain
+  unchanged.
+- The real FastAPI test uses a fake panel transport and exercises persisted
+  output through quality, visual readiness, review evidence, linked approval,
+  download, reload, reconstruction, retry, and concurrency without additional
+  submission.
+- Required local quality checks, exact allowlist, and independent review
+  report no P0/P1 issue before any later merge consideration.
+
+This work does not establish full planning-to-approval completion for default
+Storyboard inputs; missing explicit panel intent, identity, continuity,
+concrete prompt fields, or supported layout remains a separate upstream input
+gap. No live Provider, ComfyUI, I02, v6, schema, dependency, `main`, release,
+or publication work is included.
+
 | Issue | State | Dependency | Completion evidence |
 | --- | --- | --- | --- |
 | V7-01 Workflow HTTP Adapter | Complete | Accepted RFC-V7-001 and explicit v7 implementation authorization | PR #17 merged into `v7-dev` at `097a80d`; required CI passed; P0/P1 = 0; `main` unchanged |
