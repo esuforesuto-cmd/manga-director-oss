@@ -8,6 +8,7 @@ import os
 import sqlite3
 import stat
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -219,7 +220,10 @@ class DeterministicCompositeAssetOwner:
             if asset.asset_id != resolved:
                 return DeterministicCompositeReadResult(resolved, "corrupt")
             path = self._safe_asset_path(storage_name)
-            data = path.read_bytes()
+            with path.open("rb") as stream:
+                if os.fstat(stream.fileno()).st_size > _MAX_BYTES:
+                    return DeterministicCompositeReadResult(resolved, "corrupt")
+                data = stream.read(_MAX_BYTES + 1)
             if len(data) > _MAX_BYTES or hashlib.sha256(data).hexdigest() != asset.content_sha256:
                 return DeterministicCompositeReadResult(resolved, "corrupt")
             decoded = decode_png(data)
@@ -235,6 +239,91 @@ class DeterministicCompositeAssetOwner:
         finally:
             if connection is not None:
                 connection.close()
+
+    @classmethod
+    def read_verified_at(  # noqa: C901 - one closed read-only proof.
+        cls, owner_root: Path, asset_id: str
+    ) -> DeterministicCompositeReadResult:
+        """Read one composite through a query-only connection without initializing its owner."""
+
+        try:
+            resolved = logical_reference(asset_id, "composite asset")
+        except ValueError:
+            return DeterministicCompositeReadResult("", "corrupt")
+        root = owner_root
+        asset_directory = root / _ASSET_DIRECTORY
+        database = root / _DATABASE_FILENAME
+        status = _readonly_composite_owner_status(root, asset_directory, database)
+        if status == "missing":
+            return DeterministicCompositeReadResult(resolved, "missing")
+        if status != "found":
+            return DeterministicCompositeReadResult(resolved, "corrupt")
+        try:
+            if any(
+                _readonly_path_kind(Path(f"{database}{suffix}")) != "missing"
+                for suffix in ("-wal", "-shm", "-journal")
+            ):
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            with database.open("rb") as stream:
+                header = stream.read(20)
+            if (
+                header[:16] != b"SQLite format 3\x00"
+                or header[18:20] != b"\x01\x01"
+            ):
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            uri = f"{database.as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                if (
+                    connection.execute("PRAGMA query_only").fetchall() != [(1,)]
+                    or int(connection.execute("PRAGMA user_version").fetchone()[0])
+                    != _SCHEMA_VERSION
+                    or not _composite_schema_is_exact(connection)
+                    or str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                    != "delete"
+                ):
+                    return DeterministicCompositeReadResult(resolved, "corrupt")
+                rows = connection.execute(
+                    "SELECT asset_id, storage_name, producer_kind, payload_json, payload_digest, "
+                    "content_sha256, composition_attempt_id FROM composite_assets WHERE asset_id = ?",
+                    (resolved,),
+                ).fetchall()
+            if not rows:
+                return DeterministicCompositeReadResult(resolved, "missing")
+            if len(rows) != 1:
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            row = rows[0]
+            verified = _verified_row(row[:6], row[6])
+            if verified is None:
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            asset, storage_name = verified
+            if asset.asset_id != resolved:
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            path = asset_directory / storage_name
+            if (
+                not _safe_storage_name(storage_name)
+                or path.resolve(strict=False).parent != asset_directory.resolve(strict=True)
+                or not path.is_file()
+                or path.is_symlink()
+                or _is_reparse(path)
+            ):
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            with path.open("rb") as stream:
+                if os.fstat(stream.fileno()).st_size > _MAX_BYTES:
+                    return DeterministicCompositeReadResult(resolved, "corrupt")
+                data = stream.read(_MAX_BYTES + 1)
+            if len(data) > _MAX_BYTES or hashlib.sha256(data).hexdigest() != asset.content_sha256:
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            decoded = decode_png(data)
+            if (decoded.width, decoded.height, decoded.channels) != (
+                asset.width,
+                asset.height,
+                3,
+            ):
+                return DeterministicCompositeReadResult(resolved, "corrupt")
+            return DeterministicCompositeReadResult(resolved, "found", asset, data)
+        except Exception:
+            return DeterministicCompositeReadResult(resolved, "corrupt")
 
     def observe_attempts(  # noqa: C901 - one closed integrity inventory.
         self, composition_attempt_ids: tuple[str, ...]
@@ -591,7 +680,13 @@ def _file_digest(path: Path) -> str | None:
     try:
         if not path.is_file() or path.is_symlink() or _is_reparse(path):
             return None
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        with path.open("rb") as stream:
+            if os.fstat(stream.fileno()).st_size > _MAX_BYTES:
+                return None
+            data = stream.read(_MAX_BYTES + 1)
+        if len(data) > _MAX_BYTES:
+            return None
+        return hashlib.sha256(data).hexdigest()
     except OSError:
         return None
 

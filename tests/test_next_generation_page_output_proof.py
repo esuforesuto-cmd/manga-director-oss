@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -116,15 +117,18 @@ def test_composition_proof_rejects_incomplete_or_mixed_manifest() -> None:
 
 class _ProviderLookup:
     def __init__(
-        self, outcome: Literal["found", "missing", "invalid"] = "missing"
+        self,
+        outcome: Literal["found", "missing", "invalid"] = "missing",
+        proof: object | None = None,
     ) -> None:
         self._outcome = outcome
+        self._proof = proof
 
     def lookup(
         self, project_id: str, page_id: str, asset_id: str
     ) -> ProviderProofLookupResult:
         del project_id, page_id, asset_id
-        return ProviderProofLookupResult(self._outcome)
+        return ProviderProofLookupResult(self._outcome, self._proof)  # type: ignore[arg-type]
 
 
 class _CompositeOwner:
@@ -276,6 +280,42 @@ def test_local_resolver_requires_applied_composition_binding(tmp_path: Path) -> 
         ).outcome
         == "invalid"
     )
+    with pytest.raises(PageOutputProofUnavailable):
+        orphan_binding.resolve("project-1", "page-1", "composite-1")
+
+    class LegacyProof:
+        def __init__(self) -> None:
+            self.releases = 0
+            self.binding = SimpleNamespace(
+                project_id="project-1",
+                page_id="page-1",
+                target_page_reference="page.project-1.page-1",
+                attempt_id="provider-attempt-1",
+                output_asset_id="composite-1",
+                provider_reference="provider:local",
+            )
+            self.evidence = SimpleNamespace(
+                provenance_reference="provider-provenance-1",
+                output=SimpleNamespace(
+                    output_content_hash=SimpleNamespace(value=asset.content_sha256)
+                ),
+            )
+            self._lease = SimpleNamespace(image_bytes=b"legacy-png")
+
+        def release(self) -> None:
+            self.releases += 1
+
+    competing_proof = LegacyProof()
+    competing_candidates = LocalPageOutputProofResolver(
+        provider_proof_lookup=_ProviderLookup("found", competing_proof),
+        composition_authority=_CompositionAuthority(attempt, evidence),
+        composite_owner=_CompositeOwner(asset, b"composite"),
+        composition_application_ledger=ledger,
+        composition_application_binding_resolver=_ApplicationBindingLookup(binding),
+    )
+    with pytest.raises(PageOutputProofUnavailable):
+        competing_candidates.resolve("project-1", "page-1", "composite-1")
+    assert competing_proof.releases == 1
 
 
 def test_real_slice2_sidecars_resolve_one_applied_composite(tmp_path: Path) -> None:
