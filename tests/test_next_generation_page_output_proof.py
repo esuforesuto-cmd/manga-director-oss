@@ -8,6 +8,7 @@ from typing import Literal
 import pytest
 from pydantic import ValidationError
 
+from manga_director.domain.state_machine import PageState
 from manga_director.production.next_generation_deterministic_composite_asset_owner import (
     DeterministicCompositeAssetOwner,
     DeterministicCompositeReadResult,
@@ -39,6 +40,9 @@ from manga_director.production.next_generation_page_output_proof import (
     ProviderProofLookupResult,
     build_local_page_output_proof_resolver,
     composition_evidence_sha256,
+)
+from manga_director.workflow.localfile_page_output_proof_bridge import (
+    _PageOutputQualityGate,
 )
 
 
@@ -113,6 +117,143 @@ def test_composition_proof_rejects_incomplete_or_mixed_manifest() -> None:
         _composition_proof(ordered_sources=())
     with pytest.raises(ValidationError):
         _composition_proof(ordered_sources=(_source(plan_id="other-plan"),))
+    with pytest.raises(ValidationError):
+        _composition_proof(
+            ordered_sources=(
+                _source(panel_id="panel-2", panel_order=2),
+                _source(panel_id="panel-1", panel_order=1),
+            )
+        )
+
+
+def test_composition_proof_equality_covers_ordered_source_membership_order_and_hash() -> None:
+    first = _source()
+    second = _source(
+        panel_id="panel-2",
+        panel_order=2,
+        request_id="request-2",
+        request_fingerprint="9" * 64,
+        attempt_id="attempt-2",
+        evidence_id="evidence-2",
+        asset_id="panel-asset-2",
+        content_sha256="8" * 64,
+    )
+    proof = _composition_proof(ordered_sources=(first, second))
+
+    missing_source = proof.model_copy(update={"ordered_sources": (second,)})
+    changed_order = proof.model_copy(update={"ordered_sources": (second, first)})
+    changed_hash_source = first.model_copy(update={"content_sha256": "7" * 64})
+    changed_hash = proof.model_copy(
+        update={"ordered_sources": (changed_hash_source, second)}
+    )
+
+    assert proof != missing_source
+    assert proof != changed_order
+    assert proof != changed_hash
+
+
+def test_quality_gate_checks_only_deterministic_composition_precondition() -> None:
+    composition = _composition_proof()
+    output = SimpleNamespace(proof=composition, released=0)
+    output.release = lambda: setattr(output, "released", output.released + 1)
+
+    class Resolver:
+        def resolve(self, *_args: str) -> object:
+            return output
+
+    class PreQualityGate:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, object]] = []
+
+        def require_pre_quality_evidence(
+            self,
+            project_id: str,
+            page_id: str,
+            proof: DeterministicCompositionPageOutputProof,
+        ) -> str | None:
+            self.calls.append((project_id, page_id, proof))
+            return None
+
+    pre_quality_gate = PreQualityGate()
+    gate = _PageOutputQualityGate(
+        Resolver(), pre_quality_gate  # type: ignore[arg-type]
+    )
+    context = SimpleNamespace(
+        state=PageState.GENERATED,
+        page={"project_id": "project-1", "page_id": "page-1"},
+        artifacts={
+            "Generated": {
+                "artifact_kind": "logical_output_asset",
+                "output_asset_id": composition.asset_id,
+            }
+        },
+    )
+
+    assert gate.require_applied(context) is None
+    assert pre_quality_gate.calls == [("project-1", "page-1", composition)]
+    assert output.released == 1
+
+
+def test_quality_gate_fails_closed_without_composition_precondition() -> None:
+    composition = _composition_proof()
+
+    class Resolver:
+        def resolve(self, *_args: str) -> object:
+            output = SimpleNamespace(proof=composition)
+            output.release = lambda: None
+            return output
+
+    gate = _PageOutputQualityGate(Resolver())  # type: ignore[arg-type]
+    context = SimpleNamespace(
+        state=PageState.GENERATED,
+        page={"project_id": "project-1", "page_id": "page-1"},
+        artifacts={
+            "Generated": {
+                "artifact_kind": "logical_output_asset",
+                "output_asset_id": composition.asset_id,
+            }
+        },
+    )
+
+    assert gate.require_applied(context) == "PANEL_VISUAL_QA_EVIDENCE_REQUIRED"
+
+
+def test_quality_gate_preserves_legacy_provider_proof_behavior() -> None:
+    provider = ProviderGenerationPageOutputProof(
+        project_id="project-1",
+        page_id="page-1",
+        target_page_reference="target:project-1:page-1",
+        attempt_id="attempt:v7-04:one",
+        provenance_reference="provenance:v7-04:one",
+        asset_id="asset:v7-04:one",
+        content_sha256=hashlib.sha256(b"png").hexdigest(),
+        provider_reference="provider:comfyui",
+    )
+    output = SimpleNamespace(proof=provider, released=0)
+    output.release = lambda: setattr(output, "released", output.released + 1)
+
+    class Resolver:
+        def resolve(self, *_args: str) -> object:
+            return output
+
+    class PreQualityGate:
+        def require_pre_quality_evidence(self, *_args: object) -> str | None:
+            raise AssertionError("legacy proof must not use panel review gate")
+
+    gate = _PageOutputQualityGate(Resolver(), PreQualityGate())  # type: ignore[arg-type]
+    context = SimpleNamespace(
+        state=PageState.GENERATED,
+        page={"project_id": "project-1", "page_id": "page-1"},
+        artifacts={
+            "Generated": {
+                "artifact_kind": "logical_output_asset",
+                "output_asset_id": provider.asset_id,
+            }
+        },
+    )
+
+    assert gate.require_applied(context) is None
+    assert output.released == 1
 
 
 class _ProviderLookup:

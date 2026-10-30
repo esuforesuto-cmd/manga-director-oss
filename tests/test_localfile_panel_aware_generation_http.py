@@ -86,6 +86,33 @@ def _body() -> dict[str, object]:
     }
 
 
+def _human_visual_review_body(
+    reviewed_at: str,
+    *,
+    outcome: str = "acceptable",
+    overall_judgment: str = "acceptable_for_approval_consideration",
+) -> dict[str, object]:
+    return {
+        "reviewerId": "reviewer:local",
+        "reviewedAt": reviewed_at,
+        "checklist": [
+            {
+                "criterion": criterion,
+                "outcome": outcome,
+                "rationale": "Reviewed the exact generated output.",
+            }
+            for criterion in (
+                "character_identity", "face", "costume", "props", "pose", "gaze",
+                "emotion", "screen_direction", "location", "time", "composition",
+                "panel_intent", "visible_corruption", "truncation", "watermark",
+                "unsafe_content", "unintended_text", "continuity_comparison",
+            )
+        ],
+        "overallJudgment": overall_judgment,
+        "rationale": "Complete local visual review.",
+    }
+
+
 class _FakePanelTransport:
     def __init__(self, authority_root: Path, image_bytes: bytes) -> None:
         self.authority_root = authority_root
@@ -803,40 +830,72 @@ def test_windows_panel_page_completes_quality_review_approval_and_download(
     generated_panel_page: SimpleNamespace,
 ) -> None:
     client = generated_panel_page.client
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=generated_panel_page.repository,
+        ),
+        raise_server_exceptions=False,
+    )
     repository = generated_panel_page.repository
     transport = generated_panel_page.transport
     generated_asset = generated_panel_page.generated_asset
 
-    quality = client.post("/projects/demo/pages/1/quality", json={})
+    before_missing_review = generated_panel_page.repository._load_revisioned("demo")
+    missing_review_quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+    after_missing_review = generated_panel_page.repository._load_revisioned("demo")
+    assert missing_review_quality.status_code == 500
+    assert missing_review_quality.json()["code"] == "internal_error"
+    assert generated_panel_page.quality_agent.calls == 0
+    assert after_missing_review.revision == before_missing_review.revision
+    assert after_missing_review.fingerprint == before_missing_review.fingerprint
+
+    pre_quality_review_body = _human_visual_review_body("2026-10-29T09:00:00Z")
+    pre_quality_readiness = client.post(
+        "/projects/demo/pages/1/visual-review-readiness", json=pre_quality_review_body
+    )
+    assert pre_quality_readiness.status_code == 200
+    assert pre_quality_readiness.json()["status"] == "needs_review"
+    assert pre_quality_readiness.json()["ready"] is False
+    pre_quality_evidence = client.post(
+        "/projects/demo/pages/1/visual-review-evidence",
+        headers=_headers(),
+        json=pre_quality_review_body,
+    )
+    assert pre_quality_evidence.status_code == 200
+    assert pre_quality_evidence.json()["status"] == "needs_review"
+    assert pre_quality_evidence.json()["ready"] is False
+    pre_quality_history = client.get(
+        "/projects/demo/pages/1/visual-review-evidence", headers=_headers()
+    )
+    assert pre_quality_history.status_code == 200
+    pre_quality_record = next(
+        item
+        for item in pre_quality_history.json()["records"]
+        if item["pageState"] == "Generated"
+    )
+
+    restarted_app = build_workflow_app(
+        workflow_engine=generated_panel_page.engine,
+        workflow_coordinator=generated_panel_page.coordinator,
+        project_loader=generated_panel_page.loader,
+        repository=repository,
+    )
+    restarted_client = TestClient(restarted_app, raise_server_exceptions=False)
+    quality = restarted_client.post("/projects/demo/pages/1/quality", json={})
     assert quality.status_code == 200
     assert quality.json()["state"] == "QualityChecked"
     assert generated_panel_page.quality_agent.calls == 1
 
-    review_body = {
-        "reviewerId": "reviewer:local",
-        "reviewedAt": "2026-10-29T09:00:00Z",
-        "checklist": [
-            {
-                "criterion": criterion,
-                "outcome": "acceptable",
-                "rationale": "Reviewed the exact generated output.",
-            }
-            for criterion in (
-                "character_identity", "face", "costume", "props", "pose", "gaze",
-                "emotion", "screen_direction", "location", "time", "composition",
-                "panel_intent", "visible_corruption", "truncation", "watermark",
-                "unsafe_content", "unintended_text", "continuity_comparison",
-            )
-        ],
-        "overallJudgment": "acceptable_for_approval_consideration",
-        "rationale": "Complete local visual review.",
-    }
-    readiness = client.post(
+    review_body = _human_visual_review_body("2026-10-29T09:01:00Z")
+    readiness = restarted_client.post(
         "/projects/demo/pages/1/visual-review-readiness", json=review_body
     )
     assert readiness.status_code == 200
     assert readiness.json()["ready"] is True
-    review = client.post(
+    review = restarted_client.post(
         "/projects/demo/pages/1/visual-review-evidence",
         headers=_headers(),
         json=review_body,
@@ -851,26 +910,38 @@ def test_windows_panel_page_completes_quality_review_approval_and_download(
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-User": "?1",
     }
-    before_approval_download = client.get(
+    before_approval_download = restarted_client.get(
         "/projects/demo/pages/1/approved-asset-download",
         headers=download_headers,
     )
     assert before_approval_download.status_code == 404
-    history = client.get(
+    history = restarted_client.get(
         "/projects/demo/pages/1/visual-review-evidence",
         headers=_headers(),
     )
     assert history.status_code == 200
-    review_id = history.json()["records"][0]["reviewId"]
-    approval = client.post(
+    quality_checked_record = next(
+        item
+        for item in history.json()["records"]
+        if item["pageState"] == "QualityChecked" and item["ready"]
+    )
+    assert quality_checked_record["reviewId"] != pre_quality_record["reviewId"]
+    generated_review_approval = restarted_client.post(
         "/projects/demo/pages/1/evidence-linked-approval",
         headers=_headers(),
-        json={"approvedBy": "editor-17", "reviewId": review_id},
+        json={"approvedBy": "editor-17", "reviewId": pre_quality_record["reviewId"]},
+    )
+    assert generated_review_approval.status_code != 200
+    assert repository._load_authoritative_page("demo", 1).state is PageState.QUALITY_CHECKED
+    approval = restarted_client.post(
+        "/projects/demo/pages/1/evidence-linked-approval",
+        headers=_headers(),
+        json={"approvedBy": "editor-17", "reviewId": quality_checked_record["reviewId"]},
     )
     assert approval.status_code == 200
     assert approval.json()["state"] == "Approved"
 
-    download = client.get(
+    download = restarted_client.get(
         "/projects/demo/pages/1/approved-asset-download",
         headers=download_headers,
     )
@@ -891,12 +962,6 @@ def test_windows_panel_page_completes_quality_review_approval_and_download(
     assert resolved.proof.content_sha256 == hashlib.sha256(download.content).hexdigest()
     resolved.release()
 
-    restarted_app = build_workflow_app(
-        workflow_engine=generated_panel_page.engine,
-        workflow_coordinator=generated_panel_page.coordinator,
-        project_loader=generated_panel_page.loader,
-        repository=repository,
-    )
     restarted_download = TestClient(restarted_app).get(
         "/projects/demo/pages/1/approved-asset-download",
         headers=download_headers,
@@ -904,6 +969,359 @@ def test_windows_panel_page_completes_quality_review_approval_and_download(
     assert restarted_download.status_code == 200
     assert restarted_download.content == download.content
     assert transport.submit_count == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+@pytest.mark.parametrize(
+    ("review_count", "outcome", "overall_judgment"),
+    [
+        (1, "blocked", "blocked"),
+        (2, "acceptable", "acceptable_for_approval_consideration"),
+    ],
+)
+def test_windows_panel_quality_rejects_blocked_or_ambiguous_review_evidence(
+    generated_panel_page: SimpleNamespace,
+    review_count: int,
+    outcome: str,
+    overall_judgment: str,
+) -> None:
+    client = generated_panel_page.client
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=generated_panel_page.repository,
+        ),
+        raise_server_exceptions=False,
+    )
+    records_to_create = 1 if review_count == 2 else review_count
+    for index in range(records_to_create):
+        review_body = _human_visual_review_body(
+            f"2026-10-29T09:0{index}:00Z",
+            outcome=outcome,
+            overall_judgment=overall_judgment,
+        )
+        recorded = client.post(
+            "/projects/demo/pages/1/visual-review-evidence",
+            headers=_headers(),
+            json=review_body,
+        )
+        assert recorded.status_code == 200
+
+    if review_count == 2:
+        from manga_director.application.human_visual_review_evidence import (
+            build_human_visual_review_evidence,
+        )
+        from manga_director.application.human_visual_review_readiness import (
+            build_human_visual_review_readiness,
+        )
+        from manga_director.workflow.localfile_page_output_proof_bridge import (
+            build_localfile_page_output_proof_bridge,
+        )
+
+        page_output_proof, _quality_gate = build_localfile_page_output_proof_bridge(
+            generated_panel_page.repository
+        )
+        readiness = build_human_visual_review_readiness(
+            generated_panel_page.repository, page_output_resolver=page_output_proof
+        )
+        evidence = build_human_visual_review_evidence(
+            generated_panel_page.repository, readiness
+        )
+        stored_records = evidence._owner.read_page_history("demo", "1", 1)
+        mismatched_qa_reference = stored_records[0].model_copy(
+            update={
+                "review_id": "review:qa-reference-mismatch",
+                "qa_report_reference": "qa:another-report",
+            }
+        )
+        evidence._owner.persist(mismatched_qa_reference)
+
+    before = generated_panel_page.repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+    quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+    after = generated_panel_page.repository._load_revisioned("demo")
+
+    assert quality.status_code == 500
+    assert quality.json()["code"] == "internal_error"
+    assert generated_panel_page.quality_agent.calls == 0
+    assert after.revision == before.revision
+    assert after.fingerprint == before.fingerprint
+    assert tuple(generated_panel_page.events.published) == events_before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+def test_windows_panel_quality_rejects_corrupt_review_store_without_mutation(
+    generated_panel_page: SimpleNamespace,
+) -> None:
+    client = generated_panel_page.client
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=generated_panel_page.repository,
+        ),
+        raise_server_exceptions=False,
+    )
+    recorded = client.post(
+        "/projects/demo/pages/1/visual-review-evidence",
+        headers=_headers(),
+        json=_human_visual_review_body("2026-10-29T09:00:00Z"),
+    )
+    assert recorded.status_code == 200
+    owner_root = generated_panel_page.repository._next_generation_normal_execution_owner_root()
+    database = owner_root / "review-evidence" / "human-visual-review-evidence.sqlite3"
+    database.write_bytes(b"corrupt review evidence store")
+
+    before = generated_panel_page.repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+    quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+    after = generated_panel_page.repository._load_revisioned("demo")
+
+    assert quality.status_code == 500
+    assert quality.json()["code"] == "internal_error"
+    assert generated_panel_page.quality_agent.calls == 0
+    assert after.revision == before.revision
+    assert after.fingerprint == before.fingerprint
+    assert tuple(generated_panel_page.events.published) == events_before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+def test_windows_panel_quality_rejects_stale_attempt_review_evidence(
+    generated_panel_page: SimpleNamespace,
+) -> None:
+    from manga_director.application.human_visual_review_evidence import (
+        _payload,
+        build_human_visual_review_evidence,
+    )
+    from manga_director.application.human_visual_review_readiness import (
+        ReviewChecklistDecision,
+        build_human_visual_review_readiness,
+    )
+    from manga_director.workflow.localfile_page_output_proof_bridge import (
+        build_localfile_page_output_proof_bridge,
+    )
+
+    repository = generated_panel_page.repository
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=repository,
+        ),
+        raise_server_exceptions=False,
+    )
+    page_output_proof, _quality_gate = build_localfile_page_output_proof_bridge(repository)
+    readiness = build_human_visual_review_readiness(
+        repository, page_output_resolver=page_output_proof
+    )
+    evidence = build_human_visual_review_evidence(repository, readiness)
+    criteria = (
+        "character_identity", "face", "costume", "props", "pose", "gaze",
+        "emotion", "screen_direction", "location", "time", "composition",
+        "panel_intent", "visible_corruption", "truncation", "watermark",
+        "unsafe_content", "unintended_text", "continuity_comparison",
+    )
+    proof = readiness._prove(
+        "demo",
+        1,
+        reviewer_id="reviewer:local",
+        reviewed_at=datetime(2026, 10, 29, 9, 0, tzinfo=UTC),
+        checklist=tuple(
+            ReviewChecklistDecision(
+                criterion=criterion,
+                outcome="acceptable",
+                rationale="Reviewed the exact generated output.",
+            )
+            for criterion in criteria
+        ),
+        overall_judgment="acceptable_for_approval_consideration",
+        rationale="Complete local visual review.",
+    )
+    try:
+        stale = _payload(proof.report).model_copy(
+            update={"attempt_id": "attempt:stale", "review_id": "review:stale"}
+        )
+    finally:
+        proof.release()
+    evidence._owner.persist(stale)
+
+    before = repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+    quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+    after = repository._load_revisioned("demo")
+
+    assert quality.status_code == 500
+    assert quality.json()["code"] == "internal_error"
+    assert generated_panel_page.quality_agent.calls == 0
+    assert after.revision == before.revision
+    assert after.fingerprint == before.fingerprint
+    assert tuple(generated_panel_page.events.published) == events_before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+@pytest.mark.parametrize("tamper", ("checklist", "state", "payload", "extra_finding"))
+def test_windows_panel_quality_rejects_single_candidate_review_mismatch(
+    generated_panel_page: SimpleNamespace,
+    tamper: str,
+) -> None:
+    from manga_director.application.human_visual_review_evidence import (
+        _payload,
+        build_human_visual_review_evidence,
+    )
+    from manga_director.application.human_visual_review_readiness import (
+        ReviewChecklistDecision,
+        build_human_visual_review_readiness,
+    )
+    from manga_director.workflow.localfile_page_output_proof_bridge import (
+        build_localfile_page_output_proof_bridge,
+    )
+
+    repository = generated_panel_page.repository
+    page_output_proof, _quality_gate = build_localfile_page_output_proof_bridge(repository)
+    readiness = build_human_visual_review_readiness(
+        repository, page_output_resolver=page_output_proof
+    )
+    evidence = build_human_visual_review_evidence(repository, readiness)
+    review_body = _human_visual_review_body("2026-10-29T09:02:00Z")
+    checklist = tuple(
+        ReviewChecklistDecision.model_validate(item)
+        for item in review_body["checklist"]
+    )
+    judgment = (
+        "further_review_required" if tamper == "extra_finding"
+        else "acceptable_for_approval_consideration"
+    )
+    proof = readiness._prove(
+        "demo",
+        1,
+        reviewer_id="reviewer:local",
+        reviewed_at=datetime(2026, 10, 29, 9, 2, tzinfo=UTC),
+        checklist=checklist,
+        overall_judgment=judgment,
+        rationale="Complete local visual review.",
+    )
+    try:
+        stored = _payload(proof.report)
+    finally:
+        proof.release()
+
+    if tamper == "checklist":
+        changed_item = stored.checklist[0].model_copy(update={"outcome": "needs_review"})
+        stored = stored.model_copy(
+            update={"checklist": (changed_item, *stored.checklist[1:])}
+        )
+    elif tamper == "state":
+        stored = stored.model_copy(update={"page_state": "QualityChecked"})
+    elif tamper == "payload":
+        stored = stored.model_copy(update={"qa_report_reference": "qa-report:other"})
+
+    assert evidence._owner.persist(stored).outcome == "recorded"
+    assert len(evidence._owner.read_page_history("demo", "1", 1)) == 1
+
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=repository,
+        ),
+        raise_server_exceptions=False,
+    )
+    before = repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+    quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+    after = repository._load_revisioned("demo")
+
+    assert quality.status_code == 500
+    assert quality.json()["code"] == "internal_error"
+    assert generated_panel_page.quality_agent.calls == 0
+    assert after.revision == before.revision
+    assert after.fingerprint == before.fingerprint
+    assert tuple(generated_panel_page.events.published) == events_before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")
+def test_windows_panel_quality_rejects_missing_or_changed_ordered_panel_sources(
+    generated_panel_page: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from manga_director.production.next_generation_page_output_proof import (
+        DeterministicCompositionPageOutputProof,
+    )
+    from manga_director.workflow import localfile_page_output_proof_bridge as proof_bridge
+
+    client = generated_panel_page.client
+    repository = generated_panel_page.repository
+    recorded = client.post(
+        "/projects/demo/pages/1/visual-review-evidence",
+        headers=_headers(),
+        json=_human_visual_review_body("2026-10-29T09:03:00Z"),
+    )
+    assert recorded.status_code == 200
+    assert recorded.json()["status"] == "needs_review"
+    quality_client = TestClient(
+        build_workflow_app(
+            workflow_engine=generated_panel_page.engine,
+            workflow_coordinator=generated_panel_page.coordinator,
+            project_loader=generated_panel_page.loader,
+            repository=repository,
+        ),
+        raise_server_exceptions=False,
+    )
+
+    original_resolve = proof_bridge._ReadOnlyPageOutputProof.resolve
+    tamper_by_call = {2: "missing", 4: "order", 6: "hash"}
+    resolve_calls = 0
+
+    def resolve_with_changed_sources(
+        resolver: object,
+        project_id: str,
+        page_id: str,
+        output_asset_id: str,
+    ):
+        nonlocal resolve_calls
+        resolved = original_resolve(resolver, project_id, page_id, output_asset_id)
+        resolve_calls += 1
+        tamper = tamper_by_call.get(resolve_calls)
+        if tamper is None:
+            return resolved
+        assert isinstance(resolved.proof, DeterministicCompositionPageOutputProof)
+        source = resolved.proof.ordered_sources[0]
+        if tamper == "missing":
+            changed_sources = ()
+        elif tamper == "order":
+            changed_sources = (source.model_copy(update={"panel_order": source.panel_order + 1}),)
+        else:
+            changed_sources = (
+                source.model_copy(update={"content_sha256": "0" * 64}),
+            )
+        resolved.proof = resolved.proof.model_copy(
+            update={"ordered_sources": changed_sources}
+        )
+        return resolved
+
+    monkeypatch.setattr(
+        proof_bridge._ReadOnlyPageOutputProof,
+        "resolve",
+        resolve_with_changed_sources,
+    )
+    before = repository._load_revisioned("demo")
+    events_before = tuple(generated_panel_page.events.published)
+
+    for expected_calls in (2, 4, 6):
+        quality = quality_client.post("/projects/demo/pages/1/quality", json={})
+        after = repository._load_revisioned("demo")
+        assert quality.status_code == 500
+        assert quality.json()["code"] == "internal_error"
+        assert resolve_calls == expected_calls
+        assert generated_panel_page.quality_agent.calls == 0
+        assert after.revision == before.revision
+        assert after.fingerprint == before.fingerprint
+        assert tuple(generated_panel_page.events.published) == events_before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux durable Quality fail-closed contract")

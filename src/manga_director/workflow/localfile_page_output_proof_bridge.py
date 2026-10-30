@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from manga_director.production.next_generation_deterministic_composite_asset_owner import (
     DeterministicCompositeAssetOwner,
@@ -21,9 +21,11 @@ from manga_director.production.next_generation_page_composition_application_ledg
     PageCompositionAppliedBindingLookupResult,
 )
 from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
     LocalCompositionApplicationBindingResolver,
     LocalPageOutputProofResolver,
     PageOutputProofUnavailable,
+    PageOutputResolverPort,
     ProviderProofLookupResult,
     ResolvedPageOutput,
 )
@@ -42,6 +44,15 @@ from manga_director.workflow.durable_execution import LogicalOutputAssetQualityG
 class _PageScope:
     project_id: str
     page_id: str
+
+
+class _CompositionPreQualityGatePort(Protocol):
+    def require_pre_quality_evidence(
+        self,
+        project_id: str,
+        page_id: str,
+        proof: DeterministicCompositionPageOutputProof,
+    ) -> str | None: ...
 
 
 class _ProviderLookup:
@@ -193,8 +204,13 @@ class _ReadOnlyPageOutputProof:
 
 
 class _PageOutputQualityGate:
-    def __init__(self, resolver: _ReadOnlyPageOutputProof) -> None:
+    def __init__(
+        self,
+        resolver: _ReadOnlyPageOutputProof,
+        composition_pre_quality_gate: _CompositionPreQualityGatePort | None = None,
+    ) -> None:
         self._resolver = resolver
+        self._composition_pre_quality_gate = composition_pre_quality_gate
 
     def require_applied(self, context: WorkflowContext) -> str | None:
         image = context.artifacts.get("Generated")
@@ -217,6 +233,13 @@ class _PageOutputQualityGate:
         output = None
         try:
             output = self._resolver.resolve(project_id, page_id, output_id)
+            output_proof = getattr(output, "proof", None)
+            if isinstance(output_proof, DeterministicCompositionPageOutputProof):
+                if self._composition_pre_quality_gate is None:
+                    return "PANEL_VISUAL_QA_EVIDENCE_REQUIRED"
+                return self._composition_pre_quality_gate.require_pre_quality_evidence(
+                    project_id, page_id, output_proof
+                )
             return None
         except PageOutputProofUnavailable:
             return "LOGICAL_OUTPUT_ASSET_QUALITY_PROOF_UNAVAILABLE"
@@ -225,11 +248,22 @@ class _PageOutputQualityGate:
                 output.release()
 
 
-def build_localfile_page_output_proof_bridge(repository: LocalFileRepository) -> tuple[_ReadOnlyPageOutputProof, LogicalOutputAssetQualityGatePort]:
+def build_localfile_page_output_proof_bridge(
+    repository: LocalFileRepository,
+    *,
+    composition_pre_quality_gate_factory: Callable[
+        [PageOutputResolverPort], _CompositionPreQualityGatePort
+    ] | None = None,
+) -> tuple[_ReadOnlyPageOutputProof, LogicalOutputAssetQualityGatePort]:
     """Compose legacy and deterministic-composition proofs without creating owners."""
 
     proof = _ReadOnlyPageOutputProof(repository)
-    return proof, _PageOutputQualityGate(proof)
+    composition_pre_quality_gate = (
+        composition_pre_quality_gate_factory(proof)
+        if composition_pre_quality_gate_factory is not None
+        else None
+    )
+    return proof, _PageOutputQualityGate(proof, composition_pre_quality_gate)
 
 
 def _readonly_sqlite_rollback_safe(root: Path, filename: str) -> bool:
