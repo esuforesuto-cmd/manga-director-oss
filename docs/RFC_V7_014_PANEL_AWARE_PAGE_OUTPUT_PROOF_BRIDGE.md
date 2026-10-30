@@ -1,6 +1,6 @@
 # RFC-V7-014: Panel-Aware Page Output Proof Bridge
 
-- Status: Implemented; PR #71 CI 10/10 and CodeQL 3/3 verified at 3d655888565e86878f6b725299e41d9553a66f13; unmerged
+- Status: Implemented; PR #71 merged into `v7-dev` at `8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791` on 2026-10-29 17:04:54 UTC (2026-10-30 02:04:54 JST)
 - Related roadmap item: V7-16
 - Prerequisites: completed V7-07 through V7-15 and RFC-V7-005 through RFC-V7-013
 - Scope: private LocalFile quality and approved-download proof composition
@@ -162,10 +162,12 @@ Provider, I02, v6, or `main` requires stopping and a separate approval.
 The verified implementation head is
 `3d655888565e86878f6b725299e41d9553a66f13` on
 `feature/panel-output-proof-bridge`, with parent
-`ef641ba6c00c333da64a210314830c0a13879bb0`. These two commits are proposed in
-[PR #71](https://github.com/esuforesuto-cmd/manga-director-oss/pull/71) against
-`v7-dev` at `7aec88910f427aaf577567988fc9375d9e5e1cca` (11 changed files).
-The branch is committed and pushed; the PR remains open and unmerged.
+`ef641ba6c00c333da64a210314830c0a13879bb0`. These commits were included in
+[PR #71](https://github.com/esuforesuto-cmd/manga-director-oss/pull/71), whose
+base was `v7-dev` at `7aec88910f427aaf577567988fc9375d9e5e1cca` (11 changed
+files). PR #71 was merged into `v7-dev` at
+`8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791` on 2026-10-29 17:04:54 UTC
+(2026-10-30 02:04:54 JST).
 
 The first pushed implementation encountered eight mypy errors in two files
 and a Linux Quality E2E failure in CI run `40869804420`. The correction keeps
@@ -218,9 +220,14 @@ Existing separate read-only implementation/fix reviews reported
 **P0/P1/P2 = 0/0/0**. The PR's documentation-freshness P2 is addressed by this
 documentation update. Hosted results above apply to the implementation head;
 they do not establish validation of a later documentation commit.
+[Post-merge CI run 40917858948](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40917858948)
+on the merge commit completed successfully with **10/10 jobs**, and
+[post-merge CodeQL run 40917858812](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/40917858812)
+completed successfully with **3/3 analyses**. These runs verify the merged
+implementation snapshot, not a later documentation-only change.
 Default Planning input completeness, live
 Provider/ComfyUI, full live production Page E2E and I02 remain outside the
-completion claim. Merge and post-merge verification remain pending.
+completion claim.
 
 ## Authorization
 
