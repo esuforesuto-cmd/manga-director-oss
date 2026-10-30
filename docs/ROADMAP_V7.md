@@ -1998,3 +1998,30 @@ API/Web, generic `/generate`, schema/migration, dependency/lockfile, I02, live
 ComfyUI, `main`, branch/Git operations, release/publication, or package
 publication. Slices 2 and 3 require separate exact allowlists and explicit
 approval before implementation.
+
+## V7-16 post-merge status and V7-17 candidate (2026-10-31)
+
+PR #71 merged into `v7-dev` at `8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791`;
+PR #72 merged at `fd7077791a06da5cf720332eadee37b9b9d7e873`. PR #73 fixed the
+P1 that allowed a deterministic composite to reach Quality without persisted
+Human Visual QA. It merged at
+`60dcd1758a124a5748abfe2efbf4c499b8a7afe0`; its post-merge CI run
+[#41079731034](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/41079731034)
+passed 10/10 jobs and post-merge CodeQL run
+[#41079730370](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/41079730370)
+passed 3/3 jobs. `main` and v6 LTS were not changed.
+
+These records establish the V7-16 output-proof and pre-Quality Human Visual QA
+work only. They do not establish complete inputs from the default Storyboard,
+live ComfyUI validation, a full production one-Page end-to-end run, multiple
+Page generation, completion of a manga, or publication.
+
+V7-17, “Explicit Confirmed Storyboard Panel Input,” is a proposed next
+documentation/design candidate. RFC-V7-015 remains a draft and is not an
+accepted RFC or implementation authorization. Its proposed scope is to make
+the existing V7-14-required structured panel values explicitly user-confirmed
+and persisted before PromptBuilt, while retaining separate explicit V7-15
+layout input. The candidate does not authorize changes to frozen contracts,
+generic `/generate`, StateMachine, Provider or LocalFile boundaries, public
+APIs, Human Visual QA, or Human Approval. Any implementation requires a later
+explicit approval of its exact allowlist and validation plan.
