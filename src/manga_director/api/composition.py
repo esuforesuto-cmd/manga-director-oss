@@ -20,6 +20,7 @@ from manga_director.application.generated_asset_presentation import (
     build_generated_asset_presentation,
 )
 from manga_director.application.human_visual_review_evidence import (
+    HumanVisualReviewEvidenceService,
     attach_human_visual_review_evidence,
     build_human_visual_review_evidence,
 )
@@ -28,6 +29,7 @@ from manga_director.application.human_visual_review_evidence_history import (
     build_human_visual_review_evidence_history,
 )
 from manga_director.application.human_visual_review_readiness import (
+    HumanVisualReviewReadinessService,
     attach_human_visual_review_readiness,
     build_human_visual_review_readiness,
 )
@@ -62,11 +64,29 @@ def build_workflow_app(
     """Compose the shared Application Service and optional FastAPI delivery."""
 
     page_output_proof: PageOutputResolverPort | None = None
+    human_visual_review_readiness: HumanVisualReviewReadinessService | None = None
+    human_visual_review_evidence: HumanVisualReviewEvidenceService | None = None
     localfile_quality_gate_factory: (
         Callable[[LocalFileRepository], LogicalOutputAssetQualityGatePort] | None
     ) = None
     if isinstance(repository, LocalFileRepository):
-        page_output_proof, quality_gate = build_localfile_page_output_proof_bridge(repository)
+
+        def build_composition_pre_quality_gate(
+            resolver: PageOutputResolverPort,
+        ) -> HumanVisualReviewEvidenceService:
+            nonlocal human_visual_review_readiness, human_visual_review_evidence
+            human_visual_review_readiness = build_human_visual_review_readiness(
+                repository, page_output_resolver=resolver
+            )
+            human_visual_review_evidence = build_human_visual_review_evidence(
+                repository, human_visual_review_readiness
+            )
+            return human_visual_review_evidence
+
+        page_output_proof, quality_gate = build_localfile_page_output_proof_bridge(
+            repository,
+            composition_pre_quality_gate_factory=build_composition_pre_quality_gate,
+        )
 
         def localfile_quality_gate_factory(
             _repository: LocalFileRepository,
@@ -82,9 +102,8 @@ def build_workflow_app(
     )
     panel_aware_activation = None
     if isinstance(repository, LocalFileRepository):
-        human_visual_review_readiness = build_human_visual_review_readiness(
-            repository, page_output_resolver=page_output_proof
-        )
+        assert human_visual_review_readiness is not None
+        assert human_visual_review_evidence is not None
         attach_approved_asset_download(
             application,
             build_approved_asset_download(repository, page_output_proof),
@@ -101,10 +120,7 @@ def build_workflow_app(
         )
         attach_human_visual_review_evidence(
             application,
-            build_human_visual_review_evidence(
-                repository,
-                human_visual_review_readiness,
-            ),
+            human_visual_review_evidence,
         )
         attach_human_visual_review_evidence_history(
             application,

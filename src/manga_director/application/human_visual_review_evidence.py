@@ -24,6 +24,10 @@ from manga_director.production.next_generation_durable_human_visual_review_evide
 from manga_director.production.next_generation_human_visual_qa_approval_readiness import (
     HumanVisualQAApprovalReadinessReport,
 )
+from manga_director.production.next_generation_page_output_proof import (
+    DeterministicCompositionPageOutputProof,
+    ResolvedPageOutput,
+)
 from manga_director.repositories.local_file import LocalFileRepository
 
 
@@ -122,6 +126,86 @@ class HumanVisualReviewEvidenceService:
             if proof is not None:
                 proof.release()
         return result
+
+    def require_pre_quality_evidence(
+        self,
+        project_id: str,
+        page_id: str,
+        expected_proof: DeterministicCompositionPageOutputProof,
+    ) -> str | None:
+        """Require one exact, persisted Generated review before composite Quality."""
+
+        unavailable = "PANEL_VISUAL_QA_EVIDENCE_REQUIRED"
+        readiness_proof = None
+        try:
+            page_number = int(page_id)
+            if (
+                str(page_number) != page_id
+                or page_number < 1
+                or expected_proof.project_id != project_id
+                or expected_proof.page_id != page_id
+                or not expected_proof.ordered_sources
+            ):
+                return unavailable
+
+            history = self._owner.read_page_history(project_id, page_id, page_number)
+            candidates = tuple(
+                item
+                for item in history
+                if item.project_id == project_id
+                and item.page_id == page_id
+                and item.page_number == page_number
+                and item.attempt_id == expected_proof.attempt_id
+                and item.output_asset_id == expected_proof.asset_id
+                and item.provenance_reference == expected_proof.provenance_reference
+            )
+            if len(candidates) != 1:
+                return unavailable
+            stored = candidates[0]
+            if stored.page_state != "Generated":
+                return unavailable
+
+            checklist = tuple(
+                ReviewChecklistDecision.model_validate(item.model_dump())
+                for item in stored.checklist
+            )
+            readiness_proof = self._readiness._prove(
+                project_id,
+                page_number,
+                reviewer_id=stored.reviewer_id,
+                reviewed_at=stored.reviewed_at,
+                checklist=checklist,
+                overall_judgment=stored.overall_judgment,
+                rationale=stored.rationale,
+            )
+            report = readiness_proof.report
+            resolved_output = readiness_proof._asset_proof
+            if (
+                not readiness_proof._workflow_consistency.valid
+                or report.persisted_page_state.value != "Generated"
+                or not isinstance(resolved_output, ResolvedPageOutput)
+                or resolved_output.proof != expected_proof
+                or report.scope.project_id != project_id
+                or report.scope.page_id != page_id
+                or report.scope.attempt_id != expected_proof.attempt_id
+                or report.scope.output_asset_id != expected_proof.asset_id
+                or report.scope.provenance_reference
+                != expected_proof.provenance_reference
+                or _payload(report) != stored
+                or report.status != "needs_review"
+                or report.ready
+                or report.missing_prerequisites != ("QUALITY_CHECK_REQUIRED",)
+                or len(report.findings) != 1
+                or report.findings[0].code != "QUALITY_CHECK_REQUIRED"
+                or report.findings[0].status != "needs_review"
+            ):
+                return unavailable
+            return None
+        except Exception:
+            return unavailable
+        finally:
+            if readiness_proof is not None:
+                readiness_proof.release()
 
 
 def _payload(
