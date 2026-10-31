@@ -190,21 +190,92 @@ Project ID, Page number, source aggregate revision/fingerprint, captured
 panel values, canonical panel digest, and source artifact digests. It cannot
 be constructed from caller JSON or a mutable dictionary.
 
-Follow the existing private evidence-linked approval pattern: carry that
-capability only in transient workflow metadata through the existing durable
-coordinator path. “One-use” means one successful legal transition: fresh
+Do not place the capability in `WorkflowContext`, workflow metadata, or any
+public or serializable input passed to the WorkflowEngine. The private
+invocation-only scope factory described below is the sole exception; it holds
+the authority only for the call and is not stored or serialized. Keep it in a
+dedicated private `ContextVar` scope owned by the LocalFile durable execution
+boundary. Only the dedicated confirmation gate may create the exact-type
+authority, after
+validating the closed request and fenced `Reviewed` snapshot. The durable
+execution boundary creates a private one-call scope factory that holds the
+authority and sets a `ContextVar` token only when the WorkflowEngine enters
+the authorized Storyboard agent call. Extend the private
+`WorkflowEngine._execute_unpublished()` seam with an invocation-only scope
+hook: call `observer.begin(context, next_state)` first, then enter the hook
+immediately around `agent.execute(context)`, and reset the token in `finally`
+before exception handling (`observer.fail`), transition/result construction,
+or any persistence, publication, or observer completion. Do not set the
+variable around the whole engine call. The scope factory is private to the
+LocalFile durable path and is never stored on the shared engine or passed to
+observers, the `WorkflowContext`, or workflow metadata. The existing
+`WorkflowContext`, its metadata, and observer arguments therefore remain
+authority-free from the start, and a nested generic WorkflowEngine call from
+`observer.begin` runs without the authority scope. In the existing
+`StoryboardAgent.execute()` dispatch, `builtin.py` must consume and clear the
+exact type from the private `ContextVar` immediately at agent entry, before
+validation, logging, or any callback, then recheck its exact Project/Page/source
+binding before using the captured panel values. The explicit projection must
+not invoke callbacks, LLMs, or support agents while the authority is held in a
+local variable. No other workflow action may consume it. Preserve the existing
+no-agent-to-agent-call rule; StoryboardAgent must not reenter the
+WorkflowEngine. “One-use” means one successful legal transition: fresh
 `Reviewed` state plus the existing Page fence and CAS enforce consumption.
 This adds no cryptographic nonce or consumption store. The generic
 `storyboard`, `prompt`, and `generate` `_COMMAND_OVERLAY_KEYS` remain empty.
-Do not widen ordinary `PageActionRequest`
-metadata, and reject the reserved capability key in caller-supplied metadata
-and in any persisted context metadata before an ordinary command proceeds.
-Only the dedicated route may invoke the private LocalFile gate, and that gate
-accepts only the exact capability type for the exact Project/Page at
-`Reviewed`.
+Do not widen ordinary `PageActionRequest` metadata. Only the dedicated route
+may invoke the private LocalFile gate, and that gate accepts only the exact
+capability type for the exact Project/Page at `Reviewed`. Reject the reserved
+capability key in caller-supplied or persisted context metadata before an
+ordinary command, but never use that key to transport or recover the
+authority.
+
+For rejected requests, do not create the scope. Since CAS, post-commit
+verification, and event publication occur after `agent.execute()` and after
+the scope hook has reset its token, those later failures must also observe an
+empty scope. Keep an active-scope sentinel separate from the consumed
+authority: clearing the authority at agent entry must not make a nested
+dedicated scope appear inactive. Nested dedicated scopes must fail closed, and
+both tokens must reset in `finally`, restoring their prior values rather than
+clearing another scope's state. No shared mutable “current Page” state is
+allowed. The current `WorkflowEngine` is synchronous and calls
+`observer.begin(context, next_state)` before `agent.execute(context)` in the
+same execution context; the private hook keeps the observer outside the
+authority scope, including a nested generic engine call from that observer.
+The engine's exception path calls `observer.fail` after the agent call, so the
+hook must have reset the token before that callback too. An observer still
+receives an authority-free `WorkflowContext`. If an observer or plugin is
+treated as hostile in-process code that can inspect live Python stack frames
+or private closures, this design is insufficient and implementation must stop
+for stronger isolation.
+
+Python `ContextVar` values are local to an execution context, but child
+asyncio tasks copy the current context when they are created, and
+context-copying worker helpers can propagate it as well. Independent concurrent
+tasks do not share later changes. Therefore the scoped agent call must not
+create child tasks, copy its context, or invoke context-copying worker helpers;
+the current synchronous agent execution must finish before token reset. Any
+future task or worker handoff must start with an explicitly authority-free
+context and may not consume the authority. Audit any WorkflowEngine, observer,
+or task-creation change before implementation to confirm this rule still
+holds. A `ContextVar` is not an authentication or
+authorization mechanism: the route, exact-type/source binding checks, existing
+StateMachine, Page fence, and CAS remain authoritative. It cannot protect
+against deliberate access by code already running in the same Python process.
 
 The legacy Storyboard path with no private confirmation capability retains its
-current behavior. In the same existing `StoryboardAgent.execute()` dispatch,
+current behavior.
+
+On a Reviewed Page where both the legacy Storyboard action and explicit panel
+confirmation are available, the Web UI clearly distinguishes the two and
+identifies explicit confirmation as the path for supplying the required V7-14
+fields. Explain that the legacy action may omit those fields and may not pass
+V7-14 conversion. Either choice remains subject to the existing
+server-authorized `Reviewed → Storyboarded` transition. When either transition
+succeeds, the other control is stale; reload authoritative Page state and do
+not automatically retry, reconfirm, or roll back.
+
+In the same existing `StoryboardAgent.execute()` dispatch,
 the dedicated path consumes only the exact private capability and creates
 `panels` from the captured user values without invoking an LLM, filling gaps,
 or rewriting fields. The confirmed `Page.storyboard` root has exactly `panels`
@@ -233,14 +304,16 @@ using the server-captured Project/Page identity and source dictionaries. The
 normal V7-14 conversion subsequently hashes the entire persisted Storyboard
 and PromptBuilt dictionaries using its existing derivation rules.
 
-Before `project_from_context` or any return/publication, remove the exact
-transient capability from context metadata on success and on all failure,
-CAS, post-commit-verification, and event-publication paths. Do not allow the
-capability, raw request envelope, aggregate source revision, or aggregate
-source fingerprint into the persisted Project, returned `WorkflowResult`,
-canonical event, or Page detail response. The persisted Storyboard contains
-only the closed provenance object defined above and exact confirmed panel
-values.
+Because the capability never enters workflow metadata, it must already be
+absent from `project_from_context`, every returned `WorkflowResult`, and every
+publication; do not rely on post-hoc sanitization. The capability or its
+internal binding, raw request envelope, aggregate source revision or
+fingerprint, credentials, and authorization-bearing values must never enter
+the persisted Project, canonical event, Page detail, application logs,
+exception diagnostics or tracebacks, observer output, or debug serialization.
+Error responses expose only bounded safe codes. The persisted Storyboard
+contains only the closed provenance object defined above and exact confirmed
+panel values.
 
 ### 3. Validate the confirmed input again when building PromptBuilt
 
@@ -344,17 +417,20 @@ generic overlay, stop and obtain a revised design and explicit approval.
    immutable closed input/provenance contract, validation, and canonical
    digest functions.
 4. `src/manga_director/workflow/durable_execution.py` — fenced private
-   confirmation gate, PromptBuilt provenance validation, and exact-type
-   transient authority cleanup before persistence and return.
-5. `src/manga_director/agents/builtin.py` — consume the exact private
+   confirmation gate, PromptBuilt provenance validation, and the private
+   one-call scope factory; no authority in workflow context or metadata.
+5. `src/manga_director/workflow/engine.py` — extend the private unpublished
+   execution seam with a per-invocation agent-scope hook that runs after
+   `observer.begin` and around only `agent.execute`, resetting in `finally`.
+6. `src/manga_director/agents/builtin.py` — consume the exact private
    capability to project confirmed Storyboard fields; preserve the legacy path.
-6. `web/lib/api/types.ts` — additive request/response types.
-7. `web/lib/api/client.ts` — additive confirmation client method.
-8. `web/app/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm/route.ts`
+7. `web/lib/api/types.ts` — additive request/response types.
+8. `web/lib/api/client.ts` — additive confirmation client method.
+9. `web/app/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm/route.ts`
    — new same-origin proxy to the LocalFile confirmation route.
-9. `web/components/page-workflow.tsx` — render the explicit input flow only
-   for eligible Reviewed Pages.
-10. `web/components/explicit-storyboard-input-form.tsx` — new explicit panel
+10. `web/components/page-workflow.tsx` — render the explicit input flow only
+    for eligible Reviewed Pages.
+11. `web/components/explicit-storyboard-input-form.tsx` — new explicit panel
     editor, immutable source capture, validation, and final confirmation
     control.
 
@@ -366,30 +442,53 @@ generic overlay, stop and obtain a revised design and explicit approval.
    compatibility, and non-LocalFile behavior.
 3. `tests/unit/test_agents.py` — exact confirmed projection and unchanged
    legacy Storyboard behavior.
-4. `tests/test_localfile_explicit_storyboard_input.py` — new LocalFile
-   integration coverage for source-projection mismatch under the fence;
-   capability forgery in caller and persisted
-   metadata; malformed saved confirmation; source mutation before Prompt;
-   structured-prompt validator boundary rejection before Storyboard mutation;
-   cleanup on success/CAS/post-commit/event-publication failure; absence of
-   capability/raw request from persisted Project, returned result, event, and
-   Page detail; verify absence of aggregate source revision and fingerprint
-   from the persisted confirmation after reload, serialized Project, returned
-   `WorkflowResult`, canonical event, and Page detail response; exact
-   Storyboard reload and Prompt transition; legacy action; and unchanged
-   generic `/generate` behavior.
-5. `tests/test_localfile_panel_aware_generation_http.py` — full fake-transport
+4. `tests/unit/test_workflow_engine.py` — private hook ordering after
+   `observer.begin`, reset before `observer.fail`, transition/result creation,
+   and publication; public `execute`/`execute_command` expose no hook; nested
+   generic observer reentry cannot consume the dedicated authority; nested
+   dedicated scope fails closed even after the agent consumes and clears the
+   authority, using the separate active-scope sentinel.
+5. `tests/test_localfile_explicit_storyboard_input.py` — LocalFile integration
+   coverage for:
+   - source-projection mismatch under the fence; forged/replayed authority
+     attempts through caller metadata and persisted context; malformed saved
+     confirmation; source mutation before Prompt; and structured-prompt
+     validator rejection before Storyboard mutation;
+   - observer-before-agent ordering; a nested generic WorkflowEngine call from
+     an observer receiving no authority scope; the private hook entering only
+     around the authorized StoryboardAgent; nested dedicated scope rejection
+     after authority consumption; and token reset/restoration on
+     success, rejection, agent failure, cancellation, CAS failure, post-commit
+     verification failure, and event-publication failure;
+   - independent concurrent Page isolation; a probe confirming that copied
+     `ContextVar` contexts would inherit the value; and proof that the
+     authorized agent scope creates no child task, copied context, or worker
+     handoff and that any later handoff starts authority-free;
+   - absence of capability/raw request from persisted Project, returned
+     result, event, and Page detail; absence of aggregate source revision and
+     fingerprint from the persisted confirmation after reload, serialized
+     Project, returned `WorkflowResult`, canonical event, and Page detail;
+   - logs, exception diagnostics/tracebacks, observer output, and debug
+     serialization containing none of the authority, binding, raw request,
+     aggregate revision/fingerprint, credentials, or authorization-bearing
+     values on success, rejection, agent failure, cancellation, CAS failure,
+     post-commit verification failure, and event-publication failure; and
+     exact Storyboard reload, Prompt transition, legacy action, and unchanged
+     generic `/generate` behavior.
+6. `tests/test_localfile_panel_aware_generation_http.py` — full fake-transport
    one-Page chain from confirmed normal Storyboard/PromptBuilt through existing
    V7-15 generation and V7-16 output proof, Visual QA, Human Approval, and
    approved download.
-6. `web/tests/explicit-storyboard-input.test.ts` — new UI behavior,
+7. `web/tests/explicit-storyboard-input.test.ts` — new UI behavior,
    required-field validation, explicit confirmation, changed-source refresh,
-   and no duplicate submission.
-7. `web/tests/api-client.test.ts` — confirmation client path and closed body.
-8. `web/tests/ui-contract.test.ts` — Reviewed-only affordance.
-9. `web/tests/storyboard-confirm-proxy.test.ts` — new same-origin proxy
-   forwarding and error mapping.
-10. `tests/test_localfile_panel_aware_activation_bridge.py` — converter
+   and no duplicate submission; distinct labels and guidance for legacy Storyboard
+   versus explicit confirmation; after a legacy transition, the captured form
+   is stale and requires reload without automatic retry or reconfirmation.
+8. `web/tests/api-client.test.ts` — confirmation client path and closed body.
+9. `web/tests/ui-contract.test.ts` — Reviewed-only affordance.
+10. `web/tests/storyboard-confirm-proxy.test.ts` — new same-origin proxy
+    forwarding and error mapping.
+11. `tests/test_localfile_panel_aware_activation_bridge.py` — converter
     compatibility coverage for confirmed persisted Storyboard; the frozen
     converter itself is not in the allowlist.
 
@@ -401,7 +500,8 @@ generic overlay, stop and obtain a revised design and explicit approval.
   authoritative Reviewed Page can perform the normal StateMachine `storyboard`
   transition under the existing Page fence.
 - Generic `PageActionRequest.metadata`, persisted metadata, or a forged
-  reserved key can never create or reuse the process-local authority. Generic
+  reserved key can never create or reuse the process-local authority. The
+  authority never enters `WorkflowContext` or workflow metadata, and generic
   overlay keys for `storyboard`, `prompt`, and `generate` remain empty.
 - Confirmed panel fields round-trip exactly through persisted Storyboard and
   reload. No missing field is inferred or silently filled.
@@ -411,12 +511,33 @@ generic overlay, stop and obtain a revised design and explicit approval.
 - PromptBuilt accepts a valid confirmation only when the panel digest and
   source page-design/review digests still match the same authoritative
   Project/Page; malformed or stale provenance fails closed before PromptAgent.
-- The transient authority and raw request never appear in persistence, result,
-  canonical event, or Page detail, including CAS and publication failure paths.
+- The transient authority and its internal binding, raw request envelope,
+  aggregate source revision/fingerprint, credentials, and authorization-bearing
+  values never appear in persistence, result, canonical event, Page detail,
+  application logs, exception diagnostics/tracebacks, observer output, or debug
+  serialization, including failure paths. Error responses expose only bounded
+  safe codes. The workflow context and its metadata are authority-free from
+  construction. An invocation-only WorkflowEngine hook enters the private
+  scope after `observer.begin`, around only the authorized StoryboardAgent
+  call, consumes/clears the authority at agent entry, and resets both the
+  authority and active-scope tokens on every exit, including cancellation;
+  nested dedicated scopes fail closed.
+- Tests verify actual `ContextVar` behavior for concurrent Pages and copied
+  contexts, that nested generic engine calls from observers lack the hook, and
+  that no child-task/context-copy/worker handoff occurs while authority is
+  active. Any later handoff must start authority-free. The private
+  `ContextVar` is explicitly not authentication or
+  authorization; existing server, StateMachine, Page fence, and CAS checks
+  remain authoritative.
 - Aggregate source revision and fingerprint remain process-local to the
   fenced authority and existing CAS boundary. They are absent from the
   persisted confirmation after reload, the serialized Project, returned
   `WorkflowResult`, canonical event, and Page detail response.
+- When both Storyboard choices are available, the Web UI clearly distinguishes
+  explicit panel confirmation from the legacy Storyboard action and explains that
+  the legacy action may omit fields required by V7-14 conversion. After either
+  transition succeeds, the other captured form is stale and requires Page reload;
+  it must not automatically retry, reconfirm, or roll back.
 - Legacy Storyboard and generic `/generate`, V7-15 explicit geometry,
   StateMachine, existing LocalFile authorization, V7-16 proof, Visual QA, and
   Human Approval behavior remain unchanged.
@@ -428,7 +549,10 @@ generic overlay, stop and obtain a revised design and explicit approval.
 
 1. Run the new focused LocalFile and frontend tests, including changed-source
    confirmation requests, confirm-to-Prompt source mutations, concurrent
-   submission, and all capability-cleanup paths.
+   submission, observer-before-agent ordering and nested generic engine calls,
+   all `ContextVar` token reset/restoration paths, concurrent Page isolation,
+   copied-context propagation probes, prohibition of child/worker handoff while
+   active, and observer/diagnostic non-exposure.
 2. Run existing workflow/StateMachine, V7-14 converter and V7-16 proof bridge,
    V7-15 panel-aware HTTP/Web, LocalFile security, and v6 regressions.
 3. Run Ruff, mypy, frontend lint/typecheck/build, applicable security/audit
