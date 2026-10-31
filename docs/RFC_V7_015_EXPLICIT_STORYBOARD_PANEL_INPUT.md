@@ -204,7 +204,18 @@ accepts only the exact capability type for the exact Project/Page at
 `Reviewed`.
 
 The legacy Storyboard path with no private confirmation capability retains its
-current behavior. In the same existing `StoryboardAgent.execute()` dispatch,
+current behavior.
+
+On a Reviewed Page where both the legacy Storyboard action and explicit panel
+confirmation are available, the Web UI clearly distinguishes the two and
+identifies explicit confirmation as the path for supplying the required V7-14
+fields. Explain that the legacy action may omit those fields and may not pass
+V7-14 conversion. Either choice remains subject to the existing
+server-authorized `Reviewed → Storyboarded` transition. When either transition
+succeeds, the other control is stale; reload authoritative Page state and do
+not automatically retry, reconfirm, or roll back.
+
+In the same existing `StoryboardAgent.execute()` dispatch,
 the dedicated path consumes only the exact private capability and creates
 `panels` from the captured user values without invoking an LLM, filling gaps,
 or rewriting fields. The confirmed `Page.storyboard` root has exactly `panels`
@@ -236,11 +247,13 @@ and PromptBuilt dictionaries using its existing derivation rules.
 Before `project_from_context` or any return/publication, remove the exact
 transient capability from context metadata on success and on all failure,
 CAS, post-commit-verification, and event-publication paths. Do not allow the
-capability, raw request envelope, aggregate source revision, or aggregate
-source fingerprint into the persisted Project, returned `WorkflowResult`,
-canonical event, or Page detail response. The persisted Storyboard contains
-only the closed provenance object defined above and exact confirmed panel
-values.
+capability or its internal binding, raw request envelope, aggregate source
+revision or fingerprint, credentials, or authorization-bearing values into
+the persisted Project, returned `WorkflowResult`, canonical event, Page detail,
+application logs, exception diagnostics or tracebacks, observer output, or
+debug serialization. Error responses expose only bounded safe codes. The
+persisted Storyboard contains only the closed provenance object defined above
+and exact confirmed panel values.
 
 ### 3. Validate the confirmed input again when building PromptBuilt
 
@@ -376,7 +389,12 @@ generic overlay, stop and obtain a revised design and explicit approval.
    Page detail; verify absence of aggregate source revision and fingerprint
    from the persisted confirmation after reload, serialized Project, returned
    `WorkflowResult`, canonical event, and Page detail response; exact
-   Storyboard reload and Prompt transition; legacy action; and unchanged
+   Verify that logs, exception diagnostics/tracebacks, observer output, and debug
+    serialization contain none of the authority, binding, raw request, aggregate
+    revision/fingerprint, credentials, or authorization-bearing values on success,
+    rejection, agent failure, CAS failure, post-commit verification failure, and
+    event-publication failure; exact Storyboard reload and Prompt transition; legacy
+    action; and unchanged
    generic `/generate` behavior.
 5. `tests/test_localfile_panel_aware_generation_http.py` — full fake-transport
    one-Page chain from confirmed normal Storyboard/PromptBuilt through existing
@@ -384,7 +402,9 @@ generic overlay, stop and obtain a revised design and explicit approval.
    approved download.
 6. `web/tests/explicit-storyboard-input.test.ts` — new UI behavior,
    required-field validation, explicit confirmation, changed-source refresh,
-   and no duplicate submission.
+   and no duplicate submission; distinct labels and guidance for legacy Storyboard
+   versus explicit confirmation; after a legacy transition, the captured form
+   is stale and requires reload without automatic retry or reconfirmation.
 7. `web/tests/api-client.test.ts` — confirmation client path and closed body.
 8. `web/tests/ui-contract.test.ts` — Reviewed-only affordance.
 9. `web/tests/storyboard-confirm-proxy.test.ts` — new same-origin proxy
@@ -411,12 +431,21 @@ generic overlay, stop and obtain a revised design and explicit approval.
 - PromptBuilt accepts a valid confirmation only when the panel digest and
   source page-design/review digests still match the same authoritative
   Project/Page; malformed or stale provenance fails closed before PromptAgent.
-- The transient authority and raw request never appear in persistence, result,
-  canonical event, or Page detail, including CAS and publication failure paths.
+- The transient authority and its internal binding, raw request envelope,
+  aggregate source revision/fingerprint, credentials, and authorization-bearing
+  values never appear in persistence, result, canonical event, Page detail,
+  application logs, exception diagnostics/tracebacks, observer output, or debug
+  serialization, including failure paths. Error responses expose only bounded
+  safe codes.
 - Aggregate source revision and fingerprint remain process-local to the
   fenced authority and existing CAS boundary. They are absent from the
   persisted confirmation after reload, the serialized Project, returned
   `WorkflowResult`, canonical event, and Page detail response.
+- When both Storyboard choices are available, the Web UI clearly distinguishes
+  explicit panel confirmation from the legacy Storyboard action and explains that
+  the legacy action may omit fields required by V7-14 conversion. After either
+  transition succeeds, the other captured form is stale and requires Page reload;
+  it must not automatically retry, reconfirm, or roll back.
 - Legacy Storyboard and generic `/generate`, V7-15 explicit geometry,
   StateMachine, existing LocalFile authorization, V7-16 proof, Visual QA, and
   Human Approval behavior remain unchanged.
