@@ -112,9 +112,11 @@ it does not trust browser-side field validation.
 
 Before the `Reviewed → Storyboarded` transition, the dedicated gate also
 preflights the exact confirmed input against the existing deterministic
-PromptPipeline and PromptValidator prerequisites, including the current
-rendered-prompt size, template, and source-character requirements. Inputs that
-cannot pass the existing PromptBuilt path are rejected as bounded
+PromptPipeline and PromptValidator prerequisites, including the existing
+character limit on newline-joined structured-prompt section values after
+optimization and before rendering, template compatibility, and
+source-character requirements. Inputs that cannot pass the existing
+PromptBuilt path are rejected as bounded
 `invalid_input` before any Page or artifact mutation. Do not raise existing
 limits, alter templates, or infer missing prompt/source values to make an
 input pass. This avoids accepting and persisting a confirmation that cannot
@@ -174,9 +176,10 @@ normal LocalFile durable command boundary may perform its existing revisioned
 state access; rejected requests are not described as proving that no internal
 durability sidecar was initialized. The gate must add no new sidecar, owner,
 schema, migration, repair, or provider action. The server captures the current
-aggregate revision and fingerprint from the same authoritative snapshot into
-the persisted provenance; it never accepts those values from the client and
-never predicts the post-commit fingerprint.
+aggregate revision and fingerprint from the same authoritative snapshot only
+into the fenced, process-local authority and existing CAS binding. It never
+accepts those values from the client, persists or publishes them, or predicts
+the post-commit fingerprint.
 
 ### 2. Keep confirmation authority process-local and one-use
 
@@ -208,18 +211,16 @@ or rewriting fields. The confirmed `Page.storyboard` root has exactly `panels`
 and `confirmation`; each confirmed panel has exactly the listed V7-14 source
 fields, without legacy `role`, `camera`, dialogue, or display-only keys. The
 dedicated output adds a closed root `confirmation` object with exactly these
-keys: `schema_id`, `schema_version`,
-`source_project_id`, `source_page_number`, `source_revision`,
-`source_fingerprint`, `source_sha256`, `source_page_design_sha256`,
+keys: `schema_id`, `schema_version`, `source_project_id`,
+`source_page_number`, `source_sha256`, `source_page_design_sha256`,
 `source_review_sha256`, `panel_input_sha256`, and `user_confirmed`.
 `schema_id` is the fixed
 `manga_director.explicit_storyboard_input`; `schema_version` is integer `1`;
 `user_confirmed` is the literal boolean `true`. Digests use lowercase SHA-256
-hex strings of exactly 64 characters. `source_revision` and
-`source_page_number` are strict positive integers; `source_project_id` is the
-exact canonical Project ID from the route; and `source_fingerprint` is exactly
-64 lowercase hexadecimal characters. This object records provenance; it is
-not authenticated identity, authorization, or Human Approval.
+hex strings of exactly 64 characters. `source_page_number` is a strict
+positive integer and `source_project_id` is the exact canonical Project ID
+from the route. This object records content provenance; it is not
+authenticated identity, authorization, or Human Approval.
 
 Canonical JSON for digest calculation uses UTF-8, `ensure_ascii=False`, sorted
 object keys, compact separators, rejects NaN/infinity, and has no trailing
@@ -235,10 +236,11 @@ and PromptBuilt dictionaries using its existing derivation rules.
 Before `project_from_context` or any return/publication, remove the exact
 transient capability from context metadata on success and on all failure,
 CAS, post-commit-verification, and event-publication paths. Do not allow the
-capability or raw request envelope into the persisted Project, returned
-`WorkflowResult`, canonical event, or Page detail response. The persisted
-Storyboard contains only the closed provenance object and exact confirmed
-panel values.
+capability, raw request envelope, aggregate source revision, or aggregate
+source fingerprint into the persisted Project, returned `WorkflowResult`,
+canonical event, or Page detail response. The persisted Storyboard contains
+only the closed provenance object defined above and exact confirmed panel
+values.
 
 ### 3. Validate the confirmed input again when building PromptBuilt
 
@@ -262,11 +264,11 @@ Storyboard before invoking `PromptAgent`:
   invoked, with no Page/artifact/event mutation or Provider call; the existing
   LocalFile durability reconciliation semantics remain unchanged.
 
-The original aggregate revision/fingerprint in the confirmation are historical
-provenance from the Reviewed snapshot. Do not compare them to the current
-PromptBuilt snapshot: ordinary legal Storyboard and Prompt transitions change
-the aggregate revision and fingerprint. The exact content digests and
-Project/Page binding provide the later provenance checks without relying on a
+The aggregate revision and fingerprint bind only the fenced, process-local
+authority and existing CAS boundary at the Reviewed snapshot. They are not
+fields of the persisted confirmation and are not copied into Page artifacts,
+returned results, events, or Page detail. Later PromptBuilt provenance checks
+use the exact content digests and Project/Page binding without relying on a
 predicted post-transition fingerprint. The ordinary PromptPipeline may format
 or optimize rendered text; this RFC guarantees preservation of the exact
 confirmed structured panel source, not identical PromptBuilt prose. Existing
@@ -368,11 +370,14 @@ generic overlay, stop and obtain a revised design and explicit approval.
    integration coverage for source-projection mismatch under the fence;
    capability forgery in caller and persisted
    metadata; malformed saved confirmation; source mutation before Prompt;
-   rendered-prompt validator boundary rejection before Storyboard mutation;
+   structured-prompt validator boundary rejection before Storyboard mutation;
    cleanup on success/CAS/post-commit/event-publication failure; absence of
    capability/raw request from persisted Project, returned result, event, and
-   Page detail; exact Storyboard reload and Prompt transition; legacy action;
-   and unchanged generic `/generate` behavior.
+   Page detail; verify absence of aggregate source revision and fingerprint
+   from the persisted confirmation after reload, serialized Project, returned
+   `WorkflowResult`, canonical event, and Page detail response; exact
+   Storyboard reload and Prompt transition; legacy action; and unchanged
+   generic `/generate` behavior.
 5. `tests/test_localfile_panel_aware_generation_http.py` — full fake-transport
    one-Page chain from confirmed normal Storyboard/PromptBuilt through existing
    V7-15 generation and V7-16 output proof, Visual QA, Human Approval, and
@@ -408,6 +413,10 @@ generic overlay, stop and obtain a revised design and explicit approval.
   Project/Page; malformed or stale provenance fails closed before PromptAgent.
 - The transient authority and raw request never appear in persistence, result,
   canonical event, or Page detail, including CAS and publication failure paths.
+- Aggregate source revision and fingerprint remain process-local to the
+  fenced authority and existing CAS boundary. They are absent from the
+  persisted confirmation after reload, the serialized Project, returned
+  `WorkflowResult`, canonical event, and Page detail response.
 - Legacy Storyboard and generic `/generate`, V7-15 explicit geometry,
   StateMachine, existing LocalFile authorization, V7-16 proof, Visual QA, and
   Human Approval behavior remain unchanged.
