@@ -1,10 +1,18 @@
 # RFC-V7-015: Explicit Confirmed Storyboard Panel Input
 
-- Status: Draft proposal; not accepted and not implementation authorization
+- Status: Accepted (2026-11-06 JST; design acceptance only, not implementation authorization)
 - Related roadmap item: V7-17 — Explicit Confirmed Storyboard Panel Input
 - Prerequisites: V7-15 local Web activation and V7-16 proof bridge
 - Scope: Planning → Storyboard → PromptBuilt input completeness for the existing private LocalFile panel-generation path
 - Frozen references: RFC-V7-012, RFC-V7-013, and RFC-V7-014 remain unchanged
+
+## Acceptance record (2026-11-06 JST)
+
+This design was explicitly accepted on 2026-11-06 JST. Under `RFC_PROCESS.md`,
+acceptance permits an implementation proposal; implementation has not started
+and is not authorized by this record. Any implementation requires separate
+explicit authorization of its exact file allowlist and validation plan. The
+technical requirements and the frozen RFC references above remain unchanged.
 
 ## Problem
 
@@ -343,7 +351,7 @@ automatic Page-state rollback or data rewrite. Before implementation is
 approved, a compatibility test must prove the supported prior version safely
 ignores the additive dictionary key. If that cannot be proven, stop and add a
 separately reviewed data-compatibility plan. No rollback or source revert is
-authorized by this draft.
+authorized by this RFC.
 
 ## Exact future implementation allowlist
 
