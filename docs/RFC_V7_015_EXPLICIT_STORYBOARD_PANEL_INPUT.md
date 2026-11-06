@@ -42,7 +42,7 @@ not change the legacy Storyboard action or generic `/generate` behavior.
   snapshot path may initialize or reconcile sidecars, so it cannot be used as
   a supposedly read-only preview operation.
 - The accepted RFC-V7-011 source was located in the archived local reference
-  worktree at `C:\Users\owner\Documents\Codex\2026-10-23\v7-e2e-61baeda\docs\RFC_V7_011_PANEL_AWARE_PAGE_GENERATION.md`; its SHA-256 matches the
+  worktree at `v7-e2e-61baeda/docs/RFC_V7_011_PANEL_AWARE_PAGE_GENERATION.md`; its SHA-256 matches the
   supplied authoritative digest. Reconcile this proposal with that source
   before implementation approval; do not reconstruct or replace the frozen
   RFC. RFC-V7-012 through RFC-V7-014 and executable contracts remain additional
@@ -102,10 +102,11 @@ Each ordered `panels` entry has exactly the V7-14 source keys `number`,
 `background`, `composition`, and `constraints`. Reject unknown keys, absent
 fields, non-contiguous or reordered panel numbers, wrong primitive types,
 empty values, untrimmed text, abstract placeholders, over-limit values,
-duplicate IDs, and unsupported panel counts. Each character ID is a bounded
-ASCII logical reference matching `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. The exact
-ID is retained wherever the same character appears; the user supplies that
-identity consistently, and no registry lookup or identity inference occurs.
+duplicate IDs within the same panel, and unsupported panel counts. Each
+character ID is a bounded ASCII logical reference matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. The exact ID is retained wherever the same
+character appears; the user supplies that identity consistently, and no registry
+lookup or identity inference occurs.
 Require an explicit affirmative
 confirmation in the request. The server validates all fields independently;
 it does not trust browser-side field validation.
@@ -161,10 +162,18 @@ unknown project/Page returns HTTP 404 `not_found`; a source mismatch or Page
 state that no longer permits the transition returns HTTP 409
 `confirmation_conflict`; and an unavailable durable activation returns HTTP
 503 `activation_unavailable`. Error responses contain no input or authority
-object. On an uncertain 503, the Web UI tells the user to reload and inspect
-Page state; it does not retry automatically. Concurrent duplicate submissions
-are serialized by the existing fence: at most one may transition, and the
-other receives a conflict after observing the new state.
+object. The Page UI presents the legacy Storyboard action and the new explicit
+user-confirmation action as visibly distinct controls, with labels and
+descriptions that make their different behavior clear. An explicit
+confirmation is a deliberate user action. After a successful submission, an
+uncertain result (including a timeout or 503), or a stale-source/state
+conflict, the client must not automatically resubmit, retry, or reconfirm.
+For an uncertain result, the UI tells the user to reload and inspect Page
+state. For a conflict, it shows the current source and requires the user to
+review it and deliberately confirm again from a fresh eligible Reviewed
+Page. Any subsequent submission requires a new user action. Concurrent
+duplicate submissions are serialized by the existing fence: at most one may
+transition, and the other receives a conflict after observing the new state.
 
 The route requires `expectedSource` to match the `source` object from the
 fresh authoritative projection exactly, including strict value types. It
@@ -235,12 +244,21 @@ and PromptBuilt dictionaries using its existing derivation rules.
 
 Before `project_from_context` or any return/publication, remove the exact
 transient capability from context metadata on success and on all failure,
-CAS, post-commit-verification, and event-publication paths. Do not allow the
-capability, raw request envelope, aggregate source revision, or aggregate
-source fingerprint into the persisted Project, returned `WorkflowResult`,
-canonical event, or Page detail response. The persisted Storyboard contains
-only the closed provenance object defined above and exact confirmed panel
-values.
+CAS, post-commit-verification, and event-publication paths. Do not allow
+authentication credentials, the raw request envelope or body, the transient
+one-use capability, aggregate source revision, or aggregate source
+fingerprint into logs, exception messages or tracebacks, debug output,
+observer output, events, HTTP responses, or persisted data. Redact or omit
+these values at the boundary where each channel is produced; bounded error
+codes must not include them. Verify this non-disclosure across success and
+failure paths, including CAS and event-publication failures, using captured
+logs/diagnostics/events/responses and reloaded serialized state. The
+capability and raw request must never enter persistence, returned
+`WorkflowResult`, canonical events, or Page detail. Aggregate revision and
+fingerprint must remain process-local to the fenced authority and existing
+CAS binding and must not enter persisted artifacts, returned results,
+events, or Page detail. The persisted Storyboard contains only the closed
+provenance object defined above and exact confirmed panel values.
 
 ### 3. Validate the confirmed input again when building PromptBuilt
 
@@ -372,19 +390,22 @@ generic overlay, stop and obtain a revised design and explicit approval.
    metadata; malformed saved confirmation; source mutation before Prompt;
    structured-prompt validator boundary rejection before Storyboard mutation;
    cleanup on success/CAS/post-commit/event-publication failure; absence of
-   capability/raw request from persisted Project, returned result, event, and
-   Page detail; verify absence of aggregate source revision and fingerprint
-   from the persisted confirmation after reload, serialized Project, returned
-   `WorkflowResult`, canonical event, and Page detail response; exact
-   Storyboard reload and Prompt transition; legacy action; and unchanged
-   generic `/generate` behavior.
+   credentials, raw request, and capability from captured logs,
+   exception/traceback and debug/observer output, persisted Project, returned
+   result, event, response, and Page detail on success and failure (including
+   CAS and event-publication failures); verify absence of aggregate source
+   revision and fingerprint from the persisted confirmation after reload,
+   serialized Project, returned `WorkflowResult`, canonical event, and Page
+   detail response; exact Storyboard reload and Prompt transition; legacy action;
+   and unchanged generic `/generate` behavior.
 5. `tests/test_localfile_panel_aware_generation_http.py` — full fake-transport
    one-Page chain from confirmed normal Storyboard/PromptBuilt through existing
    V7-15 generation and V7-16 output proof, Visual QA, Human Approval, and
    approved download.
 6. `web/tests/explicit-storyboard-input.test.ts` — new UI behavior,
-   required-field validation, explicit confirmation, changed-source refresh,
-   and no duplicate submission.
+   required-field validation, visibly distinct legacy and explicit controls,
+   deliberate confirmation, changed-source refresh, and no automatic resubmit
+   or reconfirm after success, uncertain results, or conflicts.
 7. `web/tests/api-client.test.ts` — confirmation client path and closed body.
 8. `web/tests/ui-contract.test.ts` — Reviewed-only affordance.
 9. `web/tests/storyboard-confirm-proxy.test.ts` — new same-origin proxy
@@ -411,8 +432,11 @@ generic overlay, stop and obtain a revised design and explicit approval.
 - PromptBuilt accepts a valid confirmation only when the panel digest and
   source page-design/review digests still match the same authoritative
   Project/Page; malformed or stale provenance fails closed before PromptAgent.
-- The transient authority and raw request never appear in persistence, result,
-  canonical event, or Page detail, including CAS and publication failure paths.
+- Authentication credentials, raw request envelope/body, one-use capability,
+  aggregate source revision, and fingerprint are absent from persistence,
+  returned results, events, Page detail, logs, exception messages/tracebacks,
+  debug/observer output, and HTTP responses on success and failure, including
+  CAS and publication failure paths.
 - Aggregate source revision and fingerprint remain process-local to the
   fenced authority and existing CAS boundary. They are absent from the
   persisted confirmation after reload, the serialized Project, returned
