@@ -1999,7 +1999,7 @@ ComfyUI, `main`, branch/Git operations, release/publication, or package
 publication. Slices 2 and 3 require separate exact allowlists and explicit
 approval before implementation.
 
-## V7-16 post-merge status and V7-17 candidate (2026-10-31)
+## V7-16 post-merge status and V7-17 RFC-V7-015 acceptance (2026-11-06)
 
 PR #71 merged into `v7-dev` at `8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791`;
 PR #72 merged at `fd7077791a06da5cf720332eadee37b9b9d7e873`. PR #73 fixed the
@@ -2016,12 +2016,13 @@ work only. They do not establish complete inputs from the default Storyboard,
 live ComfyUI validation, a full production one-Page end-to-end run, multiple
 Page generation, completion of a manga, or publication.
 
-V7-17, “Explicit Confirmed Storyboard Panel Input,” is a proposed next
-documentation/design candidate. RFC-V7-015 remains a draft and is not an
-accepted RFC or implementation authorization. Its proposed scope is to make
-the existing V7-14-required structured panel values explicitly user-confirmed
-and persisted before PromptBuilt, while retaining separate explicit V7-15
-layout input. The candidate does not authorize changes to frozen contracts,
-generic `/generate`, StateMachine, Provider or LocalFile boundaries, public
-APIs, Human Visual QA, or Human Approval. Any implementation requires a later
-explicit approval of its exact allowlist and validation plan.
+V7-17, “Explicit Confirmed Storyboard Panel Input,” is accepted as a design
+through RFC-V7-015 on 2026-11-06 JST. Code implementation has not started and
+remains incomplete; design acceptance does not authorize implementation. Its
+scope is to make the existing V7-14-required structured panel values explicitly
+user-confirmed and persisted before PromptBuilt, while retaining separate
+explicit V7-15 layout input. Any implementation requires separate explicit
+authorization of its exact allowlist and validation plan. This acceptance
+does not authorize changes to frozen contracts, generic `/generate`,
+StateMachine, Provider or LocalFile boundaries, public APIs, Human Visual QA,
+Human Approval, V6 LTS, or I02, and does not authorize release or publication.
