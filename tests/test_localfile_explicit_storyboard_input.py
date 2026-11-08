@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import traceback
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -125,6 +126,42 @@ def _assert_confirmation_output_has_no_internal_values(
     elif isinstance(value, str):
         for marker in sensitive_markers:
             assert marker not in value
+
+
+# Do not scan for a bare integer revision: it can equal an allowed Page number
+# or schema version. Structured output uses the forbidden-key check above;
+# textual output is checked for labeled revision/fingerprint diagnostics.
+_INTERNAL_REVISION_TEXT = re.compile(
+    r"\b[a-z0-9_-]*revision\b[\"']?\s*[:=]\s*[\"']?-?\d+",
+    re.IGNORECASE,
+)
+_INTERNAL_FINGERPRINT_TEXT = re.compile(
+    r"\b[a-z0-9_-]*fingerprint\b[\"']?\s*[:=]",
+    re.IGNORECASE,
+)
+
+
+def _assert_no_internal_revision_or_fingerprint_text(value: str) -> None:
+    assert _INTERNAL_REVISION_TEXT.search(value) is None
+    assert _INTERNAL_FINGERPRINT_TEXT.search(value) is None
+
+
+def _assert_sanitized_confirmation_conflict(response: Any) -> None:
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "confirmation_conflict",
+        "message": "The Page changed. Reload and review it before confirming again.",
+    }
+    _assert_confirmation_output_has_no_internal_values(response.json())
+    _assert_no_internal_revision_or_fingerprint_text(response.text)
+
+
+def _assert_captured_streams_are_clean(
+    streams: tuple[str, str], *sensitive_values: str
+) -> None:
+    for stream in streams:
+        _assert_confirmation_output_has_no_internal_values(stream, *sensitive_values)
+        _assert_no_internal_revision_or_fingerprint_text(stream)
 
 
 def _panel(**overrides: object) -> dict[str, object]:
@@ -715,7 +752,10 @@ def test_prompt_preflight_rejects_invalid_storyboard_without_side_effects(
 
 
 def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     caplog.set_level(logging.DEBUG)
     repository = LocalFileRepository(tmp_path / "repo")
@@ -791,8 +831,7 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         "expectedSource": {**expected_source, "page_design": {"purpose": "changed"}},
     }
     stale_response = client.post("/projects/demo/pages/1/storyboard/confirm", headers=headers, json=stale)
-    assert stale_response.status_code == 409
-    assert stale_response.json()["code"] == "confirmation_conflict"
+    _assert_sanitized_confirmation_conflict(stale_response)
     assert repository.load("demo").page(1).state is PageState.REVIEWED
     encoded_route = client.post(
         "/projects/%64emo/pages/1/storyboard/confirm", headers=headers, json=payload
@@ -921,6 +960,7 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         observer.metrics.snapshot(),
         repository.load("demo").model_dump(mode="json"),
         [record.__dict__ for record in caplog.records],
+        conflict.json(),
     )
     for output_value in output_values:
         _assert_confirmation_output_has_no_internal_values(
@@ -932,7 +972,16 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
             "_ExplicitStoryboardInputAuthority",
         )
     exposed_channels = "\n".join(
-        (confirmed.text, page_detail.text, published, result_json, observer_json, state_json, caplog.text)
+        (
+            confirmed.text,
+            conflict.text,
+            page_detail.text,
+            published,
+            result_json,
+            observer_json,
+            state_json,
+            caplog.text,
+        )
     )
     assert raw_request_body.decode("utf-8") not in exposed_channels
     assert credential_marker not in exposed_channels
@@ -943,6 +992,7 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     assert "fingerprint" not in published.lower()
     assert conflict.status_code == 409
     assert conflict.json()["code"] == "confirmation_conflict"
+    _assert_sanitized_confirmation_conflict(conflict)
     saved = repository.load("demo").page(1)
     assert isinstance(saved.storyboard, dict)
     assert isinstance(saved.storyboard.get("confirmation"), dict)
@@ -959,8 +1009,17 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     replay = client.post(
         "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=raw_request_body
     )
-    assert replay.status_code == 409
-    assert replay.json()["code"] == "confirmation_conflict"
+    _assert_sanitized_confirmation_conflict(replay)
+    _assert_confirmation_output_has_no_internal_values(
+        replay.json(),
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
+    assert source_snapshot.fingerprint not in replay.text
+    assert raw_request_body.decode("utf-8") not in replay.text
     state_before_forged = repository._load_revisioned("demo")
     events_before_forged = tuple(events.published)
     forged = client.post(
@@ -978,6 +1037,16 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     assert state_after_forged.fingerprint == state_before_forged.fingerprint
     assert state_after_forged.project == state_before_forged.project
     assert tuple(events.published) == events_before_forged
+    captured_process_streams = capfd.readouterr()
+    # TestClient is in-process; this does not inspect an external server's access logs.
+    _assert_captured_streams_are_clean(
+        (captured_process_streams.out, captured_process_streams.err),
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
 
 
 def test_fenced_coordinator_rejects_changed_confirmation_before_replacement_prompt_agent(
@@ -1186,7 +1255,10 @@ def test_prompt_rejects_source_changed_after_storyboard_confirmation_without_sid
 
 
 def test_confirmation_failure_paths_do_not_expose_capability_or_exception_details(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     caplog.set_level(logging.DEBUG)
     from manga_director.workflow.durable_execution import LocalFileDurablePageStore
@@ -1451,3 +1523,18 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     assert "_ExplicitStoryboardInputAuthority" not in verification_serialized
     assert secret not in verification_serialized
     assert verification_fingerprint not in caplog.text + verification_observer_json + verification_serialized
+    captured_process_streams = capfd.readouterr()
+    # TestClient is in-process; this does not inspect an external server's access logs.
+    _assert_captured_streams_are_clean(
+        (captured_process_streams.out, captured_process_streams.err),
+        credential_marker,
+        secret,
+        raw_request_marker,
+        raw_request_body.decode("utf-8"),
+        raw_invalid_request_body.decode("utf-8"),
+        verification_request_body.decode("utf-8"),
+        source_fingerprint,
+        verification_fingerprint,
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )

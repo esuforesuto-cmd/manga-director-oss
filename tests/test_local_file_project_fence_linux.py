@@ -26,15 +26,16 @@ def _race_for_fence(
     project_id: str,
     start: multiprocessing.synchronize.Event,
     release: multiprocessing.synchronize.Event,
-    results: multiprocessing.Queue[str],
+    results: multiprocessing.Queue[tuple[str, float]],
 ) -> None:
     assert start.wait(timeout=5)
+    attempt_started = time.monotonic()
     try:
         with _select_project_commit_fence(root, project_id, timeout_ms=150):
-            results.put("acquired")
+            results.put(("acquired", time.monotonic() - attempt_started))
             assert release.wait(timeout=5)
     except LocalFileDurabilityError as error:
-        results.put(str(error))
+        results.put((str(error), time.monotonic() - attempt_started))
 
 
 def _hold_until_terminated(
@@ -96,22 +97,30 @@ def test_linux_project_fence_subprocess_race_has_one_winner_and_bounded_loser(
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     release = context.Event()
-    results: multiprocessing.Queue[str] = context.Queue()
+    results: multiprocessing.Queue[tuple[str, float]] = context.Queue()
     workers = [
         context.Process(target=_race_for_fence, args=(root, "race", start, release, results))
         for _ in range(2)
     ]
     for worker in workers:
         worker.start()
-    started = time.monotonic()
     start.set()
     observed = [results.get(timeout=5), results.get(timeout=5)]
     release.set()
     for worker in workers:
         worker.join(timeout=5)
 
-    assert sorted(observed) == ["acquired", "project_commit_fence_contended"]
-    assert time.monotonic() - started < 2
+    assert sorted(result for result, _elapsed in observed) == [
+        "acquired",
+        "project_commit_fence_contended",
+    ]
+    loser_waits = [
+        elapsed
+        for result, elapsed in observed
+        if result == "project_commit_fence_contended"
+    ]
+    assert len(loser_waits) == 1
+    assert loser_waits[0] < 2
     assert all(worker.exitcode == 0 for worker in workers)
 
 

@@ -2017,12 +2017,14 @@ live ComfyUI validation, a full production one-Page end-to-end run, multiple
 Page generation, completion of a manga, or publication.
 
 V7-17, “Explicit Confirmed Storyboard Panel Input,” is accepted as a design
-through RFC-V7-015 on 2026-11-06 JST. Code implementation has not started and
-remains incomplete; design acceptance does not authorize implementation. Its
-scope is to make the existing V7-14-required structured panel values explicitly
-user-confirmed and persisted before PromptBuilt, while retaining separate
-explicit V7-15 layout input. Any implementation requires separate explicit
-authorization of its exact allowlist and validation plan. This acceptance
-does not authorize changes to frozen contracts, generic `/generate`,
-StateMachine, Provider or LocalFile boundaries, public APIs, Human Visual QA,
-Human Approval, V6 LTS, or I02, and does not authorize release or publication.
+through RFC-V7-015 on 2026-11-06 JST. Its implementation was separately
+authorized and is recorded in commit `2d5233aec975bef061b3c71de22e7b3f35bad8e3`.
+It is under review in draft PR #82 targeting `v7-dev`; it is not merged or
+complete, and CI plus final RFC acceptance checks remain. Design acceptance
+and implementation authorization are separate. Its scope is to make the
+existing V7-14-required structured panel values explicitly user-confirmed and
+persisted before PromptBuilt, while retaining separate explicit V7-15 layout
+input. This acceptance does not authorize changes to frozen contracts, generic
+`/generate`, StateMachine, Provider or LocalFile boundaries, public APIs, Human
+Visual QA, Human Approval, V6 LTS, or I02, and does not authorize release or
+publication.
