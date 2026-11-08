@@ -21,8 +21,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from manga_director.domain.exceptions import RepositoryError
+from manga_director.domain.exceptions import RepositoryError, ValidationError
 from manga_director.domain.project import Project
+from manga_director.repositories._windows_safe_filesystem import WindowsSafeFilesystem
 from manga_director.repositories.local_file_aggregate_envelope import (
     _build_r27_aggregate,
     _decode_r27_aggregate,
@@ -43,6 +44,10 @@ _R29_ACTIVATION_COMMITTED_KEYS = _R29_ACTIVATION_PREPARED_KEYS | frozenset({"com
 
 class LocalFileDurabilityError(RepositoryError):
     """Raised for redacted local durability failures."""
+
+
+class _LocalFileProjectAbsentError(LocalFileDurabilityError):
+    """Raised when neither the aggregate nor any durability record exists."""
 
 
 class StaleRevisionError(LocalFileDurabilityError):
@@ -455,7 +460,14 @@ class LocalFileRevisionStore:
         validate_revision_record: Callable[[bytes, str, int, str], None] | None = None,
     ) -> RevisionedProjectSnapshot:
         with self._project_fence(project_id):
-            payload = self._read_aggregate(aggregate_path)
+            try:
+                payload = self._read_aggregate(aggregate_path)
+            except LocalFileDurabilityError as exc:
+                if str(exc) != "authoritative_aggregate_missing":
+                    raise
+                if not self._has_durability_metadata(project_id):
+                    raise _LocalFileProjectAbsentError("authoritative_project_missing") from None
+                raise
             if self._r29_restart_applies(project_id, payload):
                 return self._load_r29_aware_snapshot(
                     project_id,
@@ -464,6 +476,7 @@ class LocalFileRevisionStore:
                     requires_existing_revision=requires_existing_revision,
                     validate_revision_record=validate_revision_record,
                 )
+            project = deserialize(payload)
             requires_existing = (
                 requires_existing_revision(payload) if requires_existing_revision is not None else False
             )
@@ -474,7 +487,7 @@ class LocalFileRevisionStore:
                 validate_record=validate_revision_record if requires_existing else None,
             )
             return RevisionedProjectSnapshot(
-                project=deserialize(payload),
+                project=project,
                 revision=record.revision,
                 fingerprint=record.fingerprint,
             )
@@ -1038,6 +1051,39 @@ class LocalFileRevisionStore:
 
     def _durability_directory(self) -> Path:
         return self._root / "_durability"
+
+    def _has_durability_metadata(self, project_id: str) -> bool:
+        paths = (
+            self._committed_path(project_id),
+            self._prepared_path(project_id),
+            self._activation_path(project_id),
+        )
+        if os.name == "nt":
+            try:
+                filesystem = WindowsSafeFilesystem(self._root)
+                return any(filesystem.exists("_durability", path.name) for path in paths)
+            except ValidationError as exc:
+                raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+        if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+            raise LocalFileDurabilityError("durability_metadata_unavailable")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(self._durability_directory(), flags)
+        except OSError as exc:
+            raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+        try:
+            for path in paths:
+                try:
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+                return True
+            return False
+        finally:
+            os.close(descriptor)
 
     def _record_stem(self, project_id: str) -> str:
         return _project_commit_identity(self._root, project_id)

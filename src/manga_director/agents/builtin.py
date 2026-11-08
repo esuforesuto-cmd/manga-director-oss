@@ -8,6 +8,11 @@ from manga_director.adapters.llm_provider import LLMProvider
 from manga_director.agents.base import BaseAgent
 from manga_director.agents.llm_support import LLMAssistance
 from manga_director.domain.state_machine import PageState
+from manga_director.production.explicit_storyboard_input import (
+    _ExplicitStoryboardInputAuthority,
+    confirmation_record,
+    validate_confirmation,
+)
 from manga_director.prompting import PromptPipeline
 from manga_director.workflow.contracts import AgentResult, WorkflowContext
 from manga_director.workflow.durable_execution import _EvidenceLinkedApprovalAuthority
@@ -92,6 +97,20 @@ class StoryboardAgent(LLMAssistance, BaseAgent):
         super().__init__(llm_provider, prompt_directory)
 
     def execute(self, context: WorkflowContext) -> AgentResult:
+        authority = context.metadata.get("_explicit_storyboard_input_authority")
+        if authority is not None:
+            if type(authority) is not _ExplicitStoryboardInputAuthority:
+                raise ValueError("Storyboard confirmation authority is invalid.")
+            if (
+                authority.project_id != context.page.get("project_id")
+                or str(authority.page_number) != context.page.get("page_id")
+                or context.state is not PageState.REVIEWED
+            ):
+                raise ValueError("Storyboard confirmation authority is not bound to this Page.")
+            return self.result(
+                payload={"panels": authority.panels, "confirmation": confirmation_record(authority)},
+                messages=["Explicit storyboard input confirmed."],
+            )
         design = _artifact(context, PageState.DESIGNED)
         roles = design.get("panel_roles", ["setup"])
         panels = [
@@ -148,6 +167,7 @@ class PromptAgent(BaseAgent):
         self._pipeline = pipeline or PromptPipeline()
 
     def execute(self, context: WorkflowContext) -> AgentResult:
+        _validate_confirmed_storyboard(context)
         result = self._pipeline.run(context)
         return self.result(
             payload={
@@ -158,6 +178,36 @@ class PromptAgent(BaseAgent):
             },
             messages=result.messages,
         )
+
+    def preflight(self, context: WorkflowContext) -> None:
+        """Require the existing validator before a confirmed Storyboard is persisted."""
+
+        _validate_confirmed_storyboard(context)
+        pipeline = self._pipeline
+        validation_pipeline = PromptPipeline(
+            template_loader=pipeline._template_loader,
+            builder=pipeline._builder,
+            optimizer=pipeline._optimizer,
+            validator=pipeline._validator,
+            renderer=pipeline._renderer,
+            default_template=pipeline._default_template,
+            optimizer_enabled=pipeline._optimizer_enabled,
+            validation_enabled=True,
+        )
+        validation_pipeline.run(context)
+
+
+def _validate_confirmed_storyboard(context: WorkflowContext) -> None:
+    storyboard = _artifact(context, PageState.STORYBOARDED)
+    if "confirmation" not in storyboard:
+        return
+    page_number = context.page.get("page_number", context.page.get("page_id", "0"))
+    validate_confirmation(
+        storyboard,
+        str(context.page.get("project_id", "")),
+        int(page_number),
+        context.artifacts,
+    )
 
 
 class ImageAgent(BaseAgent):

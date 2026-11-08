@@ -9,16 +9,32 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from time import monotonic, sleep
 from typing import Any, Literal, Protocol
 
-from manga_director.domain.exceptions import InvalidPageTransition
+from manga_director.domain.exceptions import (
+    InvalidPageTransition,
+    ProjectNotFoundError,
+    StateTransitionError,
+    ValidationError,
+)
 from manga_director.domain.project import Project
 from manga_director.domain.state_machine import PageState
+from manga_director.production.explicit_storyboard_input import (
+    _ExplicitStoryboardInputAuthority,
+    canonical_json,
+    confirmation_record,
+    create_authority,
+    validate_confirmation,
+    validate_expected_source,
+    validate_panels,
+)
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.local_file_durability import (
     ConditionalCommitResult,
     RevisionedProjectSnapshot,
+    _LocalFileProjectAbsentError,
     _R27RevisionPublicationRequest,
 )
 from manga_director.repositories.project_loader import ProjectLoader
@@ -35,6 +51,9 @@ DurableExecutionStatus = Literal[
     "transition_applied_event_published",
     "transition_applied_event_failed",
 ]
+
+_STORYBOARD_CONFIRM_FENCE_WAIT_SECONDS = 30.0
+_STORYBOARD_CONFIRM_FENCE_RETRY_SECONDS = 0.025
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +80,10 @@ class _DurableWorkflowExecutionReceipt:
 
 class _DurableRoutingError(ValueError):
     """Bounded LocalFile durable-routing failure for internal delivery adapters."""
+
+
+class _DurableConfirmationNotFoundError(Exception):
+    """The initial authoritative Project/Page lookup found no confirmation target."""
 
 
 class _DurableRunRoutingError(_DurableRoutingError):
@@ -275,6 +298,7 @@ class DurableWorkflowExecutionCoordinator:
         execution_input: Mapping[str, Any],
         *,
         evidence_linked_approval_gate: EvidenceLinkedApprovalGatePort | None = None,
+        storyboard_confirmation: Mapping[str, Any] | None = None,
     ) -> _DurableWorkflowExecutionReceipt:
         """Private LocalFile routing seam with an ephemeral command-input overlay."""
 
@@ -287,11 +311,40 @@ class DurableWorkflowExecutionCoordinator:
         fence: PageExecutionFencePort | None = None
         evidence_proof: EvidenceLinkedApprovalProofPort | None = None
         unpublished: object | None = None
+        storyboard_confirmation_present = storyboard_confirmation is not None
         try:
-            fence = self._fence_factory(project_id, page_id)
-            fence.acquire()
-            snapshot = self._page_store.load_revisioned(project_id)
-            context = self._page_store.context_from_snapshot(snapshot, page_id)
+            if storyboard_confirmation_present:
+                fence = _acquire_storyboard_confirmation_fence(
+                    self._fence_factory, project_id, page_id
+                )
+            else:
+                fence = self._fence_factory(project_id, page_id)
+                fence.acquire()
+            snapshot = self._load_initial_snapshot(
+                project_id,
+                storyboard_confirmation_present=storyboard_confirmation is not None,
+            )
+            context = _context_from_snapshot(
+                self._page_store,
+                snapshot,
+                page_id,
+                storyboard_confirmation_present=storyboard_confirmation_present,
+            )
+            storyboard = context.artifacts.get(PageState.STORYBOARDED.value)
+            storyboard_confirmation_present = storyboard_confirmation_present or (
+                isinstance(storyboard, Mapping) and "confirmation" in storyboard
+            )
+            if _contains_reserved_storyboard_authority(context.metadata):
+                raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
+            command, context = _apply_storyboard_confirmation(
+                self._engine,
+                snapshot,
+                context,
+                project_id,
+                page_id,
+                command,
+                storyboard_confirmation,
+            )
             command, stop_code = self._command_or_stop(context, command)
             if stop_code is not None:
                 return _receipt(
@@ -299,6 +352,8 @@ class DurableWorkflowExecutionCoordinator:
                     authoritative_context=context,
                 )
             assert command is not None
+            if command == "prompt":
+                _validate_confirmed_storyboard_before_prompt(context, project_id, page_id)
             context, evidence_proof = _prepare_execution_context(
                 snapshot,
                 context,
@@ -319,16 +374,30 @@ class DurableWorkflowExecutionCoordinator:
                 unpublished,
                 evidence_proof,
             )
-        except PageExecutionFenceError:
-            return _receipt(_not_applied(project_id, page_id, "PAGE_EXECUTION_FENCE_UNAVAILABLE"))
-        except InvalidPageTransition as exc:
-            return _receipt(
-                _not_applied(project_id, page_id, "DURABLE_EXECUTION_FAILED"), failure=exc
-            )
-        except Exception:
-            if unpublished is not None and self._engine._is_canonical_unpublished(unpublished):
+        except Exception as exc:
+            if (
+                not isinstance(
+                    exc,
+                    (
+                        PageExecutionFenceError,
+                        ProjectNotFoundError,
+                        _DurableRoutingError,
+                        ValidationError,
+                        InvalidPageTransition,
+                    ),
+                )
+                and unpublished is not None
+                and self._engine._is_canonical_unpublished(unpublished)
+            ):
                 self._engine._discard_unpublished(unpublished)
-            return _receipt(_not_applied(project_id, page_id, "DURABLE_EXECUTION_FAILED"))
+            return _execution_failure_receipt(
+                exc,
+                project_id,
+                page_id,
+                command,
+                storyboard_confirmation,
+                storyboard_confirmation_present,
+            )
         finally:
             try:
                 if evidence_proof is not None:
@@ -336,6 +405,16 @@ class DurableWorkflowExecutionCoordinator:
             finally:
                 if fence is not None:
                     fence.release()
+
+    def _load_initial_snapshot(
+        self, project_id: str, *, storyboard_confirmation_present: bool
+    ) -> RevisionedProjectSnapshot:
+        try:
+            return self._page_store.load_revisioned(project_id)
+        except _LocalFileProjectAbsentError as exc:
+            if not storyboard_confirmation_present:
+                raise
+            raise _DurableConfirmationNotFoundError from exc
 
     def _commit_and_publish(
         self,
@@ -346,6 +425,7 @@ class DurableWorkflowExecutionCoordinator:
         evidence_proof: EvidenceLinkedApprovalProofPort | None,
     ) -> _DurableWorkflowExecutionReceipt:
         next_context = self._engine._unpublished_context(unpublished)
+        next_context = _remove_explicit_storyboard_input_authority(next_context)
         if evidence_proof is not None:
             next_context = _remove_evidence_linked_approval_input(next_context)
         project = self._page_store.project_from_context(snapshot, page_id, next_context)
@@ -354,16 +434,27 @@ class DurableWorkflowExecutionCoordinator:
         except Exception:
             self._engine._discard_unpublished(unpublished)
             return _receipt(_not_applied(project_id, page_id, "AUTHORITATIVE_CAS_FAILED"))
-        if not self._page_store.verify_committed(project_id, page_id, project):
+        try:
+            verified = self._page_store.verify_committed(project_id, page_id, project)
+        except Exception:
             self._engine._discard_unpublished(unpublished)
             return _receipt(
                 _event_failed(project_id, page_id, "AUTHORITATIVE_POST_COMMIT_VERIFICATION_FAILED")
             )
+        if not verified:
+            self._engine._discard_unpublished(unpublished)
+            return _receipt(
+                _event_failed(project_id, page_id, "AUTHORITATIVE_POST_COMMIT_VERIFICATION_FAILED")
+            )
+        safe_result = self._engine._unpublished_result(unpublished).model_copy(
+            update={"context": next_context}, deep=False
+        )
+        safe_unpublished = replace(unpublished, result=safe_result)
         try:
-            self._engine._publish_unpublished(unpublished)
+            self._engine._publish_unpublished(safe_unpublished)
         except Exception:
             return _receipt(_event_failed(project_id, page_id, "POST_COMMIT_EVENT_PUBLICATION_FAILED"))
-        result = self._engine._unpublished_result(unpublished)
+        result = self._engine._unpublished_result(safe_unpublished)
         return _DurableWorkflowExecutionReceipt(
             outcome=DurableWorkflowExecutionResult(
                 project_id=project_id,
@@ -415,6 +506,7 @@ def _route_localfile_primary(
     *,
     logical_output_asset_quality_gate: LogicalOutputAssetQualityGatePort | None = None,
     evidence_linked_approval_gate: EvidenceLinkedApprovalGatePort | None = None,
+    storyboard_confirmation: Mapping[str, Any] | None = None,
 ) -> WorkflowResult:
     """Run one approved LocalFile primary command without a raw-save fallback."""
 
@@ -428,6 +520,7 @@ def _route_localfile_primary(
         command,
         execution_input,
         evidence_linked_approval_gate=evidence_linked_approval_gate,
+        storyboard_confirmation=storyboard_confirmation,
     )
     if (
         receipt.outcome.status == "transition_applied_event_published"
@@ -437,7 +530,243 @@ def _route_localfile_primary(
         return receipt.workflow_result
     if receipt.failure is not None:
         raise receipt.failure
+    if receipt.outcome.code == "STORYBOARD_CONFIRMATION_CONFLICT":
+        raise StateTransitionError("The Reviewed Page changed. Reload it and confirm again.")
+    if receipt.outcome.code == "STORYBOARD_CONFIRMATION_NOT_FOUND":
+        raise ProjectNotFoundError("The requested Page does not exist.")
+    if receipt.outcome.code.startswith("STORYBOARD_CONFIRMATION_"):
+        raise ValidationError("Storyboard confirmation is invalid or unsupported.")
     raise _DurableRoutingError(receipt.outcome.code)
+
+
+def _route_localfile_storyboard_confirmation(
+    engine: WorkflowEngine,
+    repository: LocalFileRepository,
+    project_id: str,
+    page_id: str,
+    request: Mapping[str, Any],
+) -> WorkflowResult:
+    """Confirm exact panel intent through the fenced private LocalFile path."""
+
+    receipt = DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+    )._execute_with_receipt(
+        project_id,
+        page_id,
+        "storyboard",
+        {},
+        storyboard_confirmation=request,
+    )
+    if (
+        receipt.outcome.status == "transition_applied_event_published"
+        and receipt.workflow_result is not None
+        and receipt.canonical_event is receipt.workflow_result.events[0]
+    ):
+        return receipt.workflow_result
+    if receipt.failure is not None:
+        raise receipt.failure
+    if receipt.outcome.code == "STORYBOARD_CONFIRMATION_CONFLICT":
+        raise StateTransitionError("The Reviewed Page changed. Reload and confirm again.")
+    if receipt.outcome.code == "STORYBOARD_CONFIRMATION_NOT_FOUND":
+        raise ProjectNotFoundError("The requested Page does not exist.")
+    if receipt.outcome.code.startswith("STORYBOARD_CONFIRMATION_"):
+        raise ValidationError("Storyboard confirmation is invalid or unsupported.")
+    raise _DurableRoutingError(receipt.outcome.code)
+
+
+def _closed_confirmation_input(request: Mapping[str, Any]) -> None:
+    if (
+        type(request) is not dict
+        or set(request) != {"requestVersion", "expectedSource", "confirmed", "panels"}
+        or type(request.get("requestVersion")) is not int
+        or request["requestVersion"] != 1
+        or type(request.get("confirmed")) is not bool
+        or request["confirmed"] is not True
+    ):
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID")
+    validate_expected_source(request["expectedSource"])
+    validate_panels(request["panels"])
+
+
+def _prepare_storyboard_confirmation(
+    snapshot: RevisionedProjectSnapshot,
+    context: WorkflowContext,
+    project_id: str,
+    page_id: str,
+    request: Mapping[str, Any],
+) -> tuple[WorkflowContext, _ExplicitStoryboardInputAuthority]:
+    try:
+        _closed_confirmation_input(request)
+    except ValidationError as exc:
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID") from exc
+    if (
+        context.state is not PageState.REVIEWED
+        or type(context.artifacts.get("Designed")) is not dict
+        or type(context.artifacts.get("Reviewed")) is not dict
+    ):
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_CONFLICT")
+    expected_source = validate_expected_source(request["expectedSource"])
+    current_source = {
+        "state": "Reviewed",
+        "page_design": context.artifacts["Designed"],
+        "review": context.artifacts["Reviewed"],
+    }
+    if canonical_json(expected_source) != canonical_json(current_source):
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_CONFLICT")
+    authority = create_authority(
+        project_id,
+        _page_number(page_id),
+        snapshot.revision,
+        snapshot.fingerprint,
+        expected_source,
+        request["panels"],
+    )
+    confirmed_context = context.model_copy(
+        update={"metadata": {**context.metadata, "_explicit_storyboard_input_authority": authority}},
+        deep=False,
+    )
+    return confirmed_context, authority
+
+
+def _remove_explicit_storyboard_input_authority(
+    context: WorkflowContext,
+) -> WorkflowContext:
+    metadata = dict(context.metadata)
+    metadata.pop("_explicit_storyboard_input_authority", None)
+    return context.model_copy(update={"metadata": metadata}, deep=False)
+
+
+def _preflight_explicit_storyboard(
+    engine: WorkflowEngine,
+    context: WorkflowContext,
+    authority: _ExplicitStoryboardInputAuthority,
+) -> None:
+    """Use the already configured PromptAgent pipeline before Storyboard mutation."""
+
+    prompt_agent = engine._agents.get(PageState.PROMPT_BUILT)
+    preflight = getattr(prompt_agent, "preflight", None)
+    if not callable(preflight):
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID")
+    storyboard = {"panels": authority.panels, "confirmation": confirmation_record(authority)}
+    artifacts = {**context.artifacts, PageState.STORYBOARDED.value: storyboard}
+    candidate = context.model_copy(
+        update={"state": PageState.STORYBOARDED, "artifacts": artifacts},
+        deep=False,
+    )
+    try:
+        preflight(candidate)
+    except ValidationError as exc:
+        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID") from exc
+
+
+def _validate_confirmed_storyboard_before_prompt(
+    context: WorkflowContext, project_id: str, page_id: str
+) -> None:
+    storyboard = context.artifacts.get(PageState.STORYBOARDED.value)
+    if isinstance(storyboard, Mapping) and "confirmation" in storyboard:
+        validate_confirmation(
+            storyboard,
+            project_id,
+            _page_number(page_id),
+            context.artifacts,
+        )
+
+
+def _execution_failure_receipt(
+    error: Exception,
+    project_id: str,
+    page_id: str,
+    command: str | None,
+    storyboard_confirmation: Mapping[str, Any] | None,
+    storyboard_confirmation_present: bool,
+) -> _DurableWorkflowExecutionReceipt:
+    if isinstance(error, PageExecutionFenceError):
+        return _receipt(_not_applied(project_id, page_id, "PAGE_EXECUTION_FENCE_UNAVAILABLE"))
+    if isinstance(error, _DurableConfirmationNotFoundError):
+        return _receipt(_not_applied(project_id, page_id, "STORYBOARD_CONFIRMATION_NOT_FOUND"))
+    if isinstance(error, _DurableRoutingError):
+        safe_codes = {
+            "DURABLE_EXECUTION_INPUT_INVALID",
+            "DURABLE_EXECUTION_INPUT_CONFLICT",
+        }
+        code = (
+            str(error)
+            if str(error).startswith("STORYBOARD_CONFIRMATION_") or str(error) in safe_codes
+            else "DURABLE_EXECUTION_FAILED"
+        )
+        return _receipt(_not_applied(project_id, page_id, code))
+    if isinstance(error, ValidationError):
+        code = (
+            "STORYBOARD_CONFIRMATION_INVALID"
+            if command == "prompt" and storyboard_confirmation_present
+            else "DURABLE_EXECUTION_FAILED"
+        )
+        return _receipt(_not_applied(project_id, page_id, code))
+    if isinstance(error, InvalidPageTransition):
+        return _receipt(
+            _not_applied(project_id, page_id, "DURABLE_EXECUTION_FAILED"), failure=error
+        )
+    return _receipt(_not_applied(project_id, page_id, "DURABLE_EXECUTION_FAILED"))
+
+
+def _acquire_storyboard_confirmation_fence(
+    fence_factory: Callable[[str, str], PageExecutionFencePort],
+    project_id: str,
+    page_id: str,
+) -> PageExecutionFencePort:
+    """Wait briefly for a competing confirmation before reading Page state."""
+
+    deadline = monotonic() + _STORYBOARD_CONFIRM_FENCE_WAIT_SECONDS
+    while True:
+        fence = fence_factory(project_id, page_id)
+        try:
+            fence.acquire()
+            return fence
+        except PageExecutionFenceError as error:
+            if str(error) != "page_execution_fence_contended":
+                raise
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise
+            sleep(min(_STORYBOARD_CONFIRM_FENCE_RETRY_SECONDS, remaining))
+
+
+def _context_from_snapshot(
+    page_store: DurablePageStorePort,
+    snapshot: RevisionedProjectSnapshot,
+    page_id: str,
+    *,
+    storyboard_confirmation_present: bool,
+) -> WorkflowContext:
+    try:
+        return page_store.context_from_snapshot(snapshot, page_id)
+    except ProjectNotFoundError as exc:
+        if not storyboard_confirmation_present:
+            raise
+        raise _DurableConfirmationNotFoundError from exc
+
+
+def _apply_storyboard_confirmation(
+    engine: WorkflowEngine,
+    snapshot: RevisionedProjectSnapshot,
+    context: WorkflowContext,
+    project_id: str,
+    page_id: str,
+    command: str | None,
+    storyboard_confirmation: Mapping[str, Any] | None,
+) -> tuple[str | None, WorkflowContext]:
+    if storyboard_confirmation is None:
+        return command, context
+    context, authority = _prepare_storyboard_confirmation(
+        snapshot,
+        context,
+        project_id,
+        page_id,
+        storyboard_confirmation,
+    )
+    _preflight_explicit_storyboard(engine, context, authority)
+    return "storyboard", context
 
 
 def _route_localfile_run(
@@ -486,6 +815,28 @@ def _not_applied(project_id: str, page_id: str, code: str) -> DurableWorkflowExe
         code=code,
         event_published=False,
     )
+
+
+def _contains_reserved_storyboard_authority(value: object) -> bool:
+    """Detect the private capability key anywhere in persisted metadata."""
+
+    pending = [value]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            if "_explicit_storyboard_input_authority" in current:
+                return True
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current)
+    return False
 
 
 def _event_failed(project_id: str, page_id: str, code: str) -> DurableWorkflowExecutionResult:
@@ -572,6 +923,8 @@ def _apply_execution_input(
 
     if command not in _COMMAND_OVERLAY_KEYS or not isinstance(execution_input, Mapping):
         raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
+    if command == "approve" and "review_evidence_id" in execution_input:
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
     values = dict(execution_input)
     allowed = _COMMAND_OVERLAY_KEYS[command]
     if set(values) - allowed:

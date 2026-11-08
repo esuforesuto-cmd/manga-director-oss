@@ -39,6 +39,48 @@ describe("REST API client", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
   });
 
+  it("sends explicit storyboard confirmation through its same-origin proxy with the closed request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "storyboarded" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = {
+      requestVersion: 1 as const,
+      expectedSource: { state: "Reviewed" as const, page_design: { purpose: "rescue" }, review: { checks: {} } },
+      confirmed: true as const,
+      panels: [{ number: 1, narrative_intent: "The courier crosses the gate", characters: ["courier"], continuity_bindings: ["red scarf"], action: "Crosses the gate", background: "Stone courtyard", composition: "Wide view from the north", constraints: ["keep scarf visible"] }]
+    };
+    const result = await api.pages.confirmStoryboard("demo", 1, body);
+    expect(result).toEqual({ status: "storyboarded" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/projects/demo/pages/1/storyboard/confirm");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
+  });
+
+  it("preserves numeric JSON tokens from the displayed source in the confirmation request", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        '{"pageNumber":1,"state":"Reviewed","qualityPassed":null,"approved":false,"workflow":{"currentState":"Reviewed","currentStep":null,"completedSteps":[],"availableActions":[],"history":[]},"artifacts":{"pageDesign":{"weight":1.0},"review":{"score":1}},"messages":[],"errors":[],"executionTimeMs":1,"approvalRequired":false}',
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "storyboarded" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const page = await api.pages.get("demo", 1);
+    const body = {
+      requestVersion: 1 as const,
+      expectedSource: {
+        state: "Reviewed" as const,
+        page_design: { weight: 1 },
+        review: { score: 1 }
+      },
+      confirmed: true as const,
+      panels: [{ number: 1, narrative_intent: "A courier opens the gate", characters: ["courier"], continuity_bindings: ["red scarf"], action: "Opens the gate", background: "Stone courtyard", composition: "The key remains visible", constraints: ["preserve the scarf"] }]
+    };
+
+    await api.pages.confirmStoryboard("demo", 1, body, page.__storyboardExpectedSourceJson);
+
+    expect(fetchMock.mock.calls[1][1].body).toContain('"weight":1.0');
+  });
+
   it("maps a failed API response to a structured client error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Invalid state" }), { status: 409 })));
 

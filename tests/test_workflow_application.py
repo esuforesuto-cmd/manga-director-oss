@@ -3,7 +3,7 @@ import pytest
 from manga_director.adapters import ImageGeneratorFactory, LLMFactory
 from manga_director.agents.registry import primary_agents, support_agents
 from manga_director.application import WorkflowApplicationService, build_workflow_application
-from manga_director.domain.exceptions import StateTransitionError
+from manga_director.domain.exceptions import StateTransitionError, ValidationError
 from manga_director.domain.state_machine import StateMachine
 from manga_director.events import MemoryEventBus
 from manga_director.mcp.application import MangaApplicationService
@@ -76,3 +76,23 @@ def test_non_localfile_application_cannot_enter_private_evidence_linked_path() -
             "review:exact:001",
             object(),  # type: ignore[arg-type]
         )
+
+
+def test_non_localfile_application_cannot_confirm_storyboard_input() -> None:
+    application = _application()
+    with pytest.raises(StateTransitionError, match="LocalFile"):
+        application._confirm_storyboard_input("demo", 1, {})
+
+
+def test_support_rejects_reserved_storyboard_authority_in_persisted_metadata() -> None:
+    application = _application()
+    application.create_project("demo", "Demo", 1, {})
+    project = application._repository.load("demo")
+    page = project.page(1).model_copy(
+        update={"metadata": {"trace": {"_explicit_storyboard_input_authority": {"forged": True}}}},
+        deep=True,
+    )
+    application._repository.save(project.replace_page(page))
+
+    with pytest.raises(ValidationError, match="Reserved storyboard confirmation metadata"):
+        application.execute_support("dialogue", "demo", 1, {})

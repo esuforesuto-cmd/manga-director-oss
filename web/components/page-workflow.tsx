@@ -6,6 +6,7 @@ import { HumanVisualReviewEvidenceHistory } from "./human-visual-review-evidence
 import { HumanVisualReviewForm } from "./human-visual-review-form";
 import { PageActions } from "./page-actions";
 import { PanelAwareGenerationForm } from "./panel-aware-generation-form";
+import { ExplicitStoryboardInputForm } from "./explicit-storyboard-input-form";
 import styles from "./page-workflow.module.css";
 import {
   availableWorkflowActions,
@@ -23,6 +24,8 @@ export function PageWorkflowView({
   projectId,
   page
 }: Readonly<{ projectId: string; page: PageDetail }>) {
+  const pageDesign = page.artifacts.pageDesign;
+  const review = page.artifacts.review;
   return (
     <section aria-labelledby="page-heading">
       <div className="pageHeading">
@@ -34,6 +37,19 @@ export function PageWorkflowView({
         <h2 id="actions-heading">Workflow actions</h2>
         <PageActions projectId={projectId} pageNumber={page.pageNumber} actions={availableWorkflowActions(page)} />
       </section>
+      {page.state === "Reviewed" && pageDesign && typeof pageDesign === "object" && !Array.isArray(pageDesign)
+        && review && typeof review === "object" && !Array.isArray(review) ? (
+          <section className={styles.panel}>
+            <ExplicitStoryboardInputForm
+              key={page.__storyboardExpectedSourceJson ?? JSON.stringify([pageDesign, review])}
+              projectId={projectId}
+              page={page}
+              pageDesign={pageDesign as Record<string, unknown>}
+              review={review as Record<string, unknown>}
+              expectedSourceJson={page.__storyboardExpectedSourceJson}
+            />
+          </section>
+        ) : null}
       {page.state === "PromptBuilt" && persistedStoryboardPanels(page) ? (
         <section className={styles.panel}>
           <PanelAwareGenerationForm projectId={projectId} pageNumber={page.pageNumber} panels={persistedStoryboardPanels(page)!} />
