@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import http.client
+import importlib
+import importlib.util
 import json
 import logging
 import os
 import re
+import socket
 import traceback
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
-from threading import Event, Lock
-from time import sleep
+from threading import Event, Lock, Thread
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -162,6 +167,138 @@ def _assert_captured_streams_are_clean(
     for stream in streams:
         _assert_confirmation_output_has_no_internal_values(stream, *sensitive_values)
         _assert_no_internal_revision_or_fingerprint_text(stream)
+
+
+@contextmanager
+def _running_loopback_uvicorn(app: Any, uvicorn: Any) -> Iterator[int]:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server: Any | None = None
+    thread: Thread | None = None
+    port: int | None = None
+    thread_started = False
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.setblocking(False)
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                access_log=True,
+                log_config=None,
+                log_level=None,
+            )
+        )
+        thread = Thread(
+            target=server.run,
+            kwargs={"sockets": [listener]},
+            name="v7-17-uvicorn-log-test",
+            daemon=True,
+        )
+        thread.start()
+        thread_started = True
+        deadline = monotonic() + 10
+        while not server.started and thread.is_alive() and monotonic() < deadline:
+            sleep(0.01)
+        assert thread.is_alive() and server.started, "Uvicorn did not start on loopback."
+        yield port
+    finally:
+        try:
+            if thread_started and server is not None and thread is not None:
+                server.should_exit = True
+                thread.join(timeout=10)
+                if thread.is_alive():
+                    server.force_exit = True
+                    listener.close()
+                    thread.join(timeout=5)
+            listener.close()
+            assert thread is None or not thread.is_alive(), (
+                "Uvicorn thread remained alive after shutdown."
+            )
+            assert listener.fileno() == -1, "Uvicorn listening socket was not closed."
+            if port is not None:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    if os.name == "posix":
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(("127.0.0.1", port))
+        finally:
+            listener.close()
+
+
+def _loopback_json_post(
+    port: int,
+    project_id: str,
+    body: bytes,
+    credential: str,
+) -> tuple[int, str]:
+    origin = LOCAL_WEB_ORIGINS[0]
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(
+            "POST",
+            f"/projects/{project_id}/pages/1/storyboard/confirm",
+            body=body,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": origin,
+                "Referer": f"{origin}/projects/{project_id}/pages/1",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Dest": "empty",
+                "Authorization": credential,
+            },
+        )
+        response = connection.getresponse()
+        return response.status, response.read().decode("utf-8")
+    finally:
+        connection.close()
+
+
+@contextmanager
+def _capture_uvicorn_access_logs() -> Iterator[list[logging.LogRecord]]:
+    logger = logging.getLogger("uvicorn.access")
+    original_handlers = logger.handlers[:]
+    original_level = logger.level
+    original_propagate = logger.propagate
+    original_disabled = logger.disabled
+    records: list[logging.LogRecord] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    capture_handler = _CaptureHandler(logging.INFO)
+    logger.handlers[:] = [stream_handler, capture_handler]
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.disabled = False
+    try:
+        yield records
+    finally:
+        logger.handlers[:] = original_handlers
+        logger.setLevel(original_level)
+        logger.propagate = original_propagate
+        logger.disabled = original_disabled
+        stream_handler.close()
+        capture_handler.close()
+
+
+def _load_uvicorn_for_real_server_test() -> Any:
+    if importlib.util.find_spec("uvicorn") is None:
+        is_ci = (
+            os.environ.get("CI", "").casefold() in {"true", "1", "yes"}
+            or os.environ.get("GITHUB_ACTIONS", "").casefold() == "true"
+        )
+        if os.name == "nt" and not is_ci:
+            pytest.skip("Uvicorn is not installed in this Windows environment.")
+        pytest.fail("Uvicorn is required for real HTTP access-log verification.")
+    return importlib.import_module("uvicorn")
 
 
 def _panel(**overrides: object) -> dict[str, object]:
@@ -1538,3 +1675,261 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
         "_explicit_storyboard_input_authority",
         "_ExplicitStoryboardInputAuthority",
     )
+
+
+def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    uvicorn = _load_uvicorn_for_real_server_test()
+
+    from manga_director.repositories.local_file_aggregate_envelope import (
+        _project_payload_from_aggregate,
+    )
+    from manga_director.workflow import durable_execution as durable_execution_module
+    from manga_director.workflow.durable_execution import LocalFileDurablePageStore
+
+    caplog.set_level(logging.DEBUG)
+    repository = LocalFileRepository(tmp_path / "repository")
+    page_design = {
+        "page_type": "manga",
+        "purpose": "Recover the brass key",
+        "reader_emotion": "tension",
+        "featured_character": "courier",
+        "big_moment": "The key is within reach",
+        "hook": "A door opens",
+        "panel_count": 1,
+        "panel_roles": ["discovery"],
+    }
+    review = {"checks": {"character": True}, "improvements": []}
+    for project_id in ("demo", "failure-demo"):
+        repository.save(
+            Project(
+                id=project_id,
+                title="Disposable log verification",
+                pages=[Page(
+                    page_number=1,
+                    state=PageState.REVIEWED,
+                    page_design=page_design,
+                    review=review,
+                    metadata={"trace_id": f"v7-17-real-log-{project_id}"},
+                )],
+            )
+        )
+
+    loader = ProjectLoader(repository)
+    events = MemoryEventBus()
+    llm_provider = LLMFactory.create("mock")
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=events,
+        agents=primary_agents(
+            ImageGeneratorFactory.create("mock"),
+            None,
+            llm_provider,
+            PromptPipeline(),
+        ),
+        support_agents=support_agents(llm_provider, None),
+    )
+    coordinator = WorkflowCoordinator(
+        ProjectWorkflowEngine(repository, events),
+        ChapterWorkflowEngine(repository, events, PageNumberWorkflowScheduler()),
+        engine,
+        loader,
+    )
+    app = build_workflow_app(
+        workflow_engine=engine,
+        workflow_coordinator=coordinator,
+        project_loader=loader,
+        repository=repository,
+    )
+
+    authority_by_project: dict[str, Any] = {}
+    original_prepare = durable_execution_module._prepare_storyboard_confirmation
+
+    def capture_private_authority(
+        snapshot: Any,
+        context: WorkflowContext,
+        project_id: str,
+        page_id: str,
+        request: Any,
+    ) -> Any:
+        prepared_context, authority = original_prepare(
+            snapshot, context, project_id, page_id, request
+        )
+        authority_by_project[project_id] = authority
+        return prepared_context, authority
+
+    monkeypatch.setattr(
+        durable_execution_module,
+        "_prepare_storyboard_confirmation",
+        capture_private_authority,
+    )
+    original_conditional_commit = LocalFileDurablePageStore.conditional_commit
+    injected_failures: list[str] = []
+    exception_secret = "v7-17-transient-exception-secret"
+
+    def fail_only_disposable_project(
+        page_store: LocalFileDurablePageStore,
+        snapshot: Any,
+        project: Project,
+    ) -> Any:
+        if project.id == "failure-demo":
+            injected_failures.append(project.id)
+            raise RuntimeError(exception_secret)
+        return original_conditional_commit(page_store, snapshot, project)
+
+    monkeypatch.setattr(
+        LocalFileDurablePageStore,
+        "conditional_commit",
+        fail_only_disposable_project,
+    )
+    credential = "Bearer v7-17-fake-http-credential"
+    payload = {
+        "requestVersion": 1,
+        "expectedSource": {
+            "state": "Reviewed",
+            "page_design": page_design,
+            "review": review,
+        },
+        "confirmed": True,
+        "panels": [_panel()],
+    }
+    request_body = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    monkeypatch.setattr(uvicorn.Config, "configure_logging", lambda _self: None)
+
+    with _capture_uvicorn_access_logs() as access_records:
+        with _running_loopback_uvicorn(app, uvicorn) as port:
+            success_status, success_text = _loopback_json_post(
+                port, "demo", request_body, credential
+            )
+            conflict_status, conflict_text = _loopback_json_post(
+                port, "demo", request_body, credential
+            )
+            failure_status, failure_text = _loopback_json_post(
+                port, "failure-demo", request_body, credential
+            )
+
+    assert success_status == 200
+    assert json.loads(success_text) == {"status": "storyboarded"}
+    assert conflict_status == 409
+    assert json.loads(conflict_text) == {
+        "code": "confirmation_conflict",
+        "message": "The Page changed. Reload and review it before confirming again.",
+    }
+    assert failure_status == 503
+    assert json.loads(failure_text) == {
+        "code": "activation_unavailable",
+        "message": "Storyboard confirmation is unavailable.",
+    }
+    assert injected_failures == ["failure-demo"]
+    assert set(authority_by_project) == {"demo", "failure-demo"}
+
+    successful_page = repository.load("demo").page(1)
+    successful_storyboard = successful_page.storyboard
+    assert isinstance(successful_storyboard, dict)
+    confirmation = successful_storyboard.get("confirmation")
+    assert isinstance(confirmation, dict)
+    assert set(confirmation) == {
+        "schema_id",
+        "schema_version",
+        "source_project_id",
+        "source_page_number",
+        "source_sha256",
+        "source_page_design_sha256",
+        "source_review_sha256",
+        "panel_input_sha256",
+        "user_confirmed",
+    }
+    failed_page = repository.load("failure-demo").page(1)
+    assert failed_page.state is PageState.REVIEWED
+    assert failed_page.storyboard is None
+
+    authorities = tuple(authority_by_project.values())
+    post_confirmation_fingerprint = repository._load_revisioned("demo").fingerprint
+    successful_page_path = repository._page_path("demo", 1)
+    failed_page_path = repository._page_path("failure-demo", 1)
+    successful_project_path = repository._path("demo")
+    failed_project_path = repository._path("failure-demo")
+    successful_page_text = successful_page_path.read_text(encoding="utf-8")
+    failed_page_text = failed_page_path.read_text(encoding="utf-8")
+    successful_project_text = _project_payload_from_aggregate(
+        successful_project_path.read_bytes()
+    ).decode("utf-8")
+    failed_project_text = _project_payload_from_aggregate(
+        failed_project_path.read_bytes()
+    ).decode("utf-8")
+    successful_project_payload = json.loads(successful_project_text)
+    failed_project_payload = json.loads(failed_project_text)
+    successful_project_page = successful_project_payload["pages"][0]
+    failed_project_page = failed_project_payload["pages"][0]
+    assert isinstance(successful_project_page.get("storyboard"), dict)
+    assert successful_project_page["storyboard"].get("confirmation") == confirmation
+    assert failed_project_page["state"] == PageState.REVIEWED.value
+    assert failed_project_page.get("storyboard") is None
+    successful_page_data = json.loads(successful_page_text)
+    failed_page_data = json.loads(failed_page_text)
+    private_values = (
+        credential,
+        credential.removeprefix("Bearer "),
+        request_body.decode("utf-8"),
+        json.dumps(request_body.decode("utf-8"), ensure_ascii=False),
+        exception_secret,
+        *(repr(authority) for authority in authorities),
+        *(authority.fingerprint for authority in authorities),
+        post_confirmation_fingerprint,
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
+    persisted_values = (
+        repository.load("demo").model_dump(mode="json"),
+        repository.load("failure-demo").model_dump(mode="json"),
+        successful_project_payload,
+        failed_project_payload,
+        successful_page_data,
+        failed_page_data,
+    )
+    for output_value in (
+        json.loads(success_text),
+        json.loads(conflict_text),
+        json.loads(failure_text),
+        *persisted_values,
+    ):
+        _assert_confirmation_output_has_no_internal_values(output_value, *private_values)
+
+    captured_process_streams = capfd.readouterr()
+    process_logs = captured_process_streams.out + "\n" + captured_process_streams.err
+    application_logs = caplog.text
+    for logs in (process_logs, application_logs):
+        _assert_confirmation_output_has_no_internal_values(logs, *private_values)
+        _assert_no_internal_revision_or_fingerprint_text(logs)
+    for response_text in (success_text, conflict_text, failure_text):
+        _assert_confirmation_output_has_no_internal_values(response_text, *private_values)
+        _assert_no_internal_revision_or_fingerprint_text(response_text)
+    for serialized in (
+        successful_project_text,
+        failed_project_text,
+        successful_page_text,
+        failed_page_text,
+    ):
+        _assert_confirmation_output_has_no_internal_values(serialized, *private_values)
+        _assert_no_internal_revision_or_fingerprint_text(serialized)
+
+    access_messages = [record.getMessage() for record in access_records]
+    assert len(access_messages) == 3, "Uvicorn access log must contain all three HTTP requests."
+    assert all(record.name == "uvicorn.access" for record in access_records)
+    for message in access_messages:
+        assert message in process_logs, "Uvicorn access record was not written to captured stderr."
+    for project_id, status in (("demo", 200), ("demo", 409), ("failure-demo", 503)):
+        expected_path = (
+            f'"POST /projects/{project_id}/pages/1/storyboard/confirm HTTP/1.1"'
+        )
+        assert sum(
+            expected_path in message
+            and re.search(rf'"\s{status}(?:\s|$)', message) is not None
+            for message in access_messages
+        ) == 1
