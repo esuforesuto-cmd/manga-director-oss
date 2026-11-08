@@ -1769,7 +1769,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     )
     original_conditional_commit = LocalFileDurablePageStore.conditional_commit
     injected_failures: list[str] = []
-    exception_secret = "v7-17-transient-exception-secret"
+    exception_marker = "TEST_FAILURE_MARKER_ONLY"
 
     def fail_only_disposable_project(
         page_store: LocalFileDurablePageStore,
@@ -1778,7 +1778,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     ) -> Any:
         if project.id == "failure-demo":
             injected_failures.append(project.id)
-            raise RuntimeError(exception_secret)
+            raise RuntimeError(exception_marker)
         return original_conditional_commit(page_store, snapshot, project)
 
     monkeypatch.setattr(
@@ -1878,7 +1878,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
         credential.removeprefix("Bearer "),
         request_body.decode("utf-8"),
         json.dumps(request_body.decode("utf-8"), ensure_ascii=False),
-        exception_secret,
+        exception_marker,
         *(repr(authority) for authority in authorities),
         *(authority.fingerprint for authority in authorities),
         post_confirmation_fingerprint,
