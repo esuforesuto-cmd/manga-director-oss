@@ -502,6 +502,14 @@ def _register_visual_review_request_guard(
     localfile_storyboard_confirmation: bool,
 ) -> None:
     async def reject_unbounded_visual_review_request(request: Any, call_next: Any) -> Any:
+        storyboard_confirmation_alias = (
+            localfile_storyboard_confirmation
+            and request.method == "POST"
+            and request.url.path != request.url.path.rstrip("/")
+            and request.url.path.rstrip("/").endswith(_STORYBOARD_CONFIRM_SUFFIX)
+        )
+        if storyboard_confirmation_alias:
+            return _visual_review_error(json_response, 422, "invalid_input")
         evidence_linked_approval = (
             request.method == "POST"
             and request.url.path.endswith(_EVIDENCE_LINKED_APPROVAL_SUFFIX)

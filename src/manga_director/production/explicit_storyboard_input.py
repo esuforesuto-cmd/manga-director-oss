@@ -225,6 +225,10 @@ def validate_confirmation(storyboard: object, project_id: str, page_number: int,
         return
     if set(storyboard) != {"panels", "confirmation"}:
         raise ValidationError("Confirmed storyboard has unsupported root fields.")
+    page_design = artifacts.get("Designed")
+    review = artifacts.get("Reviewed")
+    if type(page_design) is not dict or type(review) is not dict:
+        raise ValidationError("Confirmed storyboard source artifacts are missing or malformed.")
     confirmation = storyboard["confirmation"]
     if type(confirmation) is not dict or set(confirmation) != _CONFIRMATION_KEYS:
         raise ValidationError("Confirmed storyboard provenance is malformed.")
@@ -234,8 +238,8 @@ def validate_confirmation(storyboard: object, project_id: str, page_number: int,
         "schema_version": 1,
         "source_project_id": project_id,
         "source_page_number": page_number,
-        "source_page_design_sha256": sha256(artifacts.get("Designed", {})),
-        "source_review_sha256": sha256(artifacts.get("Reviewed", {})),
+        "source_page_design_sha256": sha256(page_design),
+        "source_review_sha256": sha256(review),
         "panel_input_sha256": sha256(panels),
         "user_confirmed": True,
     }
@@ -244,9 +248,10 @@ def validate_confirmation(storyboard: object, project_id: str, page_number: int,
             raise ValidationError("Confirmed storyboard provenance no longer matches its source.")
     if not all(type(confirmation[key]) is str and _DIGEST.fullmatch(confirmation[key]) for key in ("source_sha256", "source_page_design_sha256", "source_review_sha256", "panel_input_sha256")):
         raise ValidationError("Confirmed storyboard provenance digest is malformed.")
-    source = reviewed_source(project_id, page_number, {
-        "page_design": artifacts.get("Designed", {}),
-        "review": artifacts.get("Reviewed", {}),
-    })
+    source = reviewed_source(
+        project_id,
+        page_number,
+        {"page_design": page_design, "review": review},
+    )
     if confirmation["source_sha256"] != sha256(source):
         raise ValidationError("Confirmed storyboard source no longer matches its provenance.")

@@ -489,7 +489,8 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
             workflow_coordinator=coordinator,
             project_loader=loader,
             repository=repository,
-        )
+        ),
+        follow_redirects=True,
     )
     origin = LOCAL_WEB_ORIGINS[0]
     payload = {
@@ -521,6 +522,28 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
     from manga_director.workflow.durable_execution import LocalFileDurablePageStore
 
     source_before = repository._load_revisioned("demo")
+    alias_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    for alias_client in (client, TestClient(client.app, follow_redirects=False)):
+        alias_response = alias_client.post(
+            "/projects/demo/pages/1/storyboard/confirm/",
+            headers=alias_headers,
+            json=payload,
+        )
+        assert alias_response.status_code == 422
+        assert alias_response.json()["code"] == "invalid_input"
+        assert "location" not in alias_response.headers
+    assert repository._load_revisioned("demo") == source_before
+    assert repository.load("demo").page(1).state is PageState.REVIEWED
+    assert events.published == []
+
     with monkeypatch.context() as patch:
         patch.setattr(
             LocalFileDurablePageStore,
@@ -706,6 +729,27 @@ def test_confirmation_provenance_binds_exact_panels_and_reviewed_artifacts() -> 
         validate_confirmation(changed, "demo", 1, {"Designed": source["page_design"], "Reviewed": source["review"]})
     with pytest.raises(ValidationError):
         validate_confirmation(storyboard, "demo", 1, {"Designed": source["page_design"], "Reviewed": {"checks": {}}})
+
+
+@pytest.mark.parametrize("missing_artifact", ("Designed", "Reviewed"))
+def test_confirmation_provenance_rejects_missing_source_artifacts(
+    missing_artifact: str,
+) -> None:
+    source = {
+        "state": "Reviewed",
+        "page_design": {"purpose": "Recover the brass key", "featured_character": "courier"},
+        "review": {},
+    }
+    panels = [_panel()]
+    authority = create_authority("demo", 1, 7, "f" * 64, source, panels)
+    from manga_director.production.explicit_storyboard_input import confirmation_record
+
+    storyboard = {"panels": panels, "confirmation": confirmation_record(authority)}
+    artifacts = {"Designed": source["page_design"], "Reviewed": source["review"]}
+    del artifacts[missing_artifact]
+
+    with pytest.raises(ValidationError, match="source artifacts are missing or malformed"):
+        validate_confirmation(storyboard, "demo", 1, artifacts)
 
 
 def test_prior_prompt_pipeline_ignores_additive_storyboard_confirmation_key() -> None:
