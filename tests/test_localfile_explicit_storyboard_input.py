@@ -90,6 +90,85 @@ def _use_platform_page_execution_fence() -> Iterator[None]:
     patch.undo()
 
 
+class _ContextCapturingWorkflowObserver(WorkflowObserver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started_contexts: list[tuple[WorkflowContext, PageState]] = []
+
+    def begin(self, context: WorkflowContext, target: PageState) -> str:
+        self.started_contexts.append((context, target))
+        return super().begin(context, target)
+
+
+def test_workflow_observer_does_not_receive_transient_storyboard_authority() -> None:
+    private_key = "_explicit_storyboard_input_authority"
+    authority = create_authority(
+        "demo",
+        1,
+        7,
+        "a" * 64,
+        {
+            "page_design": {"purpose": "Recover the brass key"},
+            "review": {"checks": {"character": True}},
+        },
+        [_panel()],
+    )
+    observer = _ContextCapturingWorkflowObserver()
+    agent_contexts: list[WorkflowContext] = []
+
+    class _StoryboardAgent:
+        def execute(self, context: WorkflowContext) -> AgentResult:
+            agent_contexts.append(context)
+            return AgentResult(
+                success=True,
+                state=PageState.STORYBOARDED,
+                payload={"panels": [_panel()]},
+            )
+
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=MemoryEventBus(),
+        agents={PageState.STORYBOARDED: _StoryboardAgent()},
+        observer=observer,
+    )
+    confirmation_context = WorkflowContext(
+        page={"project_id": "demo", "page_id": "1"},
+        state=PageState.REVIEWED,
+        metadata={
+            "trace_id": "v7-17-private-observer-trace",
+            "correlation_id": "v7-17-private-observer-correlation",
+            "ordinary_metadata": "preserved",
+            private_key: authority,
+        },
+    )
+
+    result = engine.execute(confirmation_context)
+
+    assert result.current_state is PageState.STORYBOARDED
+    assert len(agent_contexts) == 1
+    assert agent_contexts[0] is confirmation_context
+    assert agent_contexts[0].metadata[private_key] is authority
+    assert len(observer.started_contexts) == 1
+    observed_context, target = observer.started_contexts[0]
+    assert target is PageState.STORYBOARDED
+    assert observed_context is not confirmation_context
+    assert observed_context.metadata == {
+        "trace_id": "v7-17-private-observer-trace",
+        "correlation_id": "v7-17-private-observer-correlation",
+        "ordinary_metadata": "preserved",
+    }
+    assert authority.fingerprint not in observed_context.model_dump_json()
+
+    ordinary_context = confirmation_context.model_copy(
+        update={"metadata": {"trace_id": "v7-17-ordinary-observer-trace"}},
+        deep=False,
+    )
+    ordinary_result = engine.execute(ordinary_context)
+    assert ordinary_result.current_state is PageState.STORYBOARDED
+    assert observer.started_contexts[1][0] is ordinary_context
+    assert agent_contexts[1] is ordinary_context
+
+
 # Keep the approved source/panel `*_sha256` provenance fields out of this set.
 _FORBIDDEN_CONFIRMATION_OUTPUT_KEYS = {
     "authorization",
@@ -1766,6 +1845,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     loader = ProjectLoader(repository)
     events = MemoryEventBus()
     llm_provider = LLMFactory.create("mock")
+    observer = _ContextCapturingWorkflowObserver()
     engine = WorkflowEngine(
         state_machine=StateMachine(),
         event_bus=events,
@@ -1776,6 +1856,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
             PromptPipeline(),
         ),
         support_agents=support_agents(llm_provider, None),
+        observer=observer,
     )
     coordinator = WorkflowCoordinator(
         ProjectWorkflowEngine(repository, events),
@@ -1872,6 +1953,15 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     }
     assert injected_failures == ["failure-demo"]
     assert set(authority_by_project) == {"demo", "failure-demo"}
+    observer_context_data = [
+        context.model_dump(mode="json")
+        for context, target in observer.started_contexts
+        if target is PageState.STORYBOARDED
+    ]
+    assert len(observer_context_data) == 2
+    for context_data in observer_context_data:
+        assert "_explicit_storyboard_input_authority" not in context_data["metadata"]
+        _assert_confirmation_output_has_no_internal_values(context_data)
 
     successful_page = repository.load("demo").page(1)
     successful_storyboard = successful_page.storyboard
@@ -1936,6 +2026,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
         failed_project_payload,
         successful_page_data,
         failed_page_data,
+        observer_context_data,
     )
     for output_value in (
         json.loads(success_text),

@@ -15,8 +15,12 @@ function emptyPanel(number: number): DraftPanel {
   return { number, narrative_intent: "", characters: "", continuity_bindings: "", action: "", background: "", composition: "", constraints: "" };
 }
 
-function list(value: string): string[] {
+export function parseCharacterIds(value: string): string[] {
   return value.split(",").map((item) => item.trim());
+}
+
+export function parseLineItems(value: string): string[] {
+  return value.split(/\r?\n/).map((item) => item.trim());
 }
 
 function freezeJson<T>(value: T): T {
@@ -35,9 +39,9 @@ function validPanels(panels: DraftPanel[]): boolean {
       !value || value !== value.trim() || value.length > 4000 || abstract.has(value.toLowerCase())
         || value.startsWith("# Storyboard") || value.startsWith("```")
     )) return false;
-    const characters = list(panel.characters);
-    const continuity = list(panel.continuity_bindings);
-    const constraints = list(panel.constraints);
+    const characters = parseCharacterIds(panel.characters);
+    const continuity = parseLineItems(panel.continuity_bindings);
+    const constraints = parseLineItems(panel.constraints);
     const boundedList = (items: string[], max: number) => items.length >= 1 && items.length <= max
       && items.every((item) => Boolean(item) && item.length <= 512 && !abstract.has(item.toLowerCase()));
     return boundedList(characters, 32)
@@ -86,9 +90,9 @@ export function ExplicitStoryboardInputForm({
     setMessage("");
     const explicitPanels = panels.map((panel) => ({
       ...panel,
-      characters: list(panel.characters),
-      continuity_bindings: list(panel.continuity_bindings),
-      constraints: list(panel.constraints)
+      characters: parseCharacterIds(panel.characters),
+      continuity_bindings: parseLineItems(panel.continuity_bindings),
+      constraints: parseLineItems(panel.constraints)
     }));
     try {
       await api.pages.confirmStoryboard(projectId, page.pageNumber, {
@@ -137,14 +141,14 @@ export function ExplicitStoryboardInputForm({
         <legend>Panel {panel.number}</legend>
         <label>Narrative intent<input value={panel.narrative_intent} disabled={submitting} onChange={(event) => update(index, "narrative_intent", event.target.value)} /></label>
         <label>Character IDs, comma separated<input value={panel.characters} disabled={submitting} onChange={(event) => update(index, "characters", event.target.value)} /></label>
-        <label>Continuity bindings, comma separated<input value={panel.continuity_bindings} disabled={submitting} onChange={(event) => update(index, "continuity_bindings", event.target.value)} /></label>
+        <label>Continuity bindings, one per line<textarea rows={3} value={panel.continuity_bindings} disabled={submitting} onChange={(event) => update(index, "continuity_bindings", event.target.value)} /></label>
         <label>Action<input value={panel.action} disabled={submitting} onChange={(event) => update(index, "action", event.target.value)} /></label>
         <label>Background<input value={panel.background} disabled={submitting} onChange={(event) => update(index, "background", event.target.value)} /></label>
         <label>Composition<input value={panel.composition} disabled={submitting} onChange={(event) => update(index, "composition", event.target.value)} /></label>
-        <label>Constraints, comma separated<input value={panel.constraints} disabled={submitting} onChange={(event) => update(index, "constraints", event.target.value)} /></label>
+        <label>Constraints, one per line<textarea rows={3} value={panel.constraints} disabled={submitting} onChange={(event) => update(index, "constraints", event.target.value)} /></label>
       </fieldset>)}
       <label><input type="checkbox" checked={confirmed} disabled={submitting} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these exact panel details and confirm them.</label>
-      {!panelsValid ? <p role="alert">Complete every field with a concrete value. Use unique character IDs and comma-separated list values.</p> : null}
+      {!panelsValid ? <p role="alert">Complete every field with a concrete value. Use unique comma-separated character IDs, and enter continuity bindings and constraints one per line.</p> : null}
       <button type="button" disabled={submitting || attempted || !confirmed || !panelsValid} onClick={submit}>{submitting ? "Saving…" : attempted ? "Reload before trying again" : "Confirm storyboard"}</button>
       {message ? <p role="status">{message}</p> : null}
     </section>

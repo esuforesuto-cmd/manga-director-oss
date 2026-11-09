@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
+import { parseCharacterIds, parseLineItems } from "../components/explicit-storyboard-input-form";
 
 describe("explicit storyboard input form", () => {
   const source = readFileSync(new URL("../components/explicit-storyboard-input-form.tsx", import.meta.url), "utf8");
@@ -27,5 +31,17 @@ describe("explicit storyboard input form", () => {
   it("requires fresh confirmation after panel edits or panel-count changes", () => {
     expect(source).toContain("function update(index: number, key: keyof DraftPanel, value: string) {\n    setConfirmed(false);");
     expect(source).toContain("const count = Number(event.target.value);\n          setConfirmed(false);");
+  });
+
+  it("preserves commas in newline-separated fields and keeps character IDs comma-separated", () => {
+    expect(parseLineItems("red scarf, visible in every panel\nmap, folded at the corner")).toEqual([
+      "red scarf, visible in every panel",
+      "map, folded at the corner"
+    ]);
+    expect(parseLineItems("Keep the note, even if hidden\r\nDo not crop the border")).toEqual([
+      "Keep the note, even if hidden",
+      "Do not crop the border"
+    ]);
+    expect(parseCharacterIds("courier, guard")).toEqual(["courier", "guard"]);
   });
 });

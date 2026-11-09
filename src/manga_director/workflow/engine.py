@@ -73,7 +73,21 @@ class WorkflowEngine:
         if command is not None:
             self._state_machine.validate_command(context.state, command)
         next_state = self._state_machine.next_state(context.state)
-        trace_id = self._observer.begin(context, next_state) if self._observer else None
+        observer_context = context
+        if self._observer and "_explicit_storyboard_input_authority" in context.metadata:
+            observer_context = context.model_copy(
+                update={
+                    "metadata": {
+                        key: value
+                        for key, value in context.metadata.items()
+                        if key != "_explicit_storyboard_input_authority"
+                    }
+                },
+                deep=False,
+            )
+        trace_id = (
+            self._observer.begin(observer_context, next_state) if self._observer else None
+        )
         agent = self._agent_for(next_state)
         try:
             agent_result = agent.execute(context)
