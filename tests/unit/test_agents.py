@@ -102,7 +102,7 @@ def test_prompt_agent_preserves_legacy_nonnumeric_page_identifier() -> None:
     )
     agent = PromptAgent()
 
-    agent.preflight(context)
+    agent._preflight_explicit_storyboard(context)
     result = agent.execute(context)
 
     assert result.state == PageState.PROMPT_BUILT
@@ -120,7 +120,13 @@ def test_prompt_agent_preflight_always_enforces_prompt_validation() -> None:
     )
 
     with pytest.raises(ValidationError, match="character information is required"):
-        PromptAgent(PromptPipeline(validation_enabled=False)).preflight(context)
+        PromptAgent(PromptPipeline(validation_enabled=False))._preflight_explicit_storyboard(context)
+
+
+def test_prompt_agent_preserves_base_agent_public_surface() -> None:
+    assert {name for name in dir(PromptAgent) if not name.startswith("_")} == {
+        "execute", "result", "target_state"
+    }
 
 
 def test_page_design_agent_returns_all_required_design_fields() -> None:

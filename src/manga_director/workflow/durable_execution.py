@@ -644,10 +644,14 @@ def _preflight_explicit_storyboard(
 ) -> None:
     """Use the already configured PromptAgent pipeline before Storyboard mutation."""
 
+    from manga_director.agents.builtin import StoryboardAgent
+
+    if type(engine._agents.get(PageState.STORYBOARDED)) is not StoryboardAgent:
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
     prompt_agent = engine._agents.get(PageState.PROMPT_BUILT)
-    preflight = getattr(prompt_agent, "preflight", None)
+    preflight = getattr(prompt_agent, "_preflight_explicit_storyboard", None)
     if not callable(preflight):
-        raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID")
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
     storyboard = {"panels": authority.panels, "confirmation": confirmation_record(authority)}
     artifacts = {**context.artifacts, PageState.STORYBOARDED.value: storyboard}
     candidate = context.model_copy(

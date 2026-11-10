@@ -656,7 +656,7 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
     with monkeypatch.context() as patch:
         patch.setattr(
             prompt_agent,
-            "preflight",
+            "_preflight_explicit_storyboard",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 ProjectNotFoundError("late dependency diagnostic secret")
             ),
@@ -750,6 +750,42 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
         assert events.published == []
         assert provider_calls == []
     assert events.published == []
+    assert provider_calls == []
+
+
+    class ReplacementAgent:
+        calls = 0
+
+        def execute(self, _context: WorkflowContext) -> AgentResult:
+            self.calls += 1
+            return AgentResult(
+                success=True,
+                state=PageState.STORYBOARDED,
+                payload={"panels": [{"number": 1, "action": "Plugin storyboard"}]},
+            )
+
+    replacement = ReplacementAgent()
+    for state in (PageState.STORYBOARDED, PageState.PROMPT_BUILT):
+        with monkeypatch.context() as patch:
+            patch.setitem(engine._agents, state, replacement)
+            unavailable = confirm("demo")
+        assert unavailable.status_code == 503
+        assert unavailable.json()["code"] == "activation_unavailable"
+        assert replacement.calls == 0
+        assert repository._load_revisioned("demo") == source_before
+        assert events.published == []
+        assert provider_calls == []
+
+    monkeypatch.setitem(engine._agents, PageState.STORYBOARDED, replacement)
+    ordinary = client.post(
+        "/projects/demo/pages/1/storyboard", headers=alias_headers, json={}
+    )
+    assert ordinary.status_code == 200
+    assert replacement.calls == 1
+    assert repository.load("demo").page(1).storyboard == {
+        "panels": [{"number": 1, "action": "Plugin storyboard"}]
+    }
+    assert len(events.published) == 1
     assert provider_calls == []
 
 

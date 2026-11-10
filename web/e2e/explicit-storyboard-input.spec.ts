@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,18 +7,64 @@ import { join, resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
 const chromePath = "C:/Program Files/Google/Chrome/Application/chrome.exe";
-test.use({ launchOptions: { executablePath: chromePath, headless: true } });
+if (process.platform === "win32" && existsSync(chromePath)) {
+  test.use({ launchOptions: { executablePath: chromePath, headless: true } });
+}
 
 let apiServer: Server;
 let nextProcess: ChildProcess;
 let isolatedWebRoot = "";
 let appUrl = "";
 let confirmationRequests = 0;
+let nextStdout = "";
+let nextStderr = "";
+let nextSpawnErrorCode = "";
+let lastHttpStatus: number | null = null;
+let lastFailure = "no_response_received";
 let submittedPanelValues: Array<{
   characters: string[];
   continuity_bindings: string[];
   constraints: string[];
 }> = [];
+
+const maxCapturedOutputChars = 8_000;
+
+function appendBoundedOutput(current: string, chunk: Buffer): string {
+  return (current + chunk.toString("utf8")).slice(-maxCapturedOutputChars);
+}
+
+function safeOutputSummary(output: string): string {
+  const safeLines = output.split(/\r?\n/).flatMap((line) => {
+    if (/^\s*> next dev\s*$/.test(line)) return ["> next dev"];
+    if (/^\s*▲ Next\.js [\d.]+\s*$/.test(line)) return ["▲ Next.js started"];
+    if (/^\s*[-✓] Ready in [\d.]+\s*(?:ms|s)\s*$/.test(line)) return ["Ready message observed"];
+    if (/^\s*○ Compiling \/projects\/(?:demo|\[projectId\])\/pages\/(?:1|\[pageNumber\])(?:\/page)?(?: \(\/projects\/demo\/pages\/1\))?\s*\.\.\.\s*$/.test(line)) return ["Target page compilation started"];
+    if (/^\s*✓ Compiled \/projects\/(?:demo|\[projectId\])\/pages\/(?:1|\[pageNumber\])(?:\/page)? in [\d.]+\s*(?:ms|s)(?: \(\d+ modules\))?\s*$/.test(line)) return ["Target page compilation completed"];
+    if (/EADDRINUSE/.test(line)) return ["Startup error category: address already in use"];
+    if (/ERR_MODULE_NOT_FOUND|Cannot find module/.test(line)) return ["Startup error category: module unavailable"];
+    if (/Module not found/.test(line)) return ["Compilation error category: module unavailable"];
+    if (/Failed to compile|Build Error/.test(line)) return ["Compilation error category: compilation failed"];
+    if (/SyntaxError/.test(line)) return ["Compilation error category: syntax error"];
+    if (/TypeError/.test(line)) return ["Runtime error category: type error"];
+    return [];
+  });
+  return safeLines.length ? safeLines.join("; ") : output.length ? "[captured output withheld by safety filter]" : "[no output captured]";
+}
+
+function serverDiagnostics(reason: string, lastHttpStatus: number | null, lastFailure: string): string {
+  const processState = !nextProcess
+    ? "not started"
+    : nextProcess.exitCode !== null
+      ? `exited with code ${nextProcess.exitCode}`
+      : nextProcess.signalCode !== null
+        ? `exited with signal ${nextProcess.signalCode}`
+        : "still running";
+  const spawnError = nextSpawnErrorCode ? `; spawn error code ${nextSpawnErrorCode}` : "";
+  return [
+    `${reason} (process ${processState}${spawnError}; last HTTP status ${lastHttpStatus ?? "none"}; last readiness probe ${lastFailure})`,
+    `Child output (bounded to ${maxCapturedOutputChars} characters per stream): stdout=${safeOutputSummary(nextStdout)}; stderr=${safeOutputSummary(nextStderr)}`
+  ].join(". ");
+}
 
 async function fillStoryboardPanel(page: Page, index = 0): Promise<void> {
   await page.getByLabel("Narrative intent").nth(index).fill("The courier waits beneath the station clock.");
@@ -50,7 +96,6 @@ async function availablePort(): Promise<number> {
 
 test.beforeAll(async () => {
   test.setTimeout(120_000);
-  if (!existsSync(chromePath)) throw new Error("The installed Chrome executable is unavailable.");
 
   let pageDetail = {
     pageNumber: 1,
@@ -89,9 +134,9 @@ test.beforeAll(async () => {
   isolatedWebRoot = mkdtempSync(join(tmpdir(), "manga-director-ui-e2e-"));
   cpSync(sourceWebRoot, isolatedWebRoot, {
     recursive: true,
-    filter: (source) => !["node_modules", ".next", ".git", "e2e", "e2e-real", "tests"].includes(source.split(/[\\/]/).at(-1) ?? "")
+    filter: (source) => !["node_modules", ".next", ".git", "e2e", "e2e-real", "tests", "test-results", "playwright-report"].includes(source.split(/[\\/]/).at(-1) ?? "")
   });
-  symlinkSync(join(sourceWebRoot, "node_modules"), join(isolatedWebRoot, "node_modules"), "junction");
+  cpSync(join(sourceWebRoot, "node_modules"), join(isolatedWebRoot, "node_modules"), { recursive: true });
 
   const appPort = await availablePort();
   appUrl = `http://127.0.0.1:${appPort}`;
@@ -105,40 +150,74 @@ test.beforeAll(async () => {
       NEXT_PUBLIC_MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`,
       MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`
     },
-    stdio: "ignore"
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  nextProcess.stdout?.on("data", (chunk: Buffer) => { nextStdout = appendBoundedOutput(nextStdout, chunk); });
+  nextProcess.stderr?.on("data", (chunk: Buffer) => { nextStderr = appendBoundedOutput(nextStderr, chunk); });
+  nextProcess.once("error", (error: NodeJS.ErrnoException) => {
+    const code = error.code;
+    nextSpawnErrorCode = code && ["ENOENT", "EACCES", "EPERM", "EADDRINUSE", "UNKNOWN"].includes(code) ? code : "other";
   });
 
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
-    if (nextProcess.exitCode !== null) throw new Error(`Isolated Next.js server exited (${nextProcess.exitCode}).`);
-    try {
-      const response = await fetch(`${appUrl}/projects/demo/pages/1`);
-      if (response.ok && (await response.text()).includes("Confirm storyboard input")) return;
-    } catch {
-      // The isolated development server is still starting.
+    if (nextProcess.exitCode !== null || nextProcess.signalCode !== null) {
+      throw new Error(serverDiagnostics("Isolated Next.js server stopped before readiness", lastHttpStatus, lastFailure));
     }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    try {
+      const requestTimeoutMs = Math.max(1, deadline - Date.now());
+      const response = await fetch(`${appUrl}/projects/demo/pages/1`, {
+        signal: AbortSignal.timeout(requestTimeoutMs)
+      });
+      lastHttpStatus = response.status;
+      if (!response.ok) {
+        lastFailure = "http_response_not_successful";
+      } else if ((await response.text()).includes("Confirm storyboard input")) {
+        lastFailure = "readiness_confirmed";
+        return;
+      } else {
+        lastFailure = "expected_page_text_missing";
+      }
+    } catch (error) {
+      lastFailure = error instanceof Error && error.name === "TimeoutError"
+        ? "request_timeout"
+        : error instanceof TypeError
+          ? "request_type_error"
+          : error instanceof Error
+            ? "request_error"
+            : "request_failed";
+    }
+    const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
+    if (delayMs > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
   }
-  throw new Error("Isolated Next.js server did not become ready in time.");
+  throw new Error(serverDiagnostics("Isolated Next.js server did not become ready within 50 seconds", lastHttpStatus, lastFailure));
+});
+
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  await testInfo.attach("server-diagnostics.txt", {
+    body: serverDiagnostics("Post-readiness browser test failed", lastHttpStatus, lastFailure),
+    contentType: "text/plain"
+  });
 });
 
 test.afterAll(async () => {
-  if (nextProcess && nextProcess.exitCode === null) {
+  if (nextProcess && nextProcess.exitCode === null && nextProcess.signalCode === null) {
     if (process.platform === "win32" && nextProcess.pid !== undefined) {
       try {
         execFileSync("taskkill.exe", ["/PID", String(nextProcess.pid), "/T", "/F"], { stdio: "ignore" });
       } catch (error) {
-        if (nextProcess.exitCode === null) throw error;
+        if (nextProcess.exitCode === null && nextProcess.signalCode === null) throw error;
       }
     } else {
       nextProcess.kill("SIGTERM");
     }
-    if (nextProcess.exitCode === null) await new Promise<void>((resolveExit, rejectExit) => {
+    if (nextProcess.exitCode === null && nextProcess.signalCode === null) await new Promise<void>((resolveExit, rejectExit) => {
       const timeout = setTimeout(resolveExit, 5_000);
       nextProcess.once("exit", () => { clearTimeout(timeout); resolveExit(); });
       nextProcess.once("error", (error) => { clearTimeout(timeout); rejectExit(error); });
     });
-    if (nextProcess.exitCode === null) throw new Error("Isolated Next.js process did not exit; preserving its temporary root.");
+    if (nextProcess.exitCode === null && nextProcess.signalCode === null) throw new Error("Isolated Next.js process did not exit; preserving its temporary root.");
   }
   if (apiServer?.listening) await new Promise<void>((resolveClose) => apiServer.close(() => resolveClose()));
   if (isolatedWebRoot) rmSync(isolatedWebRoot, { recursive: true, force: true });

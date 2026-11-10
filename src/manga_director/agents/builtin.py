@@ -179,7 +179,7 @@ class PromptAgent(BaseAgent):
             messages=result.messages,
         )
 
-    def preflight(self, context: WorkflowContext) -> None:
+    def _preflight_explicit_storyboard(self, context: WorkflowContext) -> None:
         """Require the existing validator before a confirmed Storyboard is persisted."""
 
         _validate_confirmed_storyboard(context)
