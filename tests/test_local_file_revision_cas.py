@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import time
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 import pytest
@@ -31,10 +32,72 @@ def _renamed(project: Project, title: str) -> Project:
     return project.model_copy(update={"title": title}, deep=True)
 
 
-def _hold_fence(root: Path, project_id: str, ready: multiprocessing.Queue[bool]) -> None:
+def _hold_fence(
+    root: Path,
+    project_id: str,
+    ready: multiprocessing.Queue[bool],
+    diagnostics: Any,
+) -> None:
+    diagnostics[0] = time.perf_counter_ns()
+    diagnostics[1] = time.perf_counter_ns()
     with _select_project_commit_fence(root, project_id, timeout_ms=1_000):
+        diagnostics[2] = time.perf_counter_ns()
+        diagnostics[3] = time.perf_counter_ns()
         ready.put(True)
+        diagnostics[4] = time.perf_counter_ns()
         time.sleep(0.5)
+
+
+def _snapshot_diagnostic_values(
+    diagnostics: Any,
+) -> tuple[list[int], bool, Exception | None]:
+    try:
+        lock = diagnostics.get_lock()
+        if not lock.acquire(timeout=0.1):
+            return [0] * 5, False, None
+        try:
+            return list(diagnostics.get_obj()[:]), True, None
+        finally:
+            lock.release()
+    except Exception as error:
+        return [0] * 5, False, error
+
+
+def _reap_diagnostic_child(
+    holder: multiprocessing.Process, diagnostics: Any
+) -> tuple[list[int], bool, bool, Exception | None]:
+    cleanup_error: Exception | None = None
+
+    def is_alive() -> bool:
+        nonlocal cleanup_error
+        try:
+            return holder.is_alive()
+        except Exception as error:
+            cleanup_error = cleanup_error or error
+            return True
+
+    try:
+        holder.join(timeout=2)
+    except Exception as error:
+        cleanup_error = error
+    diagnostic_snapshot, snapshot_available, snapshot_error = _snapshot_diagnostic_values(
+        diagnostics
+    )
+    cleanup_error = cleanup_error or snapshot_error
+    if is_alive():
+        for stop_process in (holder.terminate, holder.kill):
+            if not is_alive():
+                break
+            try:
+                stop_process()
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+            try:
+                holder.join(timeout=2)
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+        return diagnostic_snapshot, snapshot_available, is_alive(), cleanup_error
+    return diagnostic_snapshot, snapshot_available, False, cleanup_error
 
 
 def test_legacy_aggregate_lazily_receives_private_revision(tmp_path: Path) -> None:
@@ -78,15 +141,103 @@ def test_project_commit_fence_contends_and_repeated_release_is_safe(tmp_path: Pa
     root.mkdir()
     project_id = "durable-demo"
     ready: multiprocessing.Queue[bool] = multiprocessing.Queue()
-    holder = multiprocessing.Process(target=_hold_fence, args=(root, project_id, ready))
-    holder.start()
-    assert ready.get(timeout=2) is True
+    # Shared timestamps are independent of Queue delivery; the parent snapshots
+    # them with a bounded lock wait before attempting child termination.
+    diagnostics = multiprocessing.Array("q", 5, lock=True)
+    holder = multiprocessing.Process(
+        target=_hold_fence, args=(root, project_id, ready, diagnostics)
+    )
+    start_started_ns: int | None = None
+    start_completed_ns: int | None = None
+    ready_received_ns: int | None = None
+    ready_wait_ended_ns: int | None = None
+    ready_value: bool | None = None
+    diagnostic_snapshot: list[int] = [0] * 5
+    diagnostic_snapshot_available = False
+    process_started = False
+    cleanup_failed = False
+    cleanup_error: Exception | None = None
     try:
+        start_started_ns = time.perf_counter_ns()
+        holder.start()
+        process_started = True
+        start_completed_ns = time.perf_counter_ns()
+        try:
+            ready_value = ready.get(timeout=2)
+        except Empty:
+            ready_wait_ended_ns = time.perf_counter_ns()
+            raise
+        else:
+            ready_received_ns = time.perf_counter_ns()
+        assert ready_value is True
         with pytest.raises(LocalFileDurabilityError, match="project_commit_fence_contended"):
             with _select_project_commit_fence(root, project_id, timeout_ms=1):
                 pass
     finally:
-        holder.join(timeout=2)
+        if process_started:
+            (
+                diagnostic_snapshot,
+                diagnostic_snapshot_available,
+                cleanup_failed,
+                cleanup_error,
+            ) = _reap_diagnostic_child(holder, diagnostics)
+        try:
+            ready.close()
+        except Exception as error:
+            cleanup_error = cleanup_error or error
+
+        (
+            child_started_ns,
+            fence_started_ns,
+            fence_acquired_ns,
+            ready_send_started_ns,
+            ready_put_returned_ns,
+        ) = diagnostic_snapshot
+
+        def elapsed(start: int | None, end: int | None) -> int | None:
+            return end - start if start is not None and end is not None else None
+
+        try:
+            child_exitcode = holder.exitcode if process_started else None
+        except Exception as error:
+            child_exitcode = None
+            cleanup_error = cleanup_error or error
+            cleanup_failed = True
+        print(
+            "windows_fence_diagnostic="
+            + json.dumps(
+                {
+                    "process_start_call_ns": elapsed(start_started_ns, start_completed_ns),
+                    "child_start_delay_ns": elapsed(start_started_ns, child_started_ns or None),
+                    "fence_acquire_ns": elapsed(
+                        fence_started_ns or None, fence_acquired_ns or None
+                    ),
+                    "ready_send_to_receive_ns": elapsed(
+                        ready_send_started_ns or None, ready_received_ns
+                    ),
+                    "ready_send_to_timeout_ns": elapsed(
+                        ready_send_started_ns or None, ready_wait_ended_ns
+                    ),
+                    "ready_put_returned_ns": ready_put_returned_ns or None,
+                    "ready_put_return_to_receive_ns": elapsed(
+                        ready_put_returned_ns or None, ready_received_ns
+                    ),
+                    "ready_received": ready_received_ns is not None and ready_value is True,
+                    "child_exitcode": child_exitcode,
+                    "diagnostic_snapshot_available": diagnostic_snapshot_available,
+                    "child_cleanup_failed": cleanup_failed,
+                    "child_cleanup_error": (
+                        type(cleanup_error).__name__ if cleanup_error is not None else None
+                    ),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        if cleanup_error is not None:
+            raise RuntimeError("diagnostic child cleanup raised an error") from cleanup_error
+        if cleanup_failed:
+            raise RuntimeError("diagnostic child process could not be reaped")
     assert holder.exitcode == 0
     first = _select_project_commit_fence(root, project_id, timeout_ms=50)
     with first:
