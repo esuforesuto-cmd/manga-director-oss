@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import socket
+import subprocess
+import sys
 import traceback
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -212,9 +214,16 @@ def _assert_confirmation_output_has_no_internal_values(
             assert marker not in value
 
 
-# Do not scan for a bare integer revision: it can equal an allowed Page number
-# or schema version. Structured output uses the forbidden-key check above;
-# textual output is checked for labeled revision/fingerprint diagnostics.
+def _assert_confirmation_outputs_have_no_internal_values(
+    values: tuple[Any, ...], *sensitive_markers: str
+) -> None:
+    for value in values:
+        _assert_confirmation_output_has_no_internal_values(value, *sensitive_markers)
+
+
+# This matcher checks labeled revision/fingerprint diagnostics. A bare integer
+# can be a Page number or schema version. The separate sentinel checks below
+# detect exact seeded revision values, including unlabeled values.
 _INTERNAL_REVISION_TEXT = re.compile(
     r"\b[a-z0-9_-]*revision\b[\"']?\s*[:=]\s*[\"']?-?\d+",
     re.IGNORECASE,
@@ -228,6 +237,14 @@ _INTERNAL_FINGERPRINT_TEXT = re.compile(
 def _assert_no_internal_revision_or_fingerprint_text(value: str) -> None:
     assert _INTERNAL_REVISION_TEXT.search(value) is None
     assert _INTERNAL_FINGERPRINT_TEXT.search(value) is None
+
+
+def _assert_confirmation_text_outputs_are_clean(
+    values: tuple[str, ...], *sensitive_markers: str
+) -> None:
+    for value in values:
+        _assert_confirmation_output_has_no_internal_values(value, *sensitive_markers)
+        _assert_no_internal_revision_or_fingerprint_text(value)
 
 
 def _assert_sanitized_confirmation_conflict(response: Any) -> None:
@@ -246,6 +263,76 @@ def _assert_captured_streams_are_clean(
     for stream in streams:
         _assert_confirmation_output_has_no_internal_values(stream, *sensitive_values)
         _assert_no_internal_revision_or_fingerprint_text(stream)
+
+
+def _assert_no_internal_revision_value(value: Any, revision: int) -> None:
+    """Reject an exact aggregate revision value in nested data or text."""
+
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            _assert_no_internal_revision_value(key, revision)
+            _assert_no_internal_revision_value(nested, revision)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _assert_no_internal_revision_value(nested, revision)
+    elif type(value) in (int, float):
+        assert value != revision
+    elif isinstance(value, str):
+        assert re.search(rf"(?<!\d){revision}(?:\.0+)?(?!\d)", value) is None
+
+
+def _assert_no_internal_revision_values(value: Any, *revisions: int) -> None:
+    for revision in revisions:
+        _assert_no_internal_revision_value(value, revision)
+
+
+def _assert_no_internal_revision_outputs(
+    values: tuple[Any, ...], *revisions: int
+) -> None:
+    for value in values:
+        _assert_no_internal_revision_values(value, *revisions)
+
+
+def _assert_no_internal_revision_headers(headers: Any, *revisions: int) -> None:
+    header_items = headers.items() if hasattr(headers, "items") else headers
+    for name, value in header_items:
+        _assert_no_internal_revision_values(name, *revisions)
+        _assert_no_internal_revision_values(value, *revisions)
+
+
+def _assert_confirmation_headers_are_clean(
+    headers: Any, *sensitive_markers: str
+) -> None:
+    header_items = headers.items() if hasattr(headers, "items") else headers
+    for name, value in header_items:
+        normalized_name = "".join(
+            character for character in str(name).casefold() if character.isalnum()
+        )
+        assert normalized_name not in _FORBIDDEN_CONFIRMATION_OUTPUT_KEYS, name
+        _assert_confirmation_text_outputs_are_clean(
+            (str(name), str(value)), *sensitive_markers
+        )
+
+
+def _assert_confirmation_header_collections_are_clean(
+    headers_collections: tuple[Any, ...], *sensitive_markers: str
+) -> None:
+    for headers in headers_collections:
+        _assert_confirmation_headers_are_clean(headers, *sensitive_markers)
+
+
+def _set_test_aggregate_revision(
+    repository: LocalFileRepository, project_id: str, revision: int
+) -> None:
+    """Seed a distinctive revision in a disposable test repository."""
+
+    from manga_director.repositories.local_file_durability import _RevisionRecord
+
+    snapshot = repository._load_revisioned(project_id)
+    repository._revision_store._write_committed(
+        _RevisionRecord(project_id, revision, snapshot.fingerprint)
+    )
+    assert repository._load_revisioned(project_id).revision == revision
 
 
 @contextmanager
@@ -267,8 +354,6 @@ def _running_loopback_uvicorn(app: Any, uvicorn: Any) -> Iterator[int]:
                 host="127.0.0.1",
                 port=port,
                 access_log=True,
-                log_config=None,
-                log_level=None,
             )
         )
         thread = Thread(
@@ -298,11 +383,6 @@ def _running_loopback_uvicorn(app: Any, uvicorn: Any) -> Iterator[int]:
                 "Uvicorn thread remained alive after shutdown."
             )
             assert listener.fileno() == -1, "Uvicorn listening socket was not closed."
-            if port is not None:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                    if os.name == "posix":
-                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    probe.bind(("127.0.0.1", port))
         finally:
             listener.close()
 
@@ -312,7 +392,7 @@ def _loopback_json_post(
     project_id: str,
     body: bytes,
     credential: str,
-) -> tuple[int, str]:
+) -> tuple[int, str, tuple[tuple[str, str], ...]]:
     origin = LOCAL_WEB_ORIGINS[0]
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
@@ -332,40 +412,63 @@ def _loopback_json_post(
             },
         )
         response = connection.getresponse()
-        return response.status, response.read().decode("utf-8")
+        response_text = response.read().decode("utf-8")
+        return response.status, response_text, tuple(response.getheaders())
     finally:
         connection.close()
 
 
-@contextmanager
-def _capture_uvicorn_access_logs() -> Iterator[list[logging.LogRecord]]:
-    logger = logging.getLogger("uvicorn.access")
-    original_handlers = logger.handlers[:]
-    original_level = logger.level
-    original_propagate = logger.propagate
-    original_disabled = logger.disabled
-    records: list[logging.LogRecord] = []
+_REAL_UVICORN_CHILD_ENV = "MANGA_DIRECTOR_REAL_UVICORN_TEST_CHILD"
 
-    class _CaptureHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(logging.Formatter("%(message)s"))
-    capture_handler = _CaptureHandler(logging.INFO)
-    logger.handlers[:] = [stream_handler, capture_handler]
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    logger.disabled = False
-    try:
-        yield records
-    finally:
-        logger.handlers[:] = original_handlers
-        logger.setLevel(original_level)
-        logger.propagate = original_propagate
-        logger.disabled = original_disabled
-        stream_handler.close()
-        capture_handler.close()
+def _run_real_uvicorn_test_in_isolated_process(node_name: str) -> bool:
+    """Run default Uvicorn logging outside pytest's process-wide handlers."""
+
+    if os.environ.get(_REAL_UVICORN_CHILD_ENV) == "1":
+        return False
+
+    repository_root = Path(__file__).resolve().parents[1]
+    node_path = Path(__file__).resolve().relative_to(repository_root).as_posix()
+    child_environment = os.environ.copy()
+    child_environment[_REAL_UVICORN_CHILD_ENV] = "1"
+    child_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    for name in tuple(child_environment):
+        if name.startswith(("COV_CORE_", "COVERAGE_")) or name == "PYTEST_ADDOPTS":
+            child_environment.pop(name)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:pytest_cov",
+            "-o",
+            "addopts=",
+            f"{node_path}::{node_name}",
+        ],
+        cwd=repository_root,
+        env=child_environment,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    child_output = completed.stdout + "\n" + completed.stderr
+    assert completed.returncode == 0, (
+        f"Isolated Uvicorn test failed with exit code {completed.returncode}.\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert re.search(r"\b1 passed\b", child_output), (
+        "The isolated pytest process did not report exactly one passing test.\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    return True
 
 
 def _load_uvicorn_for_real_server_test() -> Any:
@@ -1067,7 +1170,7 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     )]))
     loader = ProjectLoader(repository)
     events = MemoryEventBus()
-    observer = WorkflowObserver()
+    observer = _ContextCapturingWorkflowObserver()
     engine = WorkflowEngine(
         state_machine=StateMachine(), event_bus=events,
         agents=primary_agents(ImageGeneratorFactory.create("mock"), None, LLMFactory.create("mock"), PromptPipeline()),
@@ -1119,6 +1222,7 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         "panels": [_panel()],
     }
     raw_request_body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    _set_test_aggregate_revision(repository, "demo", 271_828)
     source_snapshot = repository._load_revisioned("demo")
     expected_source = payload["expectedSource"]
     assert isinstance(expected_source, dict)
@@ -1128,12 +1232,26 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     }
     stale_response = client.post("/projects/demo/pages/1/storyboard/confirm", headers=headers, json=stale)
     _assert_sanitized_confirmation_conflict(stale_response)
+    _assert_no_internal_revision_headers(stale_response.headers, source_snapshot.revision)
+    _assert_confirmation_headers_are_clean(
+        stale_response.headers,
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+    )
     assert repository.load("demo").page(1).state is PageState.REVIEWED
     encoded_route = client.post(
         "/projects/%64emo/pages/1/storyboard/confirm", headers=headers, json=payload
     )
     assert encoded_route.status_code == 422
     assert encoded_route.json()["code"] == "invalid_input"
+    _assert_no_internal_revision_headers(encoded_route.headers, source_snapshot.revision)
+    _assert_confirmation_headers_are_clean(
+        encoded_route.headers,
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+    )
     assert repository.load("demo").page(1).state is PageState.REVIEWED
     first_inside_commit = Event()
     release_first_commit = Event()
@@ -1230,11 +1348,26 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     conflict = next(response for response in duplicate_responses if response.status_code != 200)
     assert confirmed.status_code == 200
     assert confirmed.json() == {"status": "storyboarded"}
+    post_confirmation_revision = repository._load_revisioned("demo").revision
+    assert post_confirmation_revision == source_snapshot.revision + 1
+    _assert_no_internal_revision_headers(
+        confirmed.headers, source_snapshot.revision, post_confirmation_revision
+    )
     assert len(application_results) == 1
     assert len(events.published) == 1
     assert repository._load_revisioned("demo").revision == source_snapshot.revision + 1
     page_detail = client.get("/projects/demo/pages/1")
     assert page_detail.status_code == 200
+    for response_headers in (conflict.headers, page_detail.headers):
+        _assert_no_internal_revision_headers(
+            response_headers, source_snapshot.revision, post_confirmation_revision
+        )
+        _assert_confirmation_headers_are_clean(
+            response_headers,
+            credential_marker,
+            source_snapshot.fingerprint,
+            raw_request_body.decode("utf-8"),
+        )
     published = json.dumps(
         [event.model_dump(mode="json") for event in events.published], sort_keys=True
     )
@@ -1258,15 +1391,27 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         [record.__dict__ for record in caplog.records],
         conflict.json(),
     )
-    for output_value in output_values:
-        _assert_confirmation_output_has_no_internal_values(
-            output_value,
-            credential_marker,
-            source_snapshot.fingerprint,
-            raw_request_body.decode("utf-8"),
-            "_explicit_storyboard_input_authority",
-            "_ExplicitStoryboardInputAuthority",
-        )
+    _assert_confirmation_outputs_have_no_internal_values(
+        output_values,
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
+    _assert_no_internal_revision_outputs(
+        output_values, source_snapshot.revision, post_confirmation_revision
+    )
+    _assert_no_internal_revision_outputs((
+        confirmed.text,
+        conflict.text,
+        page_detail.text,
+        published,
+        result_json,
+        observer_json,
+        state_json,
+        caplog.text,
+    ), source_snapshot.revision, post_confirmation_revision)
     exposed_channels = "\n".join(
         (
             confirmed.text,
@@ -1306,6 +1451,15 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=raw_request_body
     )
     _assert_sanitized_confirmation_conflict(replay)
+    _assert_no_internal_revision_headers(
+        replay.headers, source_snapshot.revision, post_confirmation_revision
+    )
+    _assert_confirmation_headers_are_clean(
+        replay.headers,
+        credential_marker,
+        source_snapshot.fingerprint,
+        raw_request_body.decode("utf-8"),
+    )
     _assert_confirmation_output_has_no_internal_values(
         replay.json(),
         credential_marker,
@@ -1342,6 +1496,11 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
         raw_request_body.decode("utf-8"),
         "_explicit_storyboard_input_authority",
         "_ExplicitStoryboardInputAuthority",
+    )
+    _assert_no_internal_revision_outputs(
+        (captured_process_streams.out, captured_process_streams.err),
+        source_snapshot.revision,
+        post_confirmation_revision,
     )
 
 
@@ -1566,9 +1725,10 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
         page_number=1, state=PageState.REVIEWED, page_design=page_design, review=review,
         metadata={"trace_id": "v7-17-failure-observer-trace"},
     )]))
+    _set_test_aggregate_revision(repository, "demo", 271_828)
     loader = ProjectLoader(repository)
     events = MemoryEventBus()
-    observer = WorkflowObserver()
+    observer = _ContextCapturingWorkflowObserver()
     engine = WorkflowEngine(
         state_machine=StateMachine(), event_bus=events,
         agents=primary_agents(ImageGeneratorFactory.create("mock"), None, LLMFactory.create("mock"), PromptPipeline()),
@@ -1601,6 +1761,7 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     raw_request_body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     source_fingerprint_snapshot = repository._load_revisioned("demo")
     source_fingerprint = source_fingerprint_snapshot.fingerprint
+    source_revision = source_fingerprint_snapshot.revision
     secret = "private-confirmation-capability-secret"
     raw_request_marker = "private-confirmation-raw-envelope-marker"
     raw_invalid_request_body = json.dumps(
@@ -1616,12 +1777,28 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
             if record.exc_info is not None
         )
 
+    def captured_observer_arguments(trace_id: str) -> list[tuple[Any, str]]:
+        return [
+            (context.model_dump(mode="json"), target.value)
+            for context, target in observer.started_contexts
+            if context.metadata.get("trace_id") == trace_id
+        ]
+
+    def serialized_events(events_to_serialize: list[Any]) -> list[Any]:
+        return [
+            event.model_dump(mode="json")
+            if hasattr(event, "model_dump")
+            else event
+            for event in events_to_serialize
+        ]
+
     conditional_commit_calls: list[bool] = []
 
     def fail_with_secret(*_args: Any, **_kwargs: Any) -> None:
         conditional_commit_calls.append(True)
         raise RuntimeError(secret)
 
+    original_conditional_commit = LocalFileDurablePageStore.conditional_commit
     monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", fail_with_secret)
     response = client.post(
         "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=raw_request_body
@@ -1643,40 +1820,149 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     )
     assert raw_envelope_response.status_code == 422
     assert conditional_commit_calls == [True]
+    assert events.published == []
     assert raw_request_marker not in raw_envelope_response.text
+    _assert_no_internal_revision_headers(response.headers, source_revision)
+    _assert_no_internal_revision_headers(raw_envelope_response.headers, source_revision)
     assert repository._load_revisioned("demo").revision == source_fingerprint_snapshot.revision
     failed_page_detail = client.get("/projects/demo/pages/1")
     assert failed_page_detail.status_code == 200
+    _assert_no_internal_revision_headers(failed_page_detail.headers, source_revision)
+    failure_observer_arguments = captured_observer_arguments(
+        "v7-17-failure-observer-trace"
+    )
+    assert len(failure_observer_arguments) == 1
+    _assert_confirmation_header_collections_are_clean(
+        (response.headers, raw_envelope_response.headers, failed_page_detail.headers),
+        credential_marker,
+        secret,
+        raw_request_marker,
+        raw_request_body.decode("utf-8"),
+        raw_invalid_request_body.decode("utf-8"),
+        source_fingerprint,
+    )
     failed_output_values = (
         response.json(),
         raw_envelope_response.json(),
         failed_page_detail.json(),
-        list(events.published),
+        serialized_events(events.published),
+        failure_observer_arguments,
         observer.timeline("v7-17-failure-observer-trace"),
         observer.metrics.snapshot(),
         repository.load("demo").model_dump(mode="json"),
         [record.__dict__ for record in caplog.records],
     )
-    for output_value in failed_output_values:
-        _assert_confirmation_output_has_no_internal_values(
-            output_value,
-            credential_marker,
-            secret,
-            raw_request_marker,
-            raw_request_body.decode("utf-8"),
-            raw_invalid_request_body.decode("utf-8"),
-            source_fingerprint,
-            "_explicit_storyboard_input_authority",
-            "_ExplicitStoryboardInputAuthority",
-        )
+    _assert_confirmation_outputs_have_no_internal_values(
+        failed_output_values,
+        credential_marker,
+        secret,
+        raw_request_marker,
+        raw_request_body.decode("utf-8"),
+        raw_invalid_request_body.decode("utf-8"),
+        source_fingerprint,
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
     _assert_confirmation_output_has_no_internal_values(
         captured_tracebacks(), credential_marker, secret, raw_request_marker,
         raw_request_body.decode("utf-8"), raw_invalid_request_body.decode("utf-8"), source_fingerprint
     )
+    _assert_no_internal_revision_outputs((
+        failed_output_values,
+        captured_tracebacks(),
+        caplog.text,
+        response.text,
+        raw_envelope_response.text,
+    ), source_revision)
     assert credential_marker not in caplog.text
     assert raw_request_marker not in caplog.text
     assert secret not in caplog.text
     assert repository.load("demo").page(1).state is PageState.REVIEWED
+
+    cas_project_id = "cas-demo"
+    repository.save(Project(id=cas_project_id, title="CAS verification", pages=[Page(
+        page_number=1,
+        state=PageState.REVIEWED,
+        page_design=page_design,
+        review=review,
+        metadata={"trace_id": "v7-17-cas-observer-trace"},
+    )]))
+    _set_test_aggregate_revision(repository, cas_project_id, 424_242)
+    cas_snapshot = repository._load_revisioned(cas_project_id)
+    cas_revision = cas_snapshot.revision
+    cas_fingerprint = cas_snapshot.fingerprint
+    stale_cas_attempts: list[bool] = []
+
+    def stale_before_conditional_commit(
+        page_store: Any, snapshot: Any, project: Project
+    ) -> Any:
+        stale_cas_attempts.append(True)
+        repository._conditional_commit(snapshot, snapshot.project)
+        return original_conditional_commit(page_store, snapshot, project)
+
+    monkeypatch.setattr(
+        LocalFileDurablePageStore,
+        "conditional_commit",
+        stale_before_conditional_commit,
+    )
+    cas_headers = {
+        **headers,
+        "Referer": f"{origin}/projects/{cas_project_id}/pages/1",
+    }
+    cas_response = client.post(
+        f"/projects/{cas_project_id}/pages/1/storyboard/confirm",
+        headers=cas_headers,
+        json=payload,
+    )
+    assert cas_response.status_code == 503
+    assert cas_response.json()["code"] == "activation_unavailable"
+    assert stale_cas_attempts == [True]
+    assert events.published == []
+    post_stale_cas_revision = repository._load_revisioned(cas_project_id).revision
+    assert post_stale_cas_revision == cas_revision + 1
+    assert repository.load(cas_project_id).page(1).state is PageState.REVIEWED
+    assert repository.load(cas_project_id).page(1).storyboard is None
+    cas_page_detail = client.get(f"/projects/{cas_project_id}/pages/1")
+    assert cas_page_detail.status_code == 200
+    cas_observer_arguments = captured_observer_arguments("v7-17-cas-observer-trace")
+    assert len(cas_observer_arguments) == 1
+    _assert_no_internal_revision_headers(
+        cas_response.headers, cas_revision, post_stale_cas_revision
+    )
+    _assert_no_internal_revision_headers(
+        cas_page_detail.headers, cas_revision, post_stale_cas_revision
+    )
+    _assert_confirmation_header_collections_are_clean(
+        (cas_response.headers, cas_page_detail.headers),
+        credential_marker,
+        secret,
+        raw_request_body.decode("utf-8"),
+        cas_fingerprint,
+    )
+    cas_output_values = (
+        cas_response.json(),
+        cas_response.text,
+        cas_page_detail.json(),
+        serialized_events(events.published),
+        cas_observer_arguments,
+        observer.timeline("v7-17-cas-observer-trace"),
+        observer.metrics.snapshot(),
+        repository.load(cas_project_id).model_dump(mode="json"),
+        [record.__dict__ for record in caplog.records],
+        captured_tracebacks(),
+        caplog.text,
+    )
+    for output_value in cas_output_values:
+        _assert_confirmation_output_has_no_internal_values(
+            output_value,
+            credential_marker,
+            secret,
+            cas_fingerprint,
+            raw_request_body.decode("utf-8"),
+        )
+    _assert_no_internal_revision_outputs(
+        cas_output_values, cas_revision, post_stale_cas_revision
+    )
 
     monkeypatch.undo()
     publish_attempt_count = 0
@@ -1702,11 +1988,30 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     serialized_after_publish_failure = repository.load("demo").model_dump_json()
     publish_page_detail = client.get("/projects/demo/pages/1")
     assert publish_page_detail.status_code == 200
+    publish_observer_arguments = captured_observer_arguments(
+        "v7-17-failure-observer-trace"
+    )
+    assert len(publish_observer_arguments) == 2
+    post_publish_revision = repository._load_revisioned("demo").revision
+    _assert_no_internal_revision_headers(
+        publish_response.headers, source_revision, post_publish_revision
+    )
+    _assert_no_internal_revision_headers(
+        publish_page_detail.headers, source_revision, post_publish_revision
+    )
+    _assert_confirmation_header_collections_are_clean(
+        (publish_response.headers, publish_page_detail.headers),
+        credential_marker,
+        secret,
+        raw_request_body.decode("utf-8"),
+        source_fingerprint,
+    )
     for output_value in (
         publish_response.json(),
         publish_page_detail.json(),
-        list(events.published),
+        serialized_events(events.published),
         [event.model_dump(mode="json") for event in publish_attempts],
+        publish_observer_arguments,
         observer.timeline("v7-17-failure-observer-trace"),
         observer.metrics.snapshot(),
         repository.load("demo").model_dump(mode="json"),
@@ -1732,6 +2037,40 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     )
     assert secret not in publish_observer_json
     assert source_fingerprint not in publish_observer_json
+    publish_output_values = (
+        publish_response.json(),
+        publish_response.text,
+        publish_page_detail.json(),
+        serialized_events(events.published),
+        [event.model_dump(mode="json") for event in publish_attempts],
+        publish_observer_arguments,
+        observer.timeline("v7-17-failure-observer-trace"),
+        observer.metrics.snapshot(),
+        repository.load("demo").model_dump(mode="json"),
+        [record.__dict__ for record in caplog.records],
+        captured_tracebacks(),
+        caplog.text,
+        serialized_after_publish_failure,
+        publish_observer_json,
+    )
+    _assert_no_internal_revision_outputs(publish_output_values, source_revision)
+    assert post_publish_revision != source_revision
+    _assert_no_internal_revision_outputs((
+        publish_response.json(),
+        publish_response.text,
+        publish_page_detail.json(),
+        serialized_events(events.published),
+        [event.model_dump(mode="json") for event in publish_attempts],
+        publish_observer_arguments,
+        observer.timeline("v7-17-failure-observer-trace"),
+        observer.metrics.snapshot(),
+        repository.load("demo").model_dump(mode="json"),
+        [record.__dict__ for record in caplog.records],
+        captured_tracebacks(),
+        caplog.text,
+        serialized_after_publish_failure,
+        publish_observer_json,
+    ), post_publish_revision)
     assert repository.load("demo").page(1).state is PageState.STORYBOARDED
 
     verification_project_id = "verify-demo"
@@ -1742,6 +2081,7 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
         review=review,
         metadata={"trace_id": "v7-17-verification-observer-trace"},
     )]))
+    _set_test_aggregate_revision(repository, verification_project_id, 161_803)
     verification_payload = {
         **payload,
         "expectedSource": {"state": "Reviewed", "page_design": page_design, "review": review},
@@ -1754,6 +2094,7 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
         verification_payload, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     verification_fingerprint = repository._load_revisioned(verification_project_id).fingerprint
+    verification_revision = repository._load_revisioned(verification_project_id).revision
     verification_calls = []
     publish_calls = []
     original_publish = events.publish
@@ -1777,6 +2118,7 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     assert verification_response.json()["code"] == "activation_unavailable"
     assert verification_calls == [True]
     assert publish_calls == []
+    assert events.published == []
     assert secret not in verification_response.text
     assert secret not in caplog.text
     verification_observer_json = json.dumps(
@@ -1788,18 +2130,41 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     )
     assert secret not in verification_observer_json
     verification_state = repository.load(verification_project_id)
+    post_verification_revision = repository._load_revisioned(verification_project_id).revision
+    assert post_verification_revision != verification_revision
+    verification_observer_arguments = captured_observer_arguments(
+        "v7-17-verification-observer-trace"
+    )
+    assert len(verification_observer_arguments) == 1
     verification_serialized = verification_state.model_dump_json()
     verification_page_detail = client.get(f"/projects/{verification_project_id}/pages/1")
     assert verification_page_detail.status_code == 200
-    for output_value in (
+    _assert_no_internal_revision_headers(
+        verification_response.headers, verification_revision, post_verification_revision
+    )
+    _assert_no_internal_revision_headers(
+        verification_page_detail.headers,
+        verification_revision,
+        post_verification_revision,
+    )
+    _assert_confirmation_header_collections_are_clean(
+        (verification_response.headers, verification_page_detail.headers),
+        credential_marker,
+        secret,
+        verification_request_body.decode("utf-8"),
+        verification_fingerprint,
+    )
+    verification_output_values = (
         verification_response.json(),
         verification_page_detail.json(),
-        list(events.published),
+        serialized_events(events.published),
+        verification_observer_arguments,
         observer.timeline("v7-17-verification-observer-trace"),
         observer.metrics.snapshot(),
         verification_state.model_dump(mode="json"),
         [record.__dict__ for record in caplog.records],
-    ):
+    )
+    for output_value in verification_output_values:
         _assert_confirmation_output_has_no_internal_values(
             output_value,
             credential_marker,
@@ -1812,6 +2177,24 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
     _assert_confirmation_output_has_no_internal_values(
         captured_tracebacks(), credential_marker, secret,
         verification_request_body.decode("utf-8"), verification_fingerprint
+    )
+    verification_revision_outputs = (
+        verification_response.json(),
+        verification_response.text,
+        verification_page_detail.json(),
+        serialized_events(events.published),
+        verification_observer_arguments,
+        observer.timeline("v7-17-verification-observer-trace"),
+        observer.metrics.snapshot(),
+        verification_state.model_dump(mode="json"),
+        [record.__dict__ for record in caplog.records],
+        captured_tracebacks(),
+        caplog.text,
+        verification_serialized,
+        verification_observer_json,
+    )
+    _assert_no_internal_revision_outputs(
+        verification_revision_outputs, verification_revision, post_verification_revision
     )
     assert credential_marker not in caplog.text
     assert verification_state.page(1).state is PageState.STORYBOARDED
@@ -1834,23 +2217,26 @@ def test_confirmation_failure_paths_do_not_expose_capability_or_exception_detail
         "_explicit_storyboard_input_authority",
         "_ExplicitStoryboardInputAuthority",
     )
+    _assert_no_internal_revision_outputs(
+        (captured_process_streams.out, captured_process_streams.err),
+        source_revision,
+        post_publish_revision,
+        cas_revision,
+        post_stale_cas_revision,
+        verification_revision,
+        post_verification_revision,
+    )
 
 
-def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    capfd: pytest.CaptureFixture[str],
-) -> None:
-    uvicorn = _load_uvicorn_for_real_server_test()
-
+def _create_real_uvicorn_confirmation_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
     from manga_director.repositories.local_file_aggregate_envelope import (
         _project_payload_from_aggregate,
     )
     from manga_director.workflow import durable_execution as durable_execution_module
     from manga_director.workflow.durable_execution import LocalFileDurablePageStore
 
-    caplog.set_level(logging.DEBUG)
     repository = LocalFileRepository(tmp_path / "repository")
     page_design = {
         "page_type": "manga",
@@ -1863,7 +2249,7 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
         "panel_roles": ["discovery"],
     }
     review = {"checks": {"character": True}, "improvements": []}
-    for project_id in ("demo", "failure-demo"):
+    for project_id in ("demo", "failure-demo", "cas-demo", "publish-demo"):
         repository.save(
             Project(
                 id=project_id,
@@ -1877,6 +2263,12 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
                 )],
             )
         )
+    # Python revisions are unbounded positive integers; keep these above the
+    # uint32 PID range while below the largest exactly represented float.
+    _set_test_aggregate_revision(repository, "demo", 4_294_967_311)
+    _set_test_aggregate_revision(repository, "failure-demo", 4_294_967_319)
+    _set_test_aggregate_revision(repository, "cas-demo", 4_294_967_327)
+    _set_test_aggregate_revision(repository, "publish-demo", 4_294_967_333)
 
     loader = ProjectLoader(repository)
     events = MemoryEventBus()
@@ -1928,25 +2320,6 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
         "_prepare_storyboard_confirmation",
         capture_private_authority,
     )
-    original_conditional_commit = LocalFileDurablePageStore.conditional_commit
-    injected_failures: list[str] = []
-    exception_marker = "TEST_FAILURE_MARKER_ONLY"
-
-    def fail_only_disposable_project(
-        page_store: LocalFileDurablePageStore,
-        snapshot: Any,
-        project: Project,
-    ) -> Any:
-        if project.id == "failure-demo":
-            injected_failures.append(project.id)
-            raise RuntimeError(exception_marker)
-        return original_conditional_commit(page_store, snapshot, project)
-
-    monkeypatch.setattr(
-        LocalFileDurablePageStore,
-        "conditional_commit",
-        fail_only_disposable_project,
-    )
     credential = "Bearer v7-17-fake-http-credential"
     payload = {
         "requestVersion": 1,
@@ -1961,19 +2334,73 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     request_body = json.dumps(
         payload, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
-    monkeypatch.setattr(uvicorn.Config, "configure_logging", lambda _self: None)
+    return {
+        "LocalFileDurablePageStore": LocalFileDurablePageStore,
+        "_project_payload_from_aggregate": _project_payload_from_aggregate,
+        "app": app,
+        "authority_by_project": authority_by_project,
+        "credential": credential,
+        "events": events,
+        "exception_marker": "TEST_FAILURE_MARKER_ONLY",
+        "original_conditional_commit": LocalFileDurablePageStore.conditional_commit,
+        "request_body": request_body,
+        "repository": repository,
+        "observer": observer,
+    }
 
-    with _capture_uvicorn_access_logs() as access_records:
-        with _running_loopback_uvicorn(app, uvicorn) as port:
-            success_status, success_text = _loopback_json_post(
-                port, "demo", request_body, credential
-            )
-            conflict_status, conflict_text = _loopback_json_post(
-                port, "demo", request_body, credential
-            )
-            failure_status, failure_text = _loopback_json_post(
-                port, "failure-demo", request_body, credential
-            )
+
+def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    uvicorn = _load_uvicorn_for_real_server_test()
+    if _run_real_uvicorn_test_in_isolated_process(
+        "test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values"
+    ):
+        return
+
+    harness = _create_real_uvicorn_confirmation_harness(tmp_path, monkeypatch)
+    repository = harness["repository"]
+    observer = harness["observer"]
+    authority_by_project = harness["authority_by_project"]
+    credential = harness["credential"]
+    request_body = harness["request_body"]
+    LocalFileDurablePageStore = harness["LocalFileDurablePageStore"]
+    _project_payload_from_aggregate = harness["_project_payload_from_aggregate"]
+    original_conditional_commit = harness["original_conditional_commit"]
+    exception_marker = harness["exception_marker"]
+
+    caplog.set_level(logging.DEBUG)
+    injected_failures: list[str] = []
+
+    def fail_only_disposable_project(
+        page_store: Any,
+        snapshot: Any,
+        project: Project,
+    ) -> Any:
+        if project.id == "failure-demo":
+            injected_failures.append(project.id)
+            raise RuntimeError(exception_marker)
+        return original_conditional_commit(page_store, snapshot, project)
+
+    monkeypatch.setattr(
+        LocalFileDurablePageStore,
+        "conditional_commit",
+        fail_only_disposable_project,
+    )
+
+    with _running_loopback_uvicorn(harness["app"], uvicorn) as port:
+        success_status, success_text, success_headers = _loopback_json_post(
+            port, "demo", request_body, credential
+        )
+        conflict_status, conflict_text, conflict_headers = _loopback_json_post(
+            port, "demo", request_body, credential
+        )
+        failure_status, failure_text, failure_headers = _loopback_json_post(
+            port, "failure-demo", request_body, credential
+        )
 
     assert success_status == 200
     assert json.loads(success_text) == {"status": "storyboarded"}
@@ -2020,6 +2447,10 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
     assert failed_page.storyboard is None
 
     authorities = tuple(authority_by_project.values())
+    internal_revisions = {
+        *(authority.revision for authority in authorities),
+        repository._load_revisioned("demo").revision,
+    }
     post_confirmation_fingerprint = repository._load_revisioned("demo").fingerprint
     successful_page_path = repository._page_path("demo", 1)
     failed_page_path = repository._page_path("failure-demo", 1)
@@ -2064,43 +2495,300 @@ def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_valu
         failed_page_data,
         observer_context_data,
     )
-    for output_value in (
+    _assert_confirmation_outputs_have_no_internal_values((
         json.loads(success_text),
         json.loads(conflict_text),
         json.loads(failure_text),
         *persisted_values,
-    ):
-        _assert_confirmation_output_has_no_internal_values(output_value, *private_values)
+    ), *private_values)
+    _assert_no_internal_revision_outputs(
+        (json.loads(success_text), json.loads(conflict_text), json.loads(failure_text), *persisted_values),
+        *internal_revisions,
+    )
 
     captured_process_streams = capfd.readouterr()
-    process_logs = captured_process_streams.out + "\n" + captured_process_streams.err
     application_logs = caplog.text
-    for logs in (process_logs, application_logs):
-        _assert_confirmation_output_has_no_internal_values(logs, *private_values)
-        _assert_no_internal_revision_or_fingerprint_text(logs)
-    for response_text in (success_text, conflict_text, failure_text):
-        _assert_confirmation_output_has_no_internal_values(response_text, *private_values)
-        _assert_no_internal_revision_or_fingerprint_text(response_text)
-    for serialized in (
+    application_log_records = tuple(record.__dict__ for record in caplog.records)
+    application_tracebacks = "".join(
+        "".join(traceback.format_exception(*record.exc_info))
+        for record in caplog.records
+        if record.exc_info is not None
+    )
+    assert "Started server process" in captured_process_streams.err
+    _assert_confirmation_text_outputs_are_clean(
+        (
+            captured_process_streams.out,
+            captured_process_streams.err,
+            application_logs,
+            application_tracebacks,
+        ),
+        *private_values,
+    )
+    _assert_no_internal_revision_outputs(
+        (
+            captured_process_streams.out,
+            captured_process_streams.err,
+            application_logs,
+            application_log_records,
+            application_tracebacks,
+        ),
+        *internal_revisions,
+    )
+    _assert_confirmation_outputs_have_no_internal_values(
+        application_log_records, *private_values
+    )
+    response_texts = (success_text, conflict_text, failure_text)
+    _assert_confirmation_text_outputs_are_clean(response_texts, *private_values)
+    _assert_no_internal_revision_outputs(
+        (*response_texts, *(json.loads(text) for text in response_texts)),
+        *internal_revisions,
+    )
+    serialized_outputs = (
         successful_project_text,
         failed_project_text,
         successful_page_text,
         failed_page_text,
-    ):
-        _assert_confirmation_output_has_no_internal_values(serialized, *private_values)
-        _assert_no_internal_revision_or_fingerprint_text(serialized)
+    )
+    _assert_confirmation_text_outputs_are_clean(serialized_outputs, *private_values)
+    _assert_no_internal_revision_outputs(
+        serialized_outputs,
+        *internal_revisions,
+    )
 
-    access_messages = [record.getMessage() for record in access_records]
-    assert len(access_messages) == 3, "Uvicorn access log must contain all three HTTP requests."
-    assert all(record.name == "uvicorn.access" for record in access_records)
-    for message in access_messages:
-        assert message in process_logs, "Uvicorn access record was not written to captured stderr."
+    access_messages = [
+        line
+        for line in captured_process_streams.out.splitlines()
+        if "/storyboard/confirm HTTP/1.1\"" in line
+    ]
+    assert len(access_messages) == 3, (
+        "Uvicorn default access log must write all three HTTP requests to stdout."
+    )
+    _assert_no_internal_revision_outputs(tuple(access_messages), *internal_revisions)
+    for response_headers in (success_headers, conflict_headers, failure_headers):
+        _assert_no_internal_revision_headers(response_headers, *internal_revisions)
+        _assert_confirmation_headers_are_clean(response_headers, *private_values)
     for project_id, status in (("demo", 200), ("demo", 409), ("failure-demo", 503)):
         expected_path = (
             f'"POST /projects/{project_id}/pages/1/storyboard/confirm HTTP/1.1"'
         )
         assert sum(
             expected_path in message
-            and re.search(rf'"\s{status}(?:\s|$)', message) is not None
+            and re.search(rf'"\s+{status}(?:\s|$)', message) is not None
             for message in access_messages
+        ) == 1
+
+
+def test_real_uvicorn_cas_and_publication_failure_logs_hide_internal_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    node_name = "test_real_uvicorn_cas_and_publication_failure_logs_hide_internal_values"
+    uvicorn = _load_uvicorn_for_real_server_test()
+    if _run_real_uvicorn_test_in_isolated_process(node_name):
+        return
+
+    harness = _create_real_uvicorn_confirmation_harness(tmp_path, monkeypatch)
+    repository = harness["repository"]
+    events = harness["events"]
+    observer = harness["observer"]
+    authority_by_project = harness["authority_by_project"]
+    credential = harness["credential"]
+    request_body = harness["request_body"]
+    LocalFileDurablePageStore = harness["LocalFileDurablePageStore"]
+    _project_payload_from_aggregate = harness["_project_payload_from_aggregate"]
+    original_conditional_commit = harness["original_conditional_commit"]
+    caplog.set_level(logging.DEBUG)
+    from manga_director.repositories.local_file_durability import StaleRevisionError
+
+    cas_before = repository._load_revisioned("cas-demo")
+    publish_before = repository._load_revisioned("publish-demo")
+    stale_cas_attempts: list[str] = []
+    stale_cas_errors: list[bool] = []
+
+    def force_stale_cas(
+        page_store: Any, snapshot: Any, project: Project
+    ) -> Any:
+        if project.id == "cas-demo":
+            stale_cas_attempts.append(project.id)
+            repository._conditional_commit(snapshot, snapshot.project)
+        try:
+            return original_conditional_commit(page_store, snapshot, project)
+        except StaleRevisionError:
+            if project.id == "cas-demo":
+                stale_cas_errors.append(True)
+            raise
+
+    monkeypatch.setattr(
+        LocalFileDurablePageStore, "conditional_commit", force_stale_cas
+    )
+    publish_exception_marker = "TEST_PUBLICATION_FAILURE_MARKER_ONLY"
+    publish_attempts: list[Any] = []
+    publish_attempt_count = 0
+
+    def capture_and_fail_publish(published_events: list[Any]) -> None:
+        nonlocal publish_attempt_count
+        publish_attempt_count += 1
+        publish_attempts.extend(published_events)
+        raise RuntimeError(publish_exception_marker)
+
+    with _running_loopback_uvicorn(harness["app"], uvicorn) as port:
+        cas_status, cas_text, cas_headers = _loopback_json_post(
+            port, "cas-demo", request_body, credential
+        )
+        assert events.published == []
+        with monkeypatch.context() as patch:
+            patch.setattr(events, "publish", capture_and_fail_publish)
+            publish_status, publish_text, publish_headers = _loopback_json_post(
+                port, "publish-demo", request_body, credential
+            )
+
+    assert cas_status == 503
+    assert json.loads(cas_text) == {
+        "code": "activation_unavailable",
+        "message": "Storyboard confirmation is unavailable.",
+    }
+    assert stale_cas_attempts == ["cas-demo"]
+    assert stale_cas_errors == [True]
+    cas_after = repository._load_revisioned("cas-demo")
+    assert cas_after.revision == cas_before.revision + 1
+    assert repository.load("cas-demo").page(1).state is PageState.REVIEWED
+    assert repository.load("cas-demo").page(1).storyboard is None
+    assert events.published == []
+
+    assert publish_status == 503
+    assert json.loads(publish_text) == {
+        "code": "activation_unavailable",
+        "message": "Storyboard confirmation is unavailable.",
+    }
+    assert publish_attempt_count == 1
+    assert len(publish_attempts) == 1
+    assert events.published == []
+    publish_after = repository._load_revisioned("publish-demo")
+    assert publish_after.revision == publish_before.revision + 1
+    published_page = repository.load("publish-demo").page(1)
+    assert published_page.state is PageState.STORYBOARDED
+    assert isinstance(published_page.storyboard, dict)
+
+    observer_context_data = [
+        context.model_dump(mode="json")
+        for context, target in observer.started_contexts
+        if target is PageState.STORYBOARDED
+    ]
+    assert len(observer_context_data) == 2
+    for context_data in observer_context_data:
+        assert "_explicit_storyboard_input_authority" not in context_data["metadata"]
+
+    internal_revisions = {
+        cas_before.revision,
+        cas_after.revision,
+        publish_before.revision,
+        publish_after.revision,
+        *(authority.revision for authority in authority_by_project.values()),
+    }
+    cas_after_fingerprint = cas_after.fingerprint
+    private_values = (
+        credential,
+        credential.removeprefix("Bearer "),
+        request_body.decode("utf-8"),
+        json.dumps(request_body.decode("utf-8"), ensure_ascii=False),
+        publish_exception_marker,
+        *(repr(authority) for authority in authority_by_project.values()),
+        *(authority.fingerprint for authority in authority_by_project.values()),
+        cas_before.fingerprint,
+        cas_after_fingerprint,
+        publish_before.fingerprint,
+        publish_after.fingerprint,
+        "_explicit_storyboard_input_authority",
+        "_ExplicitStoryboardInputAuthority",
+    )
+    cas_project_text = _project_payload_from_aggregate(
+        repository._path("cas-demo").read_bytes()
+    ).decode("utf-8")
+    publish_project_text = _project_payload_from_aggregate(
+        repository._path("publish-demo").read_bytes()
+    ).decode("utf-8")
+    cas_page_text = repository._page_path("cas-demo", 1).read_text(encoding="utf-8")
+    publish_page_text = repository._page_path("publish-demo", 1).read_text(encoding="utf-8")
+    persisted_outputs = (
+        repository.load("cas-demo").model_dump(mode="json"),
+        repository.load("publish-demo").model_dump(mode="json"),
+        json.loads(cas_project_text),
+        json.loads(publish_project_text),
+        json.loads(cas_page_text),
+        json.loads(publish_page_text),
+        [event.model_dump(mode="json") for event in publish_attempts],
+        observer_context_data,
+    )
+    response_outputs = (
+        json.loads(cas_text),
+        json.loads(publish_text),
+    )
+    _assert_confirmation_outputs_have_no_internal_values(
+        (*response_outputs, *persisted_outputs), *private_values
+    )
+    _assert_no_internal_revision_outputs(
+        (*response_outputs, *persisted_outputs), *internal_revisions
+    )
+    _assert_confirmation_text_outputs_are_clean(
+        (cas_project_text, publish_project_text, cas_page_text, publish_page_text),
+        *private_values,
+    )
+    _assert_no_internal_revision_outputs(
+        (cas_project_text, publish_project_text, cas_page_text, publish_page_text),
+        *internal_revisions,
+    )
+    for headers in (cas_headers, publish_headers):
+        _assert_no_internal_revision_headers(headers, *internal_revisions)
+        _assert_confirmation_headers_are_clean(headers, *private_values)
+
+    captured_process_streams = capfd.readouterr()
+    application_logs = caplog.text
+    application_log_records = tuple(record.__dict__ for record in caplog.records)
+    application_tracebacks = "".join(
+        "".join(traceback.format_exception(*record.exc_info))
+        for record in caplog.records
+        if record.exc_info is not None
+    )
+    assert "Started server process" in captured_process_streams.err
+    process_streams = (captured_process_streams.out, captured_process_streams.err)
+    _assert_confirmation_text_outputs_are_clean(
+        (
+            *process_streams,
+            application_logs,
+            application_tracebacks,
+            cas_text,
+            publish_text,
+        ),
+        *private_values,
+    )
+    _assert_no_internal_revision_outputs(
+        (
+            *process_streams,
+            application_logs,
+            application_log_records,
+            application_tracebacks,
+            cas_text,
+            publish_text,
+        ),
+        *internal_revisions,
+    )
+    _assert_confirmation_outputs_have_no_internal_values(
+        application_log_records, *private_values
+    )
+    access_lines = [
+        line
+        for line in captured_process_streams.out.splitlines()
+        if "/storyboard/confirm HTTP/1.1\"" in line
+    ]
+    assert len(access_lines) == 2, "Uvicorn default access log must contain both HTTP requests."
+    for project_id in ("cas-demo", "publish-demo"):
+        expected_path = (
+            f'"POST /projects/{project_id}/pages/1/storyboard/confirm HTTP/1.1"'
+        )
+        assert sum(
+            expected_path in line
+            and re.search(r'"\s+503(?:\s|$)', line) is not None
+            for line in access_lines
         ) == 1

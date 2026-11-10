@@ -1999,7 +1999,7 @@ ComfyUI, `main`, branch/Git operations, release/publication, or package
 publication. Slices 2 and 3 require separate exact allowlists and explicit
 approval before implementation.
 
-## V7-16 post-merge status and V7-17 RFC-V7-015 acceptance (2026-11-06)
+## V7-16 post-merge status and V7-17 RFC-V7-015 implementation evidence and pending acceptance (2026-11-10)
 
 PR #71 merged into `v7-dev` at `8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791`;
 PR #72 merged at `fd7077791a06da5cf720332eadee37b9b9d7e873`. PR #73 fixed the
@@ -2016,15 +2016,82 @@ work only. They do not establish complete inputs from the default Storyboard,
 live ComfyUI validation, a full production one-Page end-to-end run, multiple
 Page generation, completion of a manga, or publication.
 
-V7-17, “Explicit Confirmed Storyboard Panel Input,” is accepted as a design
+V7-17, “Explicit Confirmed Storyboard Panel Input,” was accepted as a design
 through RFC-V7-015 on 2026-11-06 JST. Its implementation was separately
 authorized and is recorded in commit `2d5233aec975bef061b3c71de22e7b3f35bad8e3`.
-It is under review in draft PR #82 targeting `v7-dev`; it is not merged or
-complete, and CI plus final RFC acceptance checks remain. Design acceptance
-and implementation authorization are separate. Its scope is to make the
-existing V7-14-required structured panel values explicitly user-confirmed and
-persisted before PromptBuilt, while retaining separate explicit V7-15 layout
-input. This acceptance does not authorize changes to frozen contracts, generic
-`/generate`, StateMachine, Provider or LocalFile boundaries, public APIs, Human
-Visual QA, Human Approval, V6 LTS, or I02, and does not authorize release or
-publication.
+The implementation is in draft PR #82 targeting `v7-dev`. The latest verified
+PR head is
+`b65a5fa6023e96bac53e9701fa8fe3cf3a551442` (base
+`e1863ed436e381c4f055d7169ff4c90441826a93`), with 10 commits and 32 changed
+files. PR CI run [#290](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797492065)
+tested the PR #82 merge ref at that head/base and passed all 10 jobs; CodeQL run
+[#42797484040](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797484040)
+passed all 3 jobs.
+
+On the PR #82 merge ref, GitHub Actions reported:
+
+- Linux Python 3.11 and 3.12: each full pytest run passed 3,244 tests and
+  skipped 334.
+- Windows Python 3.11 and 3.12: each full pytest run passed 3,555 tests and
+  skipped 23.
+- Windows LocalFile security: the Windows path-containment test and
+  `mypy --platform win32 src` passed.
+- Frontend: lint, typecheck, build, and Vitest passed; Vitest reported 97/97
+  tests.
+- Browser E2E on Windows: the mock-API suite passed 4 tests and the
+  real-delivery suite passed 5 tests. The real-delivery suite includes the
+  current confirmation flow; its 409 and 503 cases use browser-route mocks.
+- Security gates passed: `pip-audit --strict .`, production-only
+  `npm audit --omit=dev`, and Gitleaks. The npm install log reported 8
+  moderate findings before the production-only audit; no claim is made that
+  all development dependency advisories are absent. Gitleaks used the
+  repository's `.gitleaksignore`.
+- Linux static analysis passed Ruff and its configured mypy command. That
+  command excludes six source modules, including `local_file_durability.py`;
+  full Linux mypy coverage of those exclusions and mypy over tests are not
+  established by this CI run. Windows mypy over `src` passed.
+
+These results verify the reported CI gates; they do not establish complete
+RFC-V7-015 acceptance. CI #290 used the PR merge ref and its aggregate logs do
+not identify individual real-Uvicorn test executions. That PR-head test
+version checks labeled revision/fingerprint diagnostics and structured keys;
+the current local test revision additionally checks unlabeled numeric values
+and their supported textual forms. The current local test changes were not
+included in CI #290. CI coverage at the configured 80% threshold for those
+local changes is UNVERIFIED. The absolute absence requirements for RFC criteria
+7 and 8 remain unproven. Detailed evidence and remaining authorization/review
+items are in `docs/V7_17_PR82_RESOLUTION.md`.
+
+### Local focused verification (2026-11-11)
+
+The current working-tree test file passed four focused tests on Windows with
+Python 3.12.10 and Uvicorn 0.54.0 in 8.684 seconds (exit 0, no skips). Two
+tests use in-process HTTP clients and two use real Uvicorn over loopback. The
+first Uvicorn test checks HTTP 200 success, HTTP 409 replay conflict, and an
+injected HTTP 503 save failure. The second checks a true stale-revision CAS
+failure and an event-publication failure, each returning HTTP 503. The tests
+inspect response bodies and headers, persisted values, application logs,
+stdout, stderr, and Uvicorn access logs. The current revision sentinels are
+above the uint32 process-ID range, and the failed CAS/publication paths inspect
+raw persisted Project payloads and individual Page JSON as well as reloaded
+models. Ruff and `git diff --check` passed for the local change. Independent
+read-only review of these two test fixes reported P0/P1/P2 = 0/0/0 within that
+scope. This focused result does not establish the CI coverage threshold or
+complete RFC acceptance.
+
+No GitHub review submissions were present for PR #82 at the recorded CI
+snapshot. The independent review recorded with that snapshot focused on the
+approval-related paths and RFC disclosure boundaries; it did not inspect all
+32 changed files individually. It reported no P0 and no implementation P1 in
+that reviewed scope, a P1 approval boundary because two exact-path approval
+records remained unrecovered and three inherited items remained deferred, and
+a P2 verification gap for unlabeled numeric revisions in the then-current
+test. The requested reviewer model/settings were GPT-6.1 Sol High; actual
+runtime model/settings remain UNVERIFIED. Do not record whole-PR P0/P1/P2 as
+0/0/0.
+PR #82 remains draft and unmerged; final RFC acceptance, review closure, and
+merge remain pending. Design acceptance and implementation authorization
+remain separate. This record does not authorize changes to
+frozen contracts, generic `/generate`, StateMachine, Provider or LocalFile
+boundaries, public APIs, Human Visual QA, Human Approval, V6 LTS, or I02, and
+does not authorize release or publication.
