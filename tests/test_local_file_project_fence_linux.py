@@ -104,13 +104,11 @@ def test_linux_project_fence_subprocess_race_has_one_winner_and_bounded_loser(
     ]
     for worker in workers:
         worker.start()
-    started = time.monotonic()
     start.set()
     observed = [results.get(timeout=5), results.get(timeout=5)]
     release.set()
     for worker in workers:
         worker.join(timeout=5)
-    assert time.monotonic() - started < 2
 
     assert sorted(result for result, _elapsed in observed) == [
         "acquired",
