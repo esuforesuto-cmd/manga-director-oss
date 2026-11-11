@@ -28,7 +28,7 @@ export class ApiClientError extends Error {
   }
 }
 
-function apiBaseUrl(): string {
+export function apiBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_MANGA_DIRECTOR_API_URL
     ?? process.env.MANGA_DIRECTOR_API_URL
     ?? "http://127.0.0.1:8000";

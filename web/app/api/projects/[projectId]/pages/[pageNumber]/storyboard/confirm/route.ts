@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { apiBaseUrl } from "@/lib/api/client";
+
 const MAX_BODY_BYTES = 32 * 1024;
 const ALLOWED_ORIGINS = new Set(["http://127.0.0.1:3000", "http://localhost:3000"]);
 const HEADERS = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
@@ -29,7 +31,8 @@ function upstreamBase(): string | null {
   const configured = process.env.MANGA_DIRECTOR_API_URL ?? "http://127.0.0.1:8000";
   try { const url = new URL(configured); const testPort = process.env.NODE_ENV !== "production" && url.port === "4010";
     if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !(url.port === "8000" || testPort) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    return `http://127.0.0.1:${url.port}`;
+    const base = `http://127.0.0.1:${url.port}`;
+    return apiBaseUrl() === base ? base : null;
   } catch { return null; }
 }
 

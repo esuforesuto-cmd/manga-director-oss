@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "../app/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm/route";
 
 const url = "http://localhost:3000/api/projects/demo/pages/1/storyboard/confirm";
@@ -15,6 +15,10 @@ function request(overrides: Record<string, string> = {}, content = body, request
 }
 
 describe("storyboard confirmation same-origin proxy", () => {
+  beforeEach(() => {
+    vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", undefined);
+    vi.stubEnv("MANGA_DIRECTOR_API_URL", undefined);
+  });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
   it("forwards the exact closed request to the fixed loopback confirmation route", async () => {
@@ -26,6 +30,49 @@ describe("storyboard confirmation same-origin proxy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:8000/projects/demo/pages/1/storyboard/confirm");
     expect(Buffer.from(fetchMock.mock.calls[0][1].body as Uint8Array).toString("utf8")).toBe(body);
+  });
+
+  it.each([
+    ["http://127.0.0.1:4010", undefined],
+    ["http://127.0.0.1:8000", "http://127.0.0.1:4010"],
+    ["invalid API URL", "http://127.0.0.1:8000"]
+  ])("returns 503 without forwarding when the Page API %s does not match the confirmation API %s", async (pageApi, confirmationApi) => {
+    vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", pageApi);
+    vi.stubEnv("MANGA_DIRECTOR_API_URL", confirmationApi);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request(), { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "activation_unavailable" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards once when both settings resolve to the same development loopback API", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", "http://127.0.0.1:4010/");
+    vi.stubEnv("MANGA_DIRECTOR_API_URL", "http://127.0.0.1:4010");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "storyboarded" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request(), { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) });
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:4010/projects/demo/pages/1/storyboard/confirm");
+  });
+
+  it("keeps the development loopback port blocked in production even if both settings match", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXT_PUBLIC_MANGA_DIRECTOR_API_URL", "http://127.0.0.1:4010");
+    vi.stubEnv("MANGA_DIRECTOR_API_URL", "http://127.0.0.1:4010");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request(), { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) });
+
+    expect(response.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("accepts the backend's canonical ten-digit Page range and rejects overflow", async () => {
