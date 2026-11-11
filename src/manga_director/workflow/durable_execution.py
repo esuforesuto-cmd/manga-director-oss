@@ -644,13 +644,60 @@ def _preflight_explicit_storyboard(
 ) -> None:
     """Use the already configured PromptAgent pipeline before Storyboard mutation."""
 
-    from manga_director.agents.builtin import StoryboardAgent
+    from manga_director.agents.builtin import PromptAgent, StoryboardAgent
+    from manga_director.prompting import (
+        PromptBuilder,
+        PromptOptimizer,
+        PromptPipeline,
+        PromptRenderer,
+        PromptTemplateLoader,
+        PromptValidator,
+    )
 
     if type(engine._agents.get(PageState.STORYBOARDED)) is not StoryboardAgent:
         raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
     prompt_agent = engine._agents.get(PageState.PROMPT_BUILT)
-    preflight = getattr(prompt_agent, "_preflight_explicit_storyboard", None)
-    if not callable(preflight):
+    if type(prompt_agent) is not PromptAgent or "_preflight_explicit_storyboard" in vars(prompt_agent):
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
+    pipeline = prompt_agent._pipeline
+    if type(pipeline) is not PromptPipeline or any(
+        name in vars(pipeline) for name in ("run", "_input_from_context")
+    ):
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
+    if type(pipeline._template_loader) is not PromptTemplateLoader or any(
+        name in vars(pipeline._template_loader) for name in ("load", "_read", "_validate_name")
+    ):
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
+    pipeline_stages = (
+        (pipeline._builder, PromptBuilder, ("build",)),
+        (
+            pipeline._optimizer,
+            PromptOptimizer,
+            ("optimize", "_normalize", "_deduplicate", "_provider_directive"),
+        ),
+        (pipeline._renderer, PromptRenderer, ("render",)),
+    )
+    if any(
+        type(stage) is not stage_type
+        or any(method in vars(stage) for method in methods)
+        for stage, stage_type, methods in pipeline_stages
+    ):
+        raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
+    validator = pipeline._validator
+    if (
+        type(validator) is not PromptValidator
+        or type(validator._max_characters) is not int
+        or validator._max_characters > 8000
+        or any(
+            name in vars(validator)
+            for name in (
+                "validate",
+                "_placeholders",
+                "_template_variables",
+                "_required_template_variables",
+            )
+        )
+    ):
         raise _DurableRoutingError("DURABLE_EXECUTION_FAILED")
     storyboard = {"panels": authority.panels, "confirmation": confirmation_record(authority)}
     artifacts = {**context.artifacts, PageState.STORYBOARDED.value: storyboard}
@@ -658,8 +705,9 @@ def _preflight_explicit_storyboard(
         update={"state": PageState.STORYBOARDED, "artifacts": artifacts},
         deep=False,
     )
+    candidate = _remove_explicit_storyboard_input_authority(candidate)
     try:
-        preflight(candidate)
+        prompt_agent._preflight_explicit_storyboard(candidate)
     except ValidationError as exc:
         raise _DurableRoutingError("STORYBOARD_CONFIRMATION_INVALID") from exc
 

@@ -21,6 +21,8 @@ let nextStderr = "";
 let nextSpawnErrorCode = "";
 let lastHttpStatus: number | null = null;
 let lastFailure = "no_response_received";
+let updateLatestPageSource: (source: string) => void = () => {};
+let submittedExpectedSource: { state: string; page_design: Record<string, unknown>; review: Record<string, unknown> } | null = null;
 let submittedPanelValues: Array<{
   characters: string[];
   continuity_bindings: string[];
@@ -112,6 +114,15 @@ test.beforeAll(async () => {
     errors: [],
     executionTimeMs: 1,
     approvalRequired: false
+  };
+  updateLatestPageSource = (source: string) => {
+    pageDetail = {
+      ...pageDetail,
+      artifacts: {
+        ...pageDetail.artifacts,
+        pageDesign: { page_purpose: source }
+      }
+    };
   };
 
   apiServer = createServer((request, response) => {
@@ -256,8 +267,12 @@ test("editing or changing panel count revokes confirmation and prevents submissi
       return;
     }
     if (nextOutcome === "success") {
-      const body = route.request().postDataJSON() as { panels: typeof submittedPanelValues };
+      const body = route.request().postDataJSON() as {
+        panels: typeof submittedPanelValues;
+        expectedSource: typeof submittedExpectedSource;
+      };
       submittedPanelValues = body.panels;
+      submittedExpectedSource = body.expectedSource;
     }
     await route.fulfill({
       status: 200,
@@ -314,7 +329,9 @@ test("editing or changing panel count revokes confirmation and prevents submissi
 
   nextOutcome = "conflict";
   await page.reload();
-  await fillStoryboardPanel(page);
+  await page.getByLabel("Panel count").selectOption("2");
+  await fillStoryboardPanel(page, 0);
+  await fillStoryboardPanel(page, 1);
   await confirmation.check();
   const conflictResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && new URL(response.url()).pathname === confirmationPath
@@ -322,9 +339,39 @@ test("editing or changing panel count revokes confirmation and prevents submissi
   await submit.click();
   expect((await conflictResponse).status()).toBe(409);
   await expect(page.getByText(/Page source changed/)).toBeVisible();
+  const loadLatest = page.getByRole("button", { name: "Load latest state" });
+  await expect(loadLatest).toBeEnabled();
   await expect(page.getByRole("button", { name: "Reload before trying again" })).toBeDisabled();
   expect(browserPosts).toHaveLength(2);
   expect(browserPosts[1]).toEqual({ method: "POST", url: `${appUrl}${confirmationPath}` });
+
+  updateLatestPageSource("Latest source from server after conflict.");
+  const refreshedPage = page.waitForNavigation();
+  await loadLatest.click();
+  await refreshedPage;
+  await page.getByText("Reviewed source captured for this confirmation").click();
+  const refreshedPageDesign = page.locator("details pre").first();
+  await expect(refreshedPageDesign).toBeVisible();
+  await expect(refreshedPageDesign).toContainText("Latest source from server after conflict.");
+  await expect(confirmation).not.toBeChecked();
+  await expect(page.getByLabel("Panel count")).toHaveValue("1");
+  await expect(page.getByLabel("Narrative intent")).toHaveValue("");
+  expect(browserPosts).toHaveLength(2);
+
+  nextOutcome = "success";
+  await fillStoryboardPanel(page);
+  await confirmation.check();
+  const refreshedSourceResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === confirmationPath
+  );
+  await submit.click();
+  expect((await refreshedSourceResponse).status()).toBe(200);
+  expect(submittedExpectedSource).toEqual({
+    state: "Reviewed",
+    page_design: { page_purpose: "Latest source from server after conflict." },
+    review: { decision: "Ready for an explicit storyboard." }
+  });
+  expect(browserPosts).toHaveLength(3);
 
   nextOutcome = "uncertain";
   await page.reload();
@@ -333,6 +380,7 @@ test("editing or changing panel count revokes confirmation and prevents submissi
   await submit.click();
   await expect(page.getByText("The result may be uncertain. Reload the Page and inspect its state before taking another action.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload before trying again" })).toBeDisabled();
-  expect(browserPosts).toHaveLength(3);
-  expect(browserPosts[2]).toEqual({ method: "POST", url: `${appUrl}${confirmationPath}` });
+  await expect(page.getByRole("button", { name: "Load latest state" })).toHaveCount(0);
+  expect(browserPosts).toHaveLength(4);
+  expect(browserPosts[3]).toEqual({ method: "POST", url: `${appUrl}${confirmationPath}` });
 });

@@ -70,6 +70,7 @@ export function ExplicitStoryboardInputForm({
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [attempted, setAttempted] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
   const sent = useRef(false);
   const [message, setMessage] = useState("");
   const panelsValid = validPanels(panels);
@@ -105,6 +106,7 @@ export function ExplicitStoryboardInputForm({
       router.refresh();
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
+        setConflicted(true);
         setMessage("The Page source changed. Reload it, review the current source, and confirm again deliberately.");
       } else if (error instanceof ApiClientError && error.status === 404) {
         setMessage("This Page could not be found. Reload the project and inspect its current state.");
@@ -150,6 +152,7 @@ export function ExplicitStoryboardInputForm({
       <label><input type="checkbox" checked={confirmed} disabled={submitting} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these exact panel details and confirm them.</label>
       {!panelsValid ? <p role="alert">Complete every field with a concrete value. Use unique comma-separated character IDs, and enter continuity bindings and constraints one per line.</p> : null}
       <button type="button" disabled={submitting || attempted || !confirmed || !panelsValid} onClick={submit}>{submitting ? "Saving…" : attempted ? "Reload before trying again" : "Confirm storyboard"}</button>
+      {conflicted ? <button type="button" onClick={() => window.location.reload()}>Load latest state</button> : null}
       {message ? <p role="status">{message}</p> : null}
     </section>
   );

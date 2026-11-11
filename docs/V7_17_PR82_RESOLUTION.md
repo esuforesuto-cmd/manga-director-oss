@@ -291,3 +291,49 @@ real-Uvicorn test executions. The latest local
 result does not establish complete RFC-V7-015 acceptance. Criteria 7 and 8
 remain UNVERIFIED pending the full acceptance evidence and remaining review and
 authorization boundaries recorded above.
+
+## P1-B approval-history exception (2026-11-11)
+
+Two original edit-approval records remain unrecovered:
+
+| Change | Unresolved original approval | Later approvals and treatment |
+| --- | --- | --- |
+| `tests/test_local_file_project_fence_linux.py` in `69b4417` | The original approval for the operation associated with this commit has not been recovered. | The final test shape, the limited `f5dadcd` commit, and its later push were separately approved. None is treated as retroactive approval for `69b4417`. |
+| `.gitleaksignore` in `e5298a0` | The initial authorization to create/edit this file has not been recovered. | The later limited commit, push, and retention of its exact single-fingerprint exclusion were separately approved. None is treated as retroactive initial edit approval. |
+
+Disposition: P1-B remains an unresolved approval-history exception. No original
+approval is inferred from implementation acceptance, a later commit or push,
+or approval to retain the current fingerprint exclusion. Preserve the recorded
+history and keep this boundary visible in any PR acceptance decision. This
+record does not authorize a new edit to either inherited path.
+
+## CI evidence preparation and current PR state (2026-11-11)
+
+The local CI workflow change adds a named Windows Python 3.12 step for these
+exact tests; this workflow change is not yet in the PR head:
+
+- `tests/test_localfile_explicit_storyboard_input.py::test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values`
+- `tests/test_localfile_explicit_storyboard_input.py::test_real_uvicorn_cas_and_publication_failure_logs_hide_internal_values`
+
+The step disables the repository's quiet default, prints individual test
+results, and writes JUnit XML under the runner's temporary directory. The
+workflow uploads that XML as `real-uvicorn-test-results`. This change only
+configures future CI; no GitHub Actions run has been triggered for it, so its
+CI result and artifact are pending. The separate local Windows run recorded
+above remains the available execution evidence; the 409 browser E2E result is
+also retained and was not repeated for this work.
+
+At this review, local HEAD and PR #82 head are both
+`1b6dd1330b975435a49a1713596d86c7f650a6b6`; the PR is open and draft with 11
+commits and 32 changed files. Four pre-existing implementation/test files have
+local changes that are not included in that head. They contain the P1-A
+implementation and focused regression test, plus the 409 conflict reload UI
+and its E2E spec. Both real-Uvicorn test bodies and numeric-revision checks are
+already in commit `1b6dd13`. This update also changes the workflow and these two
+records, so seven tracked paths now differ from the PR head. The earlier
+10-commit / `b65a5fa` snapshots above are historical and are not current
+metadata. The live PR body has not been updated and retains an earlier claim
+that the numeric-revision test change was uncommitted and lacked local
+execution evidence. The separate local Windows run is recorded above. The new
+individual CI results and JUnit artifact remain pending. No commit, push, PR
+update, CI rerun, or merge is performed by this record.

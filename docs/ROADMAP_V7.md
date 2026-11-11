@@ -2095,3 +2095,40 @@ remain separate. This record does not authorize changes to
 frozen contracts, generic `/generate`, StateMachine, Provider or LocalFile
 boundaries, public APIs, Human Visual QA, Human Approval, V6 LTS, or I02, and
 does not authorize release or publication.
+
+### PR #82 current local state and remaining acceptance boundaries (2026-11-11)
+
+The local branch and GitHub PR #82 head are both
+`1b6dd1330b975435a49a1713596d86c7f650a6b6`; the open PR remains draft with 11
+commits and 32 changed files. Four pre-existing implementation/test files have
+local changes that are not included in that head. They contain the P1-A
+implementation and focused regression test, plus the 409 conflict reload UI
+and its E2E spec. Both real-Uvicorn test bodies and numeric-revision checks are
+already in commit `1b6dd13`. This status update also modifies the CI workflow
+and these two evidence documents, making seven tracked paths that differ from
+the PR head. The reported normal-Windows 409 E2E PASS is reused; it was not
+rerun during this status update.
+
+P1-B remains an unresolved approval-history exception: the original edit
+approval for `tests/test_local_file_project_fence_linux.py` associated with
+`69b4417`, and the initial create/edit approval for `.gitleaksignore`, have not
+been recovered. Later approval of the final Linux test shape, limited commit
+and push, and later approval to retain the exact fingerprint exclusion do not
+retroactively establish those original approvals. See
+`docs/V7_17_PR82_RESOLUTION.md` for the evidence and disposition.
+
+The local CI workflow change adds a named focused Windows Python 3.12 run for
+the two real-Uvicorn tests and uploads their individual JUnit results; this
+change is not yet in the PR head. No run has executed for it, so the result and
+artifact remain pending. The prior local Windows real-Uvicorn PASS evidence
+remains available and is not a substitute for that CI artifact. The live PR
+body still has stale head/commit metadata and retains an earlier claim that
+the numeric-revision test change was uncommitted and lacked local execution
+evidence. Both test bodies are now in commit `1b6dd13` and have local Windows
+execution evidence. The new individual CI results and JUnit artifact remain
+pending.
+
+P1-B, current-diff independent review, CI execution/artifact, final-head
+documentation and PR-body synchronization, and complete RFC-V7-015 acceptance
+remain outstanding. No commit, push, PR update, CI rerun, or merge is authorized
+by this status entry.

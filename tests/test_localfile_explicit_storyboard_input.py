@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +39,15 @@ from manga_director.production.explicit_storyboard_input import (
     validate_confirmation,
     validate_panels,
 )
-from manga_director.prompting import PromptPipeline, PromptTemplateLoader
+from manga_director.prompting import (
+    PromptBuilder,
+    PromptOptimizer,
+    PromptPipeline,
+    PromptRenderer,
+    PromptTemplateLoader,
+    PromptValidation,
+    PromptValidator,
+)
 from manga_director.prompting.contracts import PromptTemplate
 from manga_director.repositories import ProjectLoader
 from manga_director.repositories.local_file import LocalFileRepository
@@ -607,6 +615,141 @@ def test_localfile_generic_action_error_responses_remain_legacy_500(
     assert repository.load("generic-errors").page(3).state is PageState.GENERATED
 
 
+def _assert_prompt_preflight_overrides_rejected(
+    *,
+    engine: WorkflowEngine,
+    prompt_agent: Any,
+    pipeline: PromptPipeline,
+    validator: Any,
+    confirm: Callable[[str], Response],
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LocalFileRepository,
+    source_before: Any,
+    events: MemoryEventBus,
+    provider_calls: list[str],
+) -> None:
+    from manga_director.workflow.durable_execution import LocalFileDurablePageStore
+
+    def assert_configuration_rejected(configure: Callable[[Any], None]) -> None:
+        conditional_commits: list[bool] = []
+        original_conditional_commit = LocalFileDurablePageStore.conditional_commit
+
+        def count_conditional_commit(self: Any, *args: Any, **kwargs: Any) -> Any:
+            conditional_commits.append(True)
+            return original_conditional_commit(self, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                LocalFileDurablePageStore,
+                "conditional_commit",
+                count_conditional_commit,
+            )
+            configure(patch)
+            rejected_configuration = confirm("demo")
+        assert rejected_configuration.status_code == 503
+        assert rejected_configuration.json()["code"] == "activation_unavailable"
+        assert repository._load_revisioned("demo") == source_before
+        assert repository.load("demo").page(1).state is PageState.REVIEWED
+        assert events.published == []
+        assert provider_calls == []
+        assert conditional_commits == []
+
+    class NoopValidator:
+        def validate(self, *_args: Any, **_kwargs: Any) -> Any:
+            return PromptValidation(warnings=[])
+
+    class ReplacementPromptAgent:
+        def _preflight_explicit_storyboard(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class ReplacementPipeline(PromptPipeline):
+        pass
+
+    class ReplacementBuilder(PromptBuilder):
+        pass
+
+    class ReplacementOptimizer(PromptOptimizer):
+        pass
+
+    class ReplacementRenderer(PromptRenderer):
+        pass
+
+    class ReplacementTemplateLoader(PromptTemplateLoader):
+        pass
+
+    builder = cast(PromptBuilder, pipeline._builder)
+    optimizer = cast(PromptOptimizer, pipeline._optimizer)
+    renderer = cast(PromptRenderer, pipeline._renderer)
+    template_loader = cast(PromptTemplateLoader, pipeline._template_loader)
+    build = builder.build
+    optimize = optimizer.optimize
+    normalize = optimizer._normalize
+    deduplicate = optimizer._deduplicate
+    provider_directive = optimizer._provider_directive
+    render = renderer.render
+    load_template = template_loader.load
+    read_template = template_loader._read
+    validate_template_name = template_loader._validate_name
+
+    for configure in (
+        lambda patch: patch.setitem(
+            engine._agents, PageState.PROMPT_BUILT, ReplacementPromptAgent()
+        ),
+        lambda patch: patch.setitem(
+            vars(prompt_agent), "_preflight_explicit_storyboard", lambda *_args: None
+        ),
+        lambda patch: patch.setattr(prompt_agent, "_pipeline", ReplacementPipeline()),
+        lambda patch: patch.setitem(vars(pipeline), "run", lambda *_args: None),
+        lambda patch: patch.setitem(
+            vars(pipeline), "_input_from_context", lambda *_args: None
+        ),
+        lambda patch: patch.setattr(pipeline, "_builder", ReplacementBuilder()),
+        lambda patch: patch.setattr(pipeline, "_optimizer", ReplacementOptimizer()),
+        lambda patch: patch.setattr(pipeline, "_renderer", ReplacementRenderer()),
+        lambda patch: patch.setattr(pipeline, "_validator", NoopValidator()),
+        lambda patch: patch.setitem(vars(builder), "build", lambda source: build(source)),
+        lambda patch: patch.setitem(
+            vars(optimizer), "optimize", lambda prompt: optimize(prompt)
+        ),
+        lambda patch: patch.setitem(
+            vars(optimizer), "_normalize", lambda value: normalize(value)
+        ),
+        lambda patch: patch.setitem(
+            vars(optimizer), "_deduplicate", lambda values: deduplicate(values)
+        ),
+        lambda patch: patch.setitem(
+            vars(optimizer), "_provider_directive", provider_directive
+        ),
+        lambda patch: patch.setitem(
+            vars(renderer),
+            "render",
+            lambda prompt, source_template: render(prompt, source_template),
+        ),
+        lambda patch: patch.setitem(
+            vars(validator), "validate", lambda *_args: PromptValidation(warnings=[])
+        ),
+        lambda patch: patch.setitem(vars(validator), "_placeholders", re.compile(r".*")),
+        lambda patch: patch.setitem(vars(validator), "_template_variables", set()),
+        lambda patch: patch.setitem(
+            vars(validator), "_required_template_variables", set()
+        ),
+        lambda patch: patch.setattr(validator, "_max_characters", 8001),
+        lambda patch: patch.setattr(pipeline, "_template_loader", ReplacementTemplateLoader()),
+        lambda patch: patch.setitem(
+            vars(template_loader), "load", lambda *_args: load_template("image_prompt.md")
+        ),
+        lambda patch: patch.setitem(
+            vars(template_loader), "_read", lambda name: read_template(name)
+        ),
+        lambda patch: patch.setitem(
+            vars(template_loader),
+            "_validate_name",
+            lambda name: validate_template_name(name),
+        ),
+    ):
+        assert_configuration_rejected(configure)
+
+
 def test_confirmation_missing_project_page_and_damaged_durability_responses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -755,16 +898,53 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
     assert "load diagnostic secret" not in ambiguous_load_failure.text
     assert repository._load_revisioned("demo") == source_before
 
-    prompt_agent = engine._agents[PageState.PROMPT_BUILT]
+    from manga_director.agents.builtin import PromptAgent
+
+    prompt_agent = cast(PromptAgent, engine._agents[PageState.PROMPT_BUILT])
+    pipeline = prompt_agent._pipeline
+    validator = cast(PromptValidator, pipeline._validator)
+    _assert_prompt_preflight_overrides_rejected(
+        engine=engine,
+        prompt_agent=prompt_agent,
+        pipeline=pipeline,
+        validator=validator,
+        confirm=confirm,
+        monkeypatch=monkeypatch,
+        repository=repository,
+        source_before=source_before,
+        events=events,
+        provider_calls=provider_calls,
+    )
+
+    original_preflight = PromptAgent._preflight_explicit_storyboard
+    observed_contexts: list[WorkflowContext] = []
+    template_reads: list[str] = []
+
+    def capture_authority_free_context(
+        agent: PromptAgent, candidate: WorkflowContext
+    ) -> None:
+        observed_contexts.append(candidate)
+        original_preflight(agent, candidate)
+
+    def fail_template_read(_loader: PromptTemplateLoader, name: str) -> tuple[str, str]:
+        template_reads.append(name)
+        raise ProjectNotFoundError("late dependency diagnostic secret")
+
     with monkeypatch.context() as patch:
         patch.setattr(
-            prompt_agent,
+            PromptTemplateLoader,
+            "_read",
+            fail_template_read,
+        )
+        patch.setattr(
+            PromptAgent,
             "_preflight_explicit_storyboard",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                ProjectNotFoundError("late dependency diagnostic secret")
-            ),
+            capture_authority_free_context,
         )
         dependency_failure = confirm("demo")
+    assert len(observed_contexts) == 1
+    assert "_explicit_storyboard_input_authority" not in observed_contexts[0].metadata
+    assert template_reads == ["image_prompt.md"]
     assert dependency_failure.status_code == 503
     assert dependency_failure.json()["code"] == "activation_unavailable"
     assert "late dependency diagnostic secret" not in dependency_failure.text
