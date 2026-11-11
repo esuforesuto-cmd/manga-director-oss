@@ -3,7 +3,7 @@
 Date: 2026-11-10 JST.
 Historical corrective-work baseline: `00c79f6a786d3c37794e06835034e737512c3c49` on
 `feat/v7-17-explicit-storyboard-input`.
-Current evidence status: HOLD / final RFC-V7-015 acceptance remains open.
+Current evidence status (2026-11-11): HOLD / final RFC-V7-015 acceptance remains open. The historical snapshots below are dated evidence; the latest local candidate and live PR state are recorded at the end of this document.
 Model routing: GPT-6 Luna High was requested for normal work; actual primary
 runtime model/reasoning setting is UNVERIFIED. GPT-6.1 Sol High was requested
 for the independent review; its actual runtime model/reasoning setting is also
@@ -104,7 +104,7 @@ comments or design acceptance alone, establish the listed scopes.
 The eight-file commit approval explicitly names the five confirmed paths
 above, along with the related form and Python/Web regression tests.
 
-The original seven-path list is recorded in the PR audit
+At the time of this historical audit, the original seven-path list is recorded in the PR audit
 `01a1c2a6-2e59-74d1-8ccc-3586b3d9ff42`. It includes `.gitleaksignore`.
 The LocalFile durability file was tracked separately.
 The continuation recovered its November 7, 12:08 JST approval for the limited
@@ -117,9 +117,14 @@ gaps concern the original approval associated with the Linux fence test in
 `69b4417` and the initial creation/edit authorization for `.gitleaksignore`.
 
 The earlier deferral recorded for the corrective work did not establish
-historical approval or rejection for the three then-deferred files. The current
-remaining adoption hold is safe missing-project handling; the Linux fence-test
-shape and fingerprint-exclusion retention approvals are described below.
+historical approval or rejection for the three then-deferred files. At the
+2026-11-10 snapshot, the remaining adoption hold was described as safe
+missing-project handling. That claim is superseded: the adopted behavior is
+HTTP 404 for a missing Project without creating aggregate or revision sidecars,
+and HTTP 503 for damaged durability state; regression coverage is recorded in
+`tests/test_localfile_explicit_storyboard_input.py` at lines 956 and 992. The
+Linux fence-test shape and fingerprint-exclusion retention approvals are
+described below.
 
 ## Public API correction
 
@@ -231,7 +236,9 @@ unrecovered; later approvals do not establish it retroactively. The limited
 `src/manga_director/repositories/local_file_durability.py` 404/503 correction
 also has a recovered approval record.
 
-Safe missing-project handling remains deferred. The accepted Linux test shape
+At the 2026-11-10 snapshot, safe missing-project handling was recorded as
+deferred. That status is superseded by the adopted 404/503 behavior and tests
+identified above. The accepted Linux test shape
 retains the loser-specific wait bound and removes the whole-test wall-clock
 assertion. The existing single-fingerprint exclusion is approved for
 retention, while its initial edit authorization remains an evidence gap. CI
@@ -292,7 +299,7 @@ result does not establish complete RFC-V7-015 acceptance. Criteria 7 and 8
 remain UNVERIFIED pending the full acceptance evidence and remaining review and
 authorization boundaries recorded above.
 
-## P1-B approval-history exception (2026-11-11)
+## Historical P1-B approval-history exception (2026-11-11 snapshot)
 
 Two original edit-approval records remain unrecovered:
 
@@ -301,13 +308,12 @@ Two original edit-approval records remain unrecovered:
 | `tests/test_local_file_project_fence_linux.py` in `69b4417` | The original approval for the operation associated with this commit has not been recovered. | The final test shape, the limited `f5dadcd` commit, and its later push were separately approved. None is treated as retroactive approval for `69b4417`. |
 | `.gitleaksignore` in `e5298a0` | The initial authorization to create/edit this file has not been recovered. | The later limited commit, push, and retention of its exact single-fingerprint exclusion were separately approved. None is treated as retroactive initial edit approval. |
 
-Disposition: P1-B remains an unresolved approval-history exception. No original
-approval is inferred from implementation acceptance, a later commit or push,
-or approval to retain the current fingerprint exclusion. Preserve the recorded
-history and keep this boundary visible in any PR acceptance decision. This
-record does not authorize a new edit to either inherited path.
+Historical disposition: P1-B was recorded as an unresolved approval-history
+exception at this snapshot. The original pre-edit approvals were subsequently
+recovered, as recorded in the latest status below. This section preserves the
+then-current evidence state and is not the current disposition.
 
-## CI evidence preparation and current PR state (2026-11-11)
+## Historical CI evidence preparation and PR state (2026-11-11)
 
 The local CI workflow change adds a named Windows Python 3.12 step for these
 exact tests; this workflow change is not yet in the PR head:
@@ -336,4 +342,46 @@ metadata. The live PR body has not been updated and retains an earlier claim
 that the numeric-revision test change was uncommitted and lacked local
 execution evidence. The separate local Windows run is recorded above. The new
 individual CI results and JUnit artifact remain pending. No commit, push, PR
-update, CI rerun, or merge is performed by this record.
+update, CI rerun, or merge was performed in that snapshot.
+
+## Latest local candidate and live PR state (2026-11-11)
+
+The current local branch is `feat/v7-17-explicit-storyboard-input` at
+`5fa6282547b64e7327c6a72e09284b9666d2184d`. The live PR #82 is open and draft,
+with 12 commits and 33 changed files; its head remains
+`0b19fdb4d6a2188ce80daea1340435b356db1218` and its base is
+`e1863ed436e381c4f055d7169ff4c90441826a93`. The local candidate includes two
+P2 fixes. The browser checks the serialized confirmation body before sending
+and blocks requests over 32 KiB. The Python API rejects nonempty raw query
+strings, including `?&` and `?&&`, before JSON parsing. An empty raw query is
+permitted. These local changes have not been pushed and are not in the live PR
+head.
+
+The user-reported browser E2E run passed 2/2 in 28.0 seconds (exit 0), and the
+local `.last-run` record also reports PASS. The preceding user-reported runs
+were pytest 15 passed and Vitest 32 passed. No tests were rerun for this
+documentation update. The earlier CI real-Uvicorn 2/2 result in 13.23 seconds
+is independently recorded in GitHub Actions run
+[#42950964717](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717),
+with the per-test job at
+[job 130294893613](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/job/130294893613).
+The published JUnit metadata is available as
+[artifact 13825967183](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/artifacts/13825967183);
+the XML was not independently parsed. These CI results belong to the older
+PR head, not the current local candidate. That old head's CI passed 10/10 and
+CodeQL passed 3/3 at [run 42950960110](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950960110).
+
+P1-B's approval-history evidence gap is closed. In chat
+`01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”), the user
+approved the exact Linux fence-test edit associated with `69b4417` in message
+`01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST). The user
+conditionally approved initial `.gitleaksignore` creation for one specified
+fingerprint in message `01a1bc5d-03e0-7ea2-a741-70421c087949`
+(2026-11-09 03:12:54 JST); the precheck showed the file absent, and the scoped
+edit aligns with `e5298a0`. This conditional creation approval is distinct
+from later approval to retain the exclusion.
+
+RFC criteria 7 and 8 remain pending. PR #82 remains draft and unmerged; no
+final-candidate CI has run, and no final-candidate push or merge decision has
+been made. This record preserves the distinction between old PR-head CI and
+local candidate results.

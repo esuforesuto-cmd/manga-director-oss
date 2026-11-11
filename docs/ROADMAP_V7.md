@@ -2096,7 +2096,7 @@ frozen contracts, generic `/generate`, StateMachine, Provider or LocalFile
 boundaries, public APIs, Human Visual QA, Human Approval, V6 LTS, or I02, and
 does not authorize release or publication.
 
-### PR #82 current local state and remaining acceptance boundaries (2026-11-11)
+### Historical PR #82 local state and acceptance boundaries (2026-11-11)
 
 The local branch and GitHub PR #82 head are both
 `1b6dd1330b975435a49a1713596d86c7f650a6b6`; the open PR remains draft with 11
@@ -2109,7 +2109,8 @@ and these two evidence documents, making seven tracked paths that differ from
 the PR head. The reported normal-Windows 409 E2E PASS is reused; it was not
 rerun during this status update.
 
-P1-B remains an unresolved approval-history exception: the original edit
+At this historical snapshot, P1-B was recorded as an unresolved
+approval-history exception: the original edit
 approval for `tests/test_local_file_project_fence_linux.py` associated with
 `69b4417`, and the initial create/edit approval for `.gitleaksignore`, have not
 been recovered. Later approval of the final Linux test shape, limited commit
@@ -2132,3 +2133,44 @@ P1-B, current-diff independent review, CI execution/artifact, final-head
 documentation and PR-body synchronization, and complete RFC-V7-015 acceptance
 remain outstanding. No commit, push, PR update, CI rerun, or merge is authorized
 by this status entry.
+
+### Latest V7-17 candidate status (2026-11-11)
+
+The local branch `feat/v7-17-explicit-storyboard-input` is at
+`5fa6282547b64e7327c6a72e09284b9666d2184d`. Live PR #82 remains open and draft
+with 12 commits and 33 changed files; its head is
+`0b19fdb4d6a2188ce80daea1340435b356db1218`, based on
+`e1863ed436e381c4f055d7169ff4c90441826a93`. The local candidate includes two
+P2 fixes. The browser checks the serialized confirmation body before sending
+and blocks requests over 32 KiB. The Python API rejects nonempty raw query
+strings, including `?&` and `?&&`, before JSON parsing. An empty raw query is
+permitted. These local changes have not been pushed.
+
+The user-reported browser E2E run passed 2/2 in 28.0 seconds (exit 0), also
+reported PASS by the local `.last-run` record. The preceding user-reported
+pytest and Vitest runs passed 15 and 32 tests, respectively. No tests were
+rerun for this documentation update. The earlier CI real-Uvicorn 2/2 result in
+13.23 seconds, its per-test job, and its published JUnit metadata are linked in
+`docs/V7_17_PR82_RESOLUTION.md`; those results and the old-head CI 10/10 and
+CodeQL 3/3 apply to the earlier PR head, not this candidate. The JUnit XML was
+not independently parsed.
+
+P1-B's approval-history evidence gap is closed. In chat
+`01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”), the user
+approved the exact Linux fence-test edit associated with `69b4417` in message
+`01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST). The user
+conditionally approved initial `.gitleaksignore` creation for one specified
+fingerprint in message `01a1bc5d-03e0-7ea2-a741-70421c087949`
+(2026-11-09 03:12:54 JST); the precheck showed the file absent, and the scoped
+edit aligns with `e5298a0`. This conditional creation approval is distinct
+from later approval to retain the exclusion. RFC criteria 7 and 8 remain
+pending. The PR remains draft and unmerged. No
+final-candidate CI has run, and no final-candidate push or merge decision has
+been made.
+
+The earlier statement that safe missing-project handling remained deferred is
+superseded. Adopted behavior is HTTP 404 for a missing Project without creating
+aggregate or revision sidecars, and HTTP 503 for damaged durability state;
+coverage is in `tests/test_localfile_explicit_storyboard_input.py` at lines 956
+and 992. The historical sections above retain their dated evidence and should
+not be read as the latest candidate state.
