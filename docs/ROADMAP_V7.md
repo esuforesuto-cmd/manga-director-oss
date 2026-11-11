@@ -2019,8 +2019,8 @@ Page generation, completion of a manga, or publication.
 V7-17, “Explicit Confirmed Storyboard Panel Input,” was accepted as a design
 through RFC-V7-015 on 2026-11-06 JST. Its implementation was separately
 authorized and is recorded in commit `2d5233aec975bef061b3c71de22e7b3f35bad8e3`.
-The implementation is in draft PR #82 targeting `v7-dev`. The latest verified
-PR head is
+At the historical 2026-11-10 snapshot below, the implementation was in draft
+PR #82 targeting `v7-dev`. The PR head verified at that time was
 `b65a5fa6023e96bac53e9701fa8fe3cf3a551442` (base
 `e1863ed436e381c4f055d7169ff4c90441826a93`), with 10 commits and 32 changed
 files. PR CI run [#290](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797492065)
@@ -2136,41 +2136,48 @@ by this status entry.
 
 ### Latest V7-17 candidate status (2026-11-11)
 
-The local branch `feat/v7-17-explicit-storyboard-input` is at
-`5fa6282547b64e7327c6a72e09284b9666d2184d`. Live PR #82 remains open and draft
-with 12 commits and 33 changed files; its head is
-`0b19fdb4d6a2188ce80daea1340435b356db1218`, based on
-`e1863ed436e381c4f055d7169ff4c90441826a93`. The local candidate includes two
-P2 fixes. The browser checks the serialized confirmation body before sending
-and blocks requests over 32 KiB. The Python API rejects nonempty raw query
-strings, including `?&` and `?&&`, before JSON parsing. An empty raw query is
-permitted. These local changes have not been pushed.
+The local branch `feat/v7-17-explicit-storyboard-input` and live PR #82 head are
+at `8973d9fc59c0b9ba2e94a0e183444eb70ffe1f3a`. PR #82 is open and draft,
+targets `v7-dev` at base `e1863ed436e381c4f055d7169ff4c90441826a93`, and has 15
+commits and 33 changed files. The head is pushed. CI run
+[#294](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127)
+tested the PR merge ref `a923aebf9dc143e4d4c834956a88c2692965b23f` and passed
+10/10 jobs. CodeQL run
+[#43009296264](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009296264)
+passed 3/3 analyses. The Windows Python 3.12 job passed both focused real-Uvicorn
+tests and published JUnit artifact
+[#13850898729](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127/artifacts/13850898729).
+The XML contents were not independently parsed. In the historical local
+candidate snapshot at `5fa6282`, the user reported browser E2E 2/2 in 28.0
+seconds (exit 0), with PASS also reported by `.last-run`; preceding
+user-reported pytest and Vitest runs passed 15 and 32 tests. CI #292 and its
+10/10 result applied to the prior PR head `0b19fdb`. These historical local and
+hosted results are not runs on the current head. No tests were run for this
+documentation update.
 
-The user-reported browser E2E run passed 2/2 in 28.0 seconds (exit 0), also
-reported PASS by the local `.last-run` record. The preceding user-reported
-pytest and Vitest runs passed 15 and 32 tests, respectively. No tests were
-rerun for this documentation update. The earlier CI real-Uvicorn 2/2 result in
-13.23 seconds, its per-test job, and its published JUnit metadata are linked in
-`docs/V7_17_PR82_RESOLUTION.md`; those results and the old-head CI 10/10 and
-CodeQL 3/3 apply to the earlier PR head, not this candidate. The JUnit XML was
-not independently parsed.
+P2-A and P2-B are implemented at this head. The browser measures the exact
+serialized confirmation body in UTF-8 bytes and blocks bodies larger than
+32,768 bytes before POST. The Python API rejects every nonempty raw query string,
+including inputs such as `?&` and `?&&`, before JSON parsing. ASGI exposes the
+query bytes after `?` and excludes the delimiter from `raw_path`, so a bare
+trailing `?` and no query cannot be distinguished from the standard scope alone.
+This is an implementation boundary, not a change to RFC-V7-015.
 
-P1-B's approval-history evidence gap is closed. In chat
-`01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”), the user
-approved the exact Linux fence-test edit associated with `69b4417` in message
-`01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST). The user
-conditionally approved initial `.gitleaksignore` creation for one specified
-fingerprint in message `01a1bc5d-03e0-7ea2-a741-70421c087949`
-(2026-11-09 03:12:54 JST); the precheck showed the file absent, and the scoped
-edit aligns with `e5298a0`. This conditional creation approval is distinct
-from later approval to retain the exclusion. RFC criteria 7 and 8 remain
-pending. The PR remains draft and unmerged. No
-final-candidate CI has run, and no final-candidate push or merge decision has
-been made.
+P1-B remains an unresolved approval-history exception. A prior report cited
+chat `01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”) and user
+messages `01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST) and
+`01a1bc5d-03e0-7ea2-a741-70421c087949` (2026-11-09 03:12:54 JST) as recovered
+approval records for the `69b4417` Linux fence-test edit and initial
+`.gitleaksignore` creation. This status update has not revalidated those source
+messages or their correspondence to the original edits. The prior claims remain
+in the record, but P1-B remains unresolved and later approvals are not applied
+retroactively. RFC-V7-015 acceptance criteria 7 and 8 remain on hold. PR #82
+remains draft and unmerged.
 
 The earlier statement that safe missing-project handling remained deferred is
-superseded. Adopted behavior is HTTP 404 for a missing Project without creating
-aggregate or revision sidecars, and HTTP 503 for damaged durability state;
-coverage is in `tests/test_localfile_explicit_storyboard_input.py` at lines 956
-and 992. The historical sections above retain their dated evidence and should
-not be read as the latest candidate state.
+superseded. The confirmation route returns HTTP 404 for a missing Project
+without creating aggregate or revision sidecars, and HTTP 503 for damaged
+durability state. Regression coverage is in
+`tests/test_localfile_explicit_storyboard_input.py` around lines 956 and 992.
+Historical sections retain their dated evidence and do not describe the current
+candidate state.

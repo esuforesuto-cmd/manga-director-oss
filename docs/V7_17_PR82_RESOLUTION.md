@@ -11,11 +11,12 @@ UNVERIFIED.
 
 ## Historical PR and CI evidence (2026-11-10)
 
-The local branch is `feat/v7-17-explicit-storyboard-input` at
-`b65a5fa6023e96bac53e9701fa8fe3cf3a551442`; it matches the latest GitHub PR
-#82 head. PR #82 is open, draft, and targets `v7-dev` at base
-`e1863ed436e381c4f055d7169ff4c90441826a93`. GitHub reports 10 commits and 32
-changed files. The live PR description records these current counts.
+At this historical 2026-11-10 snapshot, the local branch was
+`feat/v7-17-explicit-storyboard-input` at
+`b65a5fa6023e96bac53e9701fa8fe3cf3a551442`; it matched the GitHub PR #82 head
+at that time. PR #82 was open and draft, and targeted `v7-dev` at base
+`e1863ed436e381c4f055d7169ff4c90441826a93`. GitHub reported 10 commits and 32
+changed files at that time.
 
 CI run [#290](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797492065)
 was triggered for this PR head and checked out the synthetic merge ref
@@ -309,9 +310,10 @@ Two original edit-approval records remain unrecovered:
 | `.gitleaksignore` in `e5298a0` | The initial authorization to create/edit this file has not been recovered. | The later limited commit, push, and retention of its exact single-fingerprint exclusion were separately approved. None is treated as retroactive initial edit approval. |
 
 Historical disposition: P1-B was recorded as an unresolved approval-history
-exception at this snapshot. The original pre-edit approvals were subsequently
-recovered, as recorded in the latest status below. This section preserves the
-then-current evidence state and is not the current disposition.
+exception at this snapshot. A later status report cited recovered approval
+records, but the current assessment has not revalidated those source messages or
+their correspondence to the original edits. This historical section and the
+current unresolved disposition are both retained.
 
 ## Historical CI evidence preparation and PR state (2026-11-11)
 
@@ -346,42 +348,62 @@ update, CI rerun, or merge was performed in that snapshot.
 
 ## Latest local candidate and live PR state (2026-11-11)
 
-The current local branch is `feat/v7-17-explicit-storyboard-input` at
-`5fa6282547b64e7327c6a72e09284b9666d2184d`. The live PR #82 is open and draft,
-with 12 commits and 33 changed files; its head remains
-`0b19fdb4d6a2188ce80daea1340435b356db1218` and its base is
-`e1863ed436e381c4f055d7169ff4c90441826a93`. The local candidate includes two
-P2 fixes. The browser checks the serialized confirmation body before sending
-and blocks requests over 32 KiB. The Python API rejects nonempty raw query
-strings, including `?&` and `?&&`, before JSON parsing. An empty raw query is
-permitted. These local changes have not been pushed and are not in the live PR
-head.
+The local branch `feat/v7-17-explicit-storyboard-input` and live PR #82 head are
+at `8973d9fc59c0b9ba2e94a0e183444eb70ffe1f3a`. PR #82 is open and draft,
+targets `v7-dev` at base `e1863ed436e381c4f055d7169ff4c90441826a93`, and has 15
+commits and 33 changed files. The head is pushed.
 
-The user-reported browser E2E run passed 2/2 in 28.0 seconds (exit 0), and the
-local `.last-run` record also reports PASS. The preceding user-reported runs
-were pytest 15 passed and Vitest 32 passed. No tests were rerun for this
-documentation update. The earlier CI real-Uvicorn 2/2 result in 13.23 seconds
-is independently recorded in GitHub Actions run
-[#42950964717](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717),
-with the per-test job at
-[job 130294893613](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/job/130294893613).
-The published JUnit metadata is available as
-[artifact 13825967183](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/artifacts/13825967183);
-the XML was not independently parsed. These CI results belong to the older
-PR head, not the current local candidate. That old head's CI passed 10/10 and
-CodeQL passed 3/3 at [run 42950960110](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950960110).
+CI run
+[#294](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127)
+tested the PR merge ref `a923aebf9dc143e4d4c834956a88c2692965b23f` for this
+head and base; all 10 jobs passed. CodeQL run
+[#43009296264](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009296264)
+passed all 3 analyses. The Windows Python 3.12 job passed both focused
+real-Uvicorn tests in 17.88 seconds. Its [job log](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127/job/130484567833)
+shows the individual results. JUnit artifact
+[#13850898729](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127/artifacts/13850898729)
+was published. The XML contents were not independently parsed. No tests were
+run for this documentation update.
 
-P1-B's approval-history evidence gap is closed. In chat
-`01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”), the user
-approved the exact Linux fence-test edit associated with `69b4417` in message
-`01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST). The user
-conditionally approved initial `.gitleaksignore` creation for one specified
-fingerprint in message `01a1bc5d-03e0-7ea2-a741-70421c087949`
-(2026-11-09 03:12:54 JST); the precheck showed the file absent, and the scoped
-edit aligns with `e5298a0`. This conditional creation approval is distinct
-from later approval to retain the exclusion.
+The historical local candidate snapshot at `5fa6282` had user-reported browser
+E2E 2/2 in 28.0 seconds, pytest 15 passed, and Vitest 32 passed. These are
+historical local results, not runs on the current head. The previous CI #292
+ran against PR head `0b19fdb` with 12 commits and 33 changed files. CI run
+[#42950964717](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717)
+passed 10/10 jobs. CodeQL
+[#42950960110](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950960110)
+passed 3/3. The Windows Python 3.12 job in CI #292 passed two real-Uvicorn
+tests in 13.23 seconds and
+published JUnit artifact
+[#13825967183](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/artifacts/13825967183).
+The earlier real-Uvicorn job log is
+[#130294893613](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42950964717/job/130294893613).
+The JUnit XML was not independently parsed. Those hosted results belong to the
+previous PR head.
 
-RFC criteria 7 and 8 remain pending. PR #82 remains draft and unmerged; no
-final-candidate CI has run, and no final-candidate push or merge decision has
-been made. This record preserves the distinction between old PR-head CI and
-local candidate results.
+P2-A and P2-B are implemented at this head. The browser measures the exact
+serialized confirmation body in UTF-8 bytes and blocks bodies larger than
+32,768 bytes before POST. The Python API rejects every nonempty raw query string,
+including `?&` and `?&&`, before JSON parsing. ASGI exposes the bytes after the
+query delimiter and excludes that delimiter from `raw_path`; therefore the
+standard scope alone cannot distinguish a bare trailing `?` from no query.
+This does not amend the frozen RFC.
+
+P1-B remains an unresolved approval-history exception. The chat and message
+identifiers cited by the prior status report are preserved as claims of
+recovered approval. That report identified chat
+`01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”) and user messages
+`01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST) and
+`01a1bc5d-03e0-7ea2-a741-70421c087949` (2026-11-09 03:12:54 JST). Their
+correspondence to the original edits has not been revalidated for this status.
+They do not resolve P1-B here, and later approvals are not applied
+retroactively. RFC-V7-015 acceptance criteria 7 and 8 remain on hold. PR #82
+remains draft and unmerged.
+
+The earlier statement that safe missing-project handling remained deferred is
+superseded. The confirmation route returns HTTP 404 for a missing Project
+without creating aggregate or revision sidecars, and HTTP 503 for damaged
+durability state. Regression coverage is in
+`tests/test_localfile_explicit_storyboard_input.py` around lines 956 and 992.
+Historical sections retain their dated evidence and do not describe the current
+candidate state.
