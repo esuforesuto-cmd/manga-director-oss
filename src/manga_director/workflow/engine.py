@@ -53,13 +53,23 @@ class WorkflowEngine:
         """Invoke only the agent for the next legal state and publish its resulting events."""
         unpublished = self._execute_unpublished(context)
         self._publish_unpublished(unpublished)
-        return unpublished.result
+        return self._public_result(unpublished.result)
 
     def execute_command(self, context: WorkflowContext, command: str) -> WorkflowResult:
         """Execute a named primary workflow command only when it is currently legal."""
         unpublished = self._execute_unpublished(context, command=command)
         self._publish_unpublished(unpublished)
-        return unpublished.result
+        return self._public_result(unpublished.result)
+
+    @staticmethod
+    def _public_result(result: WorkflowResult) -> WorkflowResult:
+        private_key = "_explicit_storyboard_input_authority"
+        if private_key not in result.context.metadata:
+            return result
+        metadata = dict(result.context.metadata)
+        del metadata[private_key]
+        context = result.context.model_copy(update={"metadata": metadata})
+        return result.model_copy(update={"context": context})
 
     def _execute_unpublished(
         self, context: WorkflowContext, *, command: str | None = None

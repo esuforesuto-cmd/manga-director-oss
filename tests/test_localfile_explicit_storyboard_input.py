@@ -29,6 +29,7 @@ from manga_director.adapters.llm_provider import LLMResult, PromptRequest
 from manga_director.agents.registry import primary_agents, support_agents
 from manga_director.api.composition import build_workflow_app
 from manga_director.api.workflow import LOCAL_WEB_ORIGINS
+from manga_director.domain.events import EventType
 from manga_director.domain.exceptions import ProjectNotFoundError, ValidationError
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
@@ -110,12 +111,16 @@ class _ContextCapturingWorkflowObserver(WorkflowObserver):
         return super().begin(context, target)
 
 
-def test_workflow_observer_does_not_receive_transient_storyboard_authority() -> None:
+@pytest.mark.parametrize("method", ["execute", "execute_command"])
+@pytest.mark.parametrize("with_observer", [True, False], ids=["observer", "no-observer"])
+def test_public_workflow_result_does_not_expose_transient_storyboard_authority(
+    method: str, with_observer: bool
+) -> None:
     private_key = "_explicit_storyboard_input_authority"
     authority = create_authority(
         "demo",
         1,
-        7,
+        9_876_543_210,
         "a" * 64,
         {
             "page_design": {"purpose": "Recover the brass key"},
@@ -123,7 +128,8 @@ def test_workflow_observer_does_not_receive_transient_storyboard_authority() -> 
         },
         [_panel()],
     )
-    observer = _ContextCapturingWorkflowObserver()
+    observer = _ContextCapturingWorkflowObserver() if with_observer else None
+    event_bus = MemoryEventBus()
     agent_contexts: list[WorkflowContext] = []
 
     class _StoryboardAgent:
@@ -137,37 +143,62 @@ def test_workflow_observer_does_not_receive_transient_storyboard_authority() -> 
 
     engine = WorkflowEngine(
         state_machine=StateMachine(),
-        event_bus=MemoryEventBus(),
+        event_bus=event_bus,
         agents={PageState.STORYBOARDED: _StoryboardAgent()},
         observer=observer,
     )
-    confirmation_context = WorkflowContext(
-        page={"project_id": "demo", "page_id": "1"},
-        state=PageState.REVIEWED,
-        metadata={
-            "trace_id": "v7-17-private-observer-trace",
-            "correlation_id": "v7-17-private-observer-correlation",
-            "ordinary_metadata": "preserved",
-            private_key: authority,
-        },
-    )
-
-    result = engine.execute(confirmation_context)
-
-    assert result.current_state is PageState.STORYBOARDED
-    assert len(agent_contexts) == 1
-    assert agent_contexts[0] is confirmation_context
-    assert agent_contexts[0].metadata[private_key] is authority
-    assert len(observer.started_contexts) == 1
-    observed_context, target = observer.started_contexts[0]
-    assert target is PageState.STORYBOARDED
-    assert observed_context is not confirmation_context
-    assert observed_context.metadata == {
+    public_metadata = {
         "trace_id": "v7-17-private-observer-trace",
         "correlation_id": "v7-17-private-observer-correlation",
         "ordinary_metadata": "preserved",
     }
-    assert authority.fingerprint not in observed_context.model_dump_json()
+    confirmation_context = WorkflowContext(
+        page={"project_id": "demo", "page_id": "1"},
+        state=PageState.REVIEWED,
+        metadata={**public_metadata, private_key: authority},
+    )
+
+    if method == "execute":
+        result = engine.execute(confirmation_context)
+    else:
+        result = engine.execute_command(confirmation_context, "storyboard")
+
+    assert result.current_state is result.completed_step is result.context.state is PageState.STORYBOARDED
+    assert len(agent_contexts) == 1
+    assert agent_contexts[0] is confirmation_context
+    assert agent_contexts[0].metadata[private_key] is authority
+    assert private_key not in result.context.metadata
+    serialized = result.model_dump_json()
+    assert private_key not in serialized
+    assert authority.fingerprint not in serialized
+    _assert_no_internal_revision_value(serialized, authority.revision)
+    assert result.context.metadata == {
+        **public_metadata,
+        "current_step": PageState.STORYBOARDED.value,
+        "workflow_history": [
+            {
+                "kind": "workflow",
+                "from": PageState.REVIEWED.value,
+                "to": PageState.STORYBOARDED.value,
+                "step": PageState.STORYBOARDED.value,
+            }
+        ],
+    }
+    assert confirmation_context.metadata == {**public_metadata, private_key: authority}
+    assert confirmation_context.state is PageState.REVIEWED
+    assert confirmation_context.events == []
+    assert confirmation_context.artifacts == {}
+    assert result.events == result.context.events == event_bus.published
+    assert [event.event_type for event in result.events] == [EventType.STORYBOARD_CREATED]
+    assert result.logs == [f"{PageState.REVIEWED.value} -> {PageState.STORYBOARDED.value}"]
+
+    if observer is not None:
+        assert len(observer.started_contexts) == 1
+        observed_context, target = observer.started_contexts[0]
+        assert target is PageState.STORYBOARDED
+        assert observed_context is not confirmation_context
+        assert observed_context.metadata == public_metadata
+        assert authority.fingerprint not in observed_context.model_dump_json()
 
     ordinary_context = confirmation_context.model_copy(
         update={"metadata": {"trace_id": "v7-17-ordinary-observer-trace"}},
@@ -175,7 +206,8 @@ def test_workflow_observer_does_not_receive_transient_storyboard_authority() -> 
     )
     ordinary_result = engine.execute(ordinary_context)
     assert ordinary_result.current_state is PageState.STORYBOARDED
-    assert observer.started_contexts[1][0] is ordinary_context
+    if observer is not None:
+        assert observer.started_contexts[1][0] is ordinary_context
     assert agent_contexts[1] is ordinary_context
 
 
