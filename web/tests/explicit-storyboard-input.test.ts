@@ -28,6 +28,21 @@ describe("explicit storyboard input form", () => {
     expect(source).toContain("Reload before trying again");
   });
 
+  it("checks the one serialized request body before locking or posting and preserves oversized input", () => {
+    const serialize = source.indexOf("serializeStoryboardConfirmationRequestBody(confirmationBody, expectedSourceJson)");
+    const check = source.indexOf("isStoryboardConfirmationBodyWithinLimit(serializedBody)");
+    const rejectMessage = source.indexOf("exceeds the 32 KiB request limit");
+    const lock = source.indexOf("sent.current = true;");
+    const post = source.indexOf("serializedBody);");
+
+    expect(serialize).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(serialize);
+    expect(rejectMessage).toBeGreaterThan(check);
+    expect(lock).toBeGreaterThan(rejectMessage);
+    expect(post).toBeGreaterThan(lock);
+    expect(source).toContain("return;");
+  });
+
   it("requires fresh confirmation after panel edits or panel-count changes", () => {
     expect(source).toContain("function update(index: number, key: keyof DraftPanel, value: string) {\n    setConfirmed(false);");
     expect(source).toContain("const count = Number(event.target.value);\n          setConfirmed(false);");

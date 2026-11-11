@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiClientError, api } from "@/lib/api/client";
+import {
+  ApiClientError,
+  api,
+  isStoryboardConfirmationBodyWithinLimit,
+  serializeStoryboardConfirmationRequestBody
+} from "@/lib/api/client";
 import type { HumanVisualCriterion, VisualReviewReadinessRequest } from "@/lib/api/types";
 
 const visualCriteria: HumanVisualCriterion[] = [
@@ -79,6 +84,29 @@ describe("REST API client", () => {
     await api.pages.confirmStoryboard("demo", 1, body, page.__storyboardExpectedSourceJson);
 
     expect(fetchMock.mock.calls[1][1].body).toContain('"weight":1.0');
+  });
+
+  it("measures the serialized confirmation body limit in UTF-8 bytes", () => {
+    expect(isStoryboardConfirmationBodyWithinLimit("a".repeat(32_768))).toBe(true);
+    expect(isStoryboardConfirmationBodyWithinLimit("a".repeat(32_769))).toBe(false);
+    expect(isStoryboardConfirmationBodyWithinLimit(`漢${"a".repeat(32_765)}`)).toBe(true);
+    expect(isStoryboardConfirmationBodyWithinLimit(`漢${"a".repeat(32_766)}`)).toBe(false);
+  });
+
+  it("posts the exact serialized storyboard body supplied by its preflight", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "storyboarded" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = {
+      requestVersion: 1 as const,
+      expectedSource: { state: "Reviewed" as const, page_design: {}, review: {} },
+      confirmed: true as const,
+      panels: []
+    };
+    const serializedBody = serializeStoryboardConfirmationRequestBody(body);
+
+    await api.pages.confirmStoryboard("demo", 1, body, undefined, serializedBody);
+
+    expect(fetchMock.mock.calls[0][1].body).toBe(serializedBody);
   });
 
   it("maps a failed API response to a structured client error", async () => {

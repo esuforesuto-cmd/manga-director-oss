@@ -384,3 +384,64 @@ test("editing or changing panel count revokes confirmation and prevents submissi
   expect(browserPosts).toHaveLength(4);
   expect(browserPosts[3]).toEqual({ method: "POST", url: `${appUrl}${confirmationPath}` });
 });
+
+test("oversized storyboard input stays editable and can be submitted after correction", async ({ page }) => {
+  await page.goto(`${appUrl}/projects/demo/pages/1`);
+  const submit = page.getByRole("button", { name: "Confirm storyboard" });
+  const confirmation = page.getByRole("checkbox", { name: "I reviewed these exact panel details and confirm them." });
+  const confirmationPath = "/api/projects/demo/pages/1/storyboard/confirm";
+  const oversizedText = "漢".repeat(4_000);
+  const browserPosts: string[] = [];
+
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === confirmationPath && request.method() === "POST") {
+      browserPosts.push(request.postData() ?? "");
+    }
+  });
+  await page.route(`**${confirmationPath}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "storyboarded" })
+    });
+  });
+
+  await fillStoryboardPanel(page);
+  await page.getByLabel("Narrative intent").fill(oversizedText);
+  await page.getByRole("textbox", { name: "Action" }).fill(oversizedText);
+  await page.getByLabel("Background").fill(oversizedText);
+  await page.getByLabel("Composition").fill(oversizedText);
+  await confirmation.check();
+  await submit.click();
+
+  await expect(page.getByText(/exceeds the 32 KiB request limit/)).toBeVisible();
+  await expect(page.getByLabel("Narrative intent")).toHaveValue(oversizedText);
+  await expect(page.getByRole("textbox", { name: "Action" })).toHaveValue(oversizedText);
+  await expect(page.getByLabel("Background")).toHaveValue(oversizedText);
+  await expect(page.getByLabel("Composition")).toHaveValue(oversizedText);
+  await expect(confirmation).toBeChecked();
+  await expect(submit).toBeEnabled();
+  expect(browserPosts).toEqual([]);
+
+  await page.getByRole("textbox", { name: "Action" }).fill("The courier folds the timetable.");
+  await page.getByLabel("Background").fill("A small station at dusk.");
+  await page.getByLabel("Composition").fill("Wide shot across the platform.");
+  await expect(confirmation).not.toBeChecked();
+  await confirmation.check();
+  const response = page.waitForResponse((item) =>
+    item.request().method() === "POST" && new URL(item.url()).pathname === confirmationPath
+  );
+  await submit.click();
+
+  expect((await response).status()).toBe(200);
+  expect(browserPosts).toHaveLength(1);
+  const submittedBody = JSON.parse(browserPosts[0]) as {
+    panels: Array<{ narrative_intent: string; action: string; background: string; composition: string }>;
+  };
+  expect(submittedBody.panels[0]).toMatchObject({
+    narrative_intent: oversizedText,
+    action: "The courier folds the timetable.",
+    background: "A small station at dusk.",
+    composition: "Wide shot across the platform."
+  });
+});

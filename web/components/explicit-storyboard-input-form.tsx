@@ -2,7 +2,12 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ApiClientError, api } from "@/lib/api/client";
+import {
+  ApiClientError,
+  api,
+  isStoryboardConfirmationBodyWithinLimit,
+  serializeStoryboardConfirmationRequestBody
+} from "@/lib/api/client";
 import type { PageDetail, StoryboardConfirmationPanel } from "@/lib/api/types";
 
 type DraftPanel = Omit<StoryboardConfirmationPanel, "characters" | "continuity_bindings" | "constraints"> & {
@@ -85,23 +90,29 @@ export function ExplicitStoryboardInputForm({
 
   async function submit() {
     if (sent.current || submitting || !confirmed || !panelsValid) return;
-    sent.current = true;
-    setAttempted(true);
-    setSubmitting(true);
-    setMessage("");
     const explicitPanels = panels.map((panel) => ({
       ...panel,
       characters: parseCharacterIds(panel.characters),
       continuity_bindings: parseLineItems(panel.continuity_bindings),
       constraints: parseLineItems(panel.constraints)
     }));
+    const confirmationBody = {
+      requestVersion: 1 as const,
+      expectedSource,
+      confirmed: true as const,
+      panels: explicitPanels
+    };
+    const serializedBody = serializeStoryboardConfirmationRequestBody(confirmationBody, expectedSourceJson);
+    if (!isStoryboardConfirmationBodyWithinLimit(serializedBody)) {
+      setMessage("This confirmation exceeds the 32 KiB request limit. Shorten the panel details and confirm again.");
+      return;
+    }
+    sent.current = true;
+    setAttempted(true);
+    setSubmitting(true);
+    setMessage("");
     try {
-      await api.pages.confirmStoryboard(projectId, page.pageNumber, {
-        requestVersion: 1,
-        expectedSource,
-        confirmed: true,
-        panels: explicitPanels
-      }, expectedSourceJson);
+      await api.pages.confirmStoryboard(projectId, page.pageNumber, confirmationBody, expectedSourceJson, serializedBody);
       setMessage("Storyboard saved. Reload the page to inspect the result.");
       router.refresh();
     } catch (error) {

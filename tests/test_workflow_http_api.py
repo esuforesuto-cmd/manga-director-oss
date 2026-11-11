@@ -301,6 +301,101 @@ def test_explicit_storyboard_confirmation_route_is_localfile_only() -> None:
     assert nested_response.status_code == 404
 
 
+def test_explicit_storyboard_confirmation_rejects_any_nonempty_raw_query_before_processing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    application, _agents = _application(repository=LocalFileRepository(tmp_path))
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    body = (
+        b'{"requestVersion":1,"expectedSource":{"state":"Reviewed",'
+        b'"page_design":{},"review":{}},"confirmed":true,"panels":[]}'
+    )
+    application_calls: list[tuple[object, ...]] = []
+
+    def confirm(*args: object) -> None:
+        application_calls.append(args)
+        raise ProjectNotFoundError("missing")
+
+    monkeypatch.setattr(application, "_confirm_storyboard_input", confirm)
+    parsed = False
+    original_loads = workflow_api.json.loads
+
+    def track_json_parse(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed = True
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_api.json, "loads", track_json_parse)
+
+    for raw_query in ("mode=confirm", "&", "&&"):
+        response = client.post(
+            f"/projects/demo/pages/1/storyboard/confirm?{raw_query}",
+            headers=headers,
+            content=body,
+        )
+        assert response.status_code == 422, raw_query
+        assert not parsed, raw_query
+        assert application_calls == []
+
+
+def test_explicit_storyboard_confirmation_allows_an_empty_raw_query(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    application, _agents = _application(repository=LocalFileRepository(tmp_path))
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    body = {
+        "requestVersion": 1,
+        "expectedSource": {"state": "Reviewed", "page_design": {}, "review": {}},
+        "confirmed": True,
+        "panels": [{
+            "number": 1,
+            "narrative_intent": "A courier opens the gate",
+            "characters": ["courier"],
+            "continuity_bindings": ["red scarf"],
+            "action": "Opens the gate",
+            "background": "A stone courtyard",
+            "composition": "Wide view from the north",
+            "constraints": ["keep the scarf visible"],
+        }],
+    }
+    application_calls: list[tuple[object, ...]] = []
+
+    def confirm(*args: object) -> None:
+        application_calls.append(args)
+        raise ProjectNotFoundError("missing")
+
+    monkeypatch.setattr(application, "_confirm_storyboard_input", confirm)
+
+    response = client.post(
+        "/projects/demo/pages/1/storyboard/confirm",
+        headers=headers,
+        json=body,
+    )
+
+    assert response.status_code == 404
+    assert len(application_calls) == 1
+
+
 def test_explicit_storyboard_body_limit_uses_actual_stream_size_before_json_parse(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

@@ -171,6 +171,21 @@ function encoded(value: string | number): string {
   return encodeURIComponent(String(value));
 }
 
+export const STORYBOARD_CONFIRMATION_MAX_BODY_BYTES = 32_768;
+
+export function serializeStoryboardConfirmationRequestBody(
+  body: StoryboardConfirmationRequest,
+  expectedSourceJson?: string
+): string {
+  return expectedSourceJson
+    ? `{"requestVersion":1,"expectedSource":${expectedSourceJson},"confirmed":true,"panels":${JSON.stringify(body.panels)}}`
+    : JSON.stringify(body);
+}
+
+export function isStoryboardConfirmationBodyWithinLimit(serializedBody: string): boolean {
+  return new TextEncoder().encode(serializedBody).byteLength <= STORYBOARD_CONFIRMATION_MAX_BODY_BYTES;
+}
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
   projects: {
@@ -198,12 +213,11 @@ export const api = {
       projectId: string,
       pageNumber: number,
       body: StoryboardConfirmationRequest,
-      expectedSourceJson?: string
+      expectedSourceJson?: string,
+      serializedBody?: string
     ) => request<StoryboardConfirmationResponse>(`/api/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/storyboard/confirm`, {
       method: "POST",
-      body: expectedSourceJson
-        ? `{"requestVersion":1,"expectedSource":${expectedSourceJson},"confirmed":true,"panels":${JSON.stringify(body.panels)}}`
-        : JSON.stringify(body),
+      body: serializedBody ?? serializeStoryboardConfirmationRequestBody(body, expectedSourceJson),
       headers: { "Content-Type": "application/json" }
     }, ""),
     generatedAssetUrl: (projectId: string, pageNumber: number) =>

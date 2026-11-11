@@ -546,7 +546,7 @@ def _register_visual_review_request_guard(
         ):
             return _panel_aware_generation_error(json_response, 422, "invalid_input")
         if storyboard_confirmation and (
-            request.query_params
+            request.scope.get("query_string", b"") != b""
             or "transfer-encoding" in request.headers
             or not _bounded_panel_generation_content_length(
                 content_length, maximum=_STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH
@@ -925,7 +925,7 @@ def _storyboard_confirmation_route(
         request: Any,
     ) -> Any:
         if (
-            request.query_params
+            request.scope.get("query_string", b"") != b""
             or "transfer-encoding" in request.headers
             or not _bounded_content_length(
                 _single_request_header(request, "content-length"),
