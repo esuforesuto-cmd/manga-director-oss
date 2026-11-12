@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
 from manga_director.production.next_generation_durable_application_commit_receipt import (
@@ -61,6 +62,7 @@ class _Fence:
 class _Snapshot:
     revision: int
     fingerprint: str
+    project: Project
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,18 @@ class _PageStore:
 
     def load_revisioned(self, project_id: str) -> _Snapshot:
         assert project_id == _PROJECT
-        return _Snapshot(self.revision, self.fingerprint)
+        project = Project(
+            id=_PROJECT,
+            title="External application test",
+            pages=[
+                Page(
+                    page_number=int(_PAGE),
+                    state=self.context.state,
+                    metadata=self.context.metadata,
+                )
+            ],
+        )
+        return _Snapshot(self.revision, self.fingerprint, project)
 
     def context_from_snapshot(self, snapshot: object, page_id: str) -> WorkflowContext:
         del snapshot

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
+import manga_director.cli.app as cli_app
 from manga_director.cli.app import app
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
@@ -50,6 +51,16 @@ def _route_with_test_fence(
     )._execute_with_receipt(project_id, page_id, command, execution_input)
     assert receipt.workflow_result is not None
     return receipt.workflow_result
+
+
+def _install_test_run_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    route_localfile_run = cli_app._route_localfile_run
+
+    def route_with_test_fence(*args: Any, **kwargs: Any) -> Any:
+        kwargs["fence_factory"] = _Fence
+        return route_localfile_run(*args, **kwargs)
+
+    monkeypatch.setattr(cli_app, "_route_localfile_run", route_with_test_fence)
 
 
 def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
@@ -339,8 +350,9 @@ def test_cli_run_status_and_explicit_approval(tmp_path: Path) -> None:
 
 
 def test_cli_execution_rejects_reserved_saved_metadata_while_status_stays_readable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _install_test_run_fence(monkeypatch)
     runner = CliRunner()
     config = tmp_path / "config.yaml"
     common = ["--config", str(config)]

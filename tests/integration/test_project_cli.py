@@ -2,11 +2,37 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+import manga_director.workflow.localfile_durable_routing as localfile_durable_routing
 from manga_director.cli.app import app
 from manga_director.domain.state_machine import PageState
 from manga_director.repositories.local_file import LocalFileRepository
+
+
+class _TestFence:
+    def __init__(self, _project_id: str, _page_id: str) -> None:
+        self.held = False
+
+    def acquire(self) -> None:
+        assert not self.held
+        self.held = True
+
+    def release(self) -> None:
+        self.held = False
+
+
+def _install_test_run_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    route_localfile_run = localfile_durable_routing._route_localfile_run
+
+    def route_with_test_fence(*args: object, **kwargs: object) -> object:
+        kwargs["fence_factory"] = _TestFence
+        return route_localfile_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        localfile_durable_routing, "_route_localfile_run", route_with_test_fence
+    )
 
 
 def _tree_hashes(root: Path) -> dict[str, str]:
@@ -85,8 +111,9 @@ def test_cli_project_and_chapter_workflows_run_one_page_and_report_status(tmp_pa
 
 
 def test_cli_project_execution_rejects_reserved_saved_metadata_before_page_transition(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _install_test_run_fence(monkeypatch)
     runner = CliRunner()
     config = tmp_path / "config.yaml"
     common = ["--config", str(config)]
@@ -105,6 +132,7 @@ def test_cli_project_execution_rejects_reserved_saved_metadata_before_page_trans
     assert run.exit_code == 1
     assert "DURABLE_EXECUTION_INPUT_INVALID" in run.stderr
     assert status.exit_code == 0
+    assert repository.load("demo").page(1) == page
     assert repository.load("demo").page(1).state == PageState.DRAFT
 
 
