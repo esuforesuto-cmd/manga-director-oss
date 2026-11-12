@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from manga_director.domain.exceptions import ProjectAlreadyExistsError
+from manga_director.domain.exceptions import ProjectAlreadyExistsError, ValidationError
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
 from manga_director.repositories.database_factory import DatabaseFactory
@@ -11,10 +11,11 @@ from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.repositories.serializer import ProjectSerializer, SerializationFormat
 from manga_director.workflow.contracts import WorkflowContext
+from manga_director.workflow.engine import _contains_reserved_storyboard_authority
 
 
 class ProjectLoader:
-    """Maps persisted Project pages to WorkflowContext without workflow decisions."""
+    """Map persisted pages and validate their metadata before execution."""
 
     def __init__(self, repository: ProjectRepository) -> None:
         self._repository = repository
@@ -82,6 +83,17 @@ class ProjectLoader:
     def load(self, project_id: str, page_id: str) -> WorkflowContext:
         project = self._repository.load(project_id)
         return self._context_from_page(project, project.page(int(page_id)))
+
+    def load_for_execution(self, project_id: str, page_id: str) -> WorkflowContext:
+        """Load a Page for execution after checking its persisted metadata."""
+        project = self._repository.load(project_id)
+        page = project.page(int(page_id))
+        if _contains_reserved_storyboard_authority(page.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+        context = self._context_from_page(project, page)
+        if _contains_reserved_storyboard_authority(context.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+        return context
 
     def save(self, project_id: str, page_id: str, context: WorkflowContext) -> None:
         project = self._repository.load(project_id)

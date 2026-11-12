@@ -5,6 +5,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from manga_director.cli.app import app
+from manga_director.domain.state_machine import PageState
+from manga_director.repositories.local_file import LocalFileRepository
 
 
 def _tree_hashes(root: Path) -> dict[str, str]:
@@ -80,6 +82,60 @@ def test_cli_project_and_chapter_workflows_run_one_page_and_report_status(tmp_pa
     assert '"current_page": 1' in chapter_status.stdout
     assert resumed.exit_code == 0
     assert '"state": "QualityChecked"' in resumed.stdout
+
+
+def test_cli_project_execution_rejects_reserved_saved_metadata_before_page_transition(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    common = ["--config", str(config)]
+    created = runner.invoke(app, ["project", "create", "--id", "demo", "--title", "Demo", *common])
+    repository = LocalFileRepository(config.parent / ".manga-director")
+    project = repository.load("demo")
+    page = project.page(1).model_copy(
+        update={"metadata": {"workflow_history": [{"_explicit_storyboard_input_authority": None}]}}
+    )
+    repository.save(project.replace_page(page))
+
+    run = runner.invoke(app, ["project", "run", "demo", *common])
+    status = runner.invoke(app, ["project", "status", "demo", *common])
+
+    assert created.exit_code == 0
+    assert run.exit_code == 1
+    assert "DURABLE_EXECUTION_INPUT_INVALID" in run.stderr
+    assert status.exit_code == 0
+    assert repository.load("demo").page(1).state == PageState.DRAFT
+
+
+def test_cli_localfile_batch_rejects_reserved_saved_metadata_and_retry_rechecks_it(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    common = ["--config", str(config)]
+    created = runner.invoke(app, ["project", "create", "--id", "demo", "--title", "Demo", *common])
+    repository = LocalFileRepository(config.parent / ".manga-director")
+    project = repository.load("demo")
+    page = project.page(1).model_copy(
+        update={
+            "metadata": {
+                "workflow_history": [{"_explicit_storyboard_input_authority": "private-marker"}]
+            }
+        }
+    )
+    repository.save(project.replace_page(page))
+
+    run = runner.invoke(app, ["batch", "run", "demo", "--id", "batch-1", *common])
+    retry = runner.invoke(app, ["batch", "retry", "demo", "batch-1", *common])
+
+    assert created.exit_code == 0
+    assert run.exit_code == 0
+    assert json.loads(run.stdout)["failed"] == [1]
+    assert retry.exit_code == 0
+    assert json.loads(retry.stdout)["failed"] == [1]
+    assert "private-marker" not in run.stdout + retry.stdout
+    assert repository.load("demo").page(1) == page
 
 
 def test_cli_batch_commands_persist_and_report_a_sequential_batch(tmp_path: Path) -> None:

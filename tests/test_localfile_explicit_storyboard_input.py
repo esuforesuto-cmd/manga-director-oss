@@ -113,7 +113,7 @@ class _ContextCapturingWorkflowObserver(WorkflowObserver):
 
 @pytest.mark.parametrize("method", ["execute", "execute_command"])
 @pytest.mark.parametrize("with_observer", [True, False], ids=["observer", "no-observer"])
-def test_public_workflow_result_does_not_expose_transient_storyboard_authority(
+def test_public_engine_rejects_transient_storyboard_authority_before_execution(
     method: str, with_observer: bool
 ) -> None:
     private_key = "_explicit_storyboard_input_authority"
@@ -158,57 +158,42 @@ def test_public_workflow_result_does_not_expose_transient_storyboard_authority(
         metadata={**public_metadata, private_key: authority},
     )
 
-    if method == "execute":
-        result = engine.execute(confirmation_context)
-    else:
-        result = engine.execute_command(confirmation_context, "storyboard")
+    with pytest.raises(ValidationError, match="Reserved storyboard confirmation metadata") as exc_info:
+        if method == "execute":
+            engine.execute(confirmation_context)
+        else:
+            engine.execute_command(confirmation_context, "storyboard")
 
-    assert result.current_state is result.completed_step is result.context.state is PageState.STORYBOARDED
-    assert len(agent_contexts) == 1
-    assert agent_contexts[0] is confirmation_context
-    assert agent_contexts[0].metadata[private_key] is authority
-    assert private_key not in result.context.metadata
-    serialized = result.model_dump_json()
-    assert private_key not in serialized
-    assert authority.fingerprint not in serialized
-    _assert_no_internal_revision_value(serialized, authority.revision)
-    assert result.context.metadata == {
-        **public_metadata,
-        "current_step": PageState.STORYBOARDED.value,
-        "workflow_history": [
-            {
-                "kind": "workflow",
-                "from": PageState.REVIEWED.value,
-                "to": PageState.STORYBOARDED.value,
-                "step": PageState.STORYBOARDED.value,
-            }
-        ],
-    }
+    assert private_key not in str(exc_info.value)
+    assert authority.fingerprint not in str(exc_info.value)
+    _assert_no_internal_revision_value(str(exc_info.value), authority.revision)
+    assert agent_contexts == []
+    assert event_bus.published == []
     assert confirmation_context.metadata == {**public_metadata, private_key: authority}
     assert confirmation_context.state is PageState.REVIEWED
     assert confirmation_context.events == []
     assert confirmation_context.artifacts == {}
-    assert result.events == result.context.events == event_bus.published
-    assert [event.event_type for event in result.events] == [EventType.STORYBOARD_CREATED]
-    assert result.logs == [f"{PageState.REVIEWED.value} -> {PageState.STORYBOARDED.value}"]
 
     if observer is not None:
-        assert len(observer.started_contexts) == 1
-        observed_context, target = observer.started_contexts[0]
-        assert target is PageState.STORYBOARDED
-        assert observed_context is not confirmation_context
-        assert observed_context.metadata == public_metadata
-        assert authority.fingerprint not in observed_context.model_dump_json()
+        assert observer.started_contexts == []
 
     ordinary_context = confirmation_context.model_copy(
         update={"metadata": {"trace_id": "v7-17-ordinary-observer-trace"}},
         deep=False,
     )
-    ordinary_result = engine.execute(ordinary_context)
+    if method == "execute":
+        ordinary_result = engine.execute(ordinary_context)
+    else:
+        ordinary_result = engine.execute_command(ordinary_context, "storyboard")
     assert ordinary_result.current_state is PageState.STORYBOARDED
+    assert ordinary_result.context.metadata["trace_id"] == "v7-17-ordinary-observer-trace"
+    assert len(agent_contexts) == 1
+    assert agent_contexts[0] is ordinary_context
+    assert event_bus.published == ordinary_result.events
+    assert [event.event_type for event in ordinary_result.events] == [EventType.STORYBOARD_CREATED]
     if observer is not None:
-        assert observer.started_contexts[1][0] is ordinary_context
-    assert agent_contexts[1] is ordinary_context
+        assert len(observer.started_contexts) == 1
+        assert observer.started_contexts[0][0] is ordinary_context
 
 
 # Keep the approved source/panel `*_sha256` provenance fields out of this set.

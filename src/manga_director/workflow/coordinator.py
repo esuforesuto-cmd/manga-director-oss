@@ -80,7 +80,8 @@ class WorkflowCoordinator:
         return self._chapter_engine.status(project_id, chapter_id)
 
     def _run_page(self, project_id: str, page_number: int) -> WorkflowContext:
-        context = self._page_store.load(project_id, str(page_number))
+        load_for_execution = getattr(self._page_store, "load_for_execution", self._page_store.load)
+        context = load_for_execution(project_id, str(page_number))
         results = self._page_engine.run(context)
         final_context = results[-1].context if results else context
         self._page_store.save(project_id, str(page_number), final_context)

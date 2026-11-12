@@ -39,7 +39,11 @@ from manga_director.repositories.local_file_durability import (
 )
 from manga_director.repositories.project_loader import ProjectLoader
 from manga_director.workflow.contracts import WorkflowContext, WorkflowResult, WorkflowStatus
-from manga_director.workflow.engine import WorkflowEngine, _UnpublishedWorkflowStep
+from manga_director.workflow.engine import (
+    WorkflowEngine,
+    _contains_reserved_storyboard_authority,
+    _UnpublishedWorkflowStep,
+)
 from manga_director.workflow.page_execution_fence import (
     PageExecutionFenceError,
     PageExecutionFencePort,
@@ -792,6 +796,9 @@ def _context_from_snapshot(
     storyboard_confirmation_present: bool,
 ) -> WorkflowContext:
     try:
+        page = snapshot.project.page(_page_number(page_id))
+        if _contains_reserved_storyboard_authority(page.metadata):
+            raise _DurableRoutingError("DURABLE_EXECUTION_INPUT_INVALID")
         return page_store.context_from_snapshot(snapshot, page_id)
     except ProjectNotFoundError as exc:
         if not storyboard_confirmation_present:
@@ -867,28 +874,6 @@ def _not_applied(project_id: str, page_id: str, code: str) -> DurableWorkflowExe
         code=code,
         event_published=False,
     )
-
-
-def _contains_reserved_storyboard_authority(value: object) -> bool:
-    """Detect the private capability key anywhere in persisted metadata."""
-
-    pending = [value]
-    visited: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if isinstance(current, Mapping):
-            if "_explicit_storyboard_input_authority" in current:
-                return True
-            identity = id(current)
-            if identity not in visited:
-                visited.add(identity)
-                pending.extend(current.values())
-        elif isinstance(current, (list, tuple)):
-            identity = id(current)
-            if identity not in visited:
-                visited.add(identity)
-                pending.extend(current)
-    return False
 
 
 def _event_failed(project_id: str, page_id: str, code: str) -> DurableWorkflowExecutionResult:

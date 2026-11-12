@@ -894,7 +894,9 @@ def _execute_primary(
                         logical_output_asset_quality_gate=composition.quality_gate,
                     )
             else:
-                context = _with_metadata(runtime.loader.load(project, page), metadata or {})
+                context = _with_metadata(
+                    runtime.loader.load_for_execution(project, page), metadata or {}
+                )
                 result = runtime.engine.execute_command(context, command)
                 runtime.loader.save(project, page, result.context)
             logger.info("State transition: %s", result.logs[0])
@@ -912,7 +914,9 @@ def _execute_support(command: str, project: str, page: str, config_path: Path) -
     def action() -> None:
         def execute(runtime: CliRuntime) -> None:
             logger.info("Workflow support start: %s %s/%s", command, project, page)
-            result = runtime.engine.execute_support(runtime.loader.load(project, page), command)
+            result = runtime.engine.execute_support(
+                runtime.loader.load_for_execution(project, page), command
+            )
             runtime.loader.save(project, page, result.context)
             logger.info("Workflow support end: %s", command)
             _emit(result)
@@ -1088,7 +1092,7 @@ def run(
                 logger.info("Workflow end: run at %s", result.current_state.value)
                 _emit(result)
                 return
-            context = runtime.loader.load(project, page)
+            context = runtime.loader.load_for_execution(project, page)
             results = runtime.engine.run(context)
             final_context = results[-1].context if results else context
             runtime.loader.save(project, page, final_context)

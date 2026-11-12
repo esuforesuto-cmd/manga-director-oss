@@ -8,6 +8,7 @@ from manga_director.domain.exceptions import (
     AgentExecutionError,
     AgentNotAvailableError,
     InvalidPageTransition,
+    ValidationError,
 )
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events.bus import EventBus
@@ -51,12 +52,14 @@ class WorkflowEngine:
 
     def execute(self, context: WorkflowContext) -> WorkflowResult:
         """Invoke only the agent for the next legal state and publish its resulting events."""
+        self._validate_public_context(context)
         unpublished = self._execute_unpublished(context)
         self._publish_unpublished(unpublished)
         return self._public_result(unpublished.result)
 
     def execute_command(self, context: WorkflowContext, command: str) -> WorkflowResult:
         """Execute a named primary workflow command only when it is currently legal."""
+        self._validate_public_context(context)
         unpublished = self._execute_unpublished(context, command=command)
         self._publish_unpublished(unpublished)
         return self._public_result(unpublished.result)
@@ -177,6 +180,7 @@ class WorkflowEngine:
 
     def execute_support(self, context: WorkflowContext, name: str) -> WorkflowResult:
         """Run a stateless support agent without changing the workflow state."""
+        self._validate_public_context(context)
         try:
             agent = self._support_agents[name]
         except KeyError as exc:
@@ -200,8 +204,14 @@ class WorkflowEngine:
             context=next_context,
         )
 
+    @staticmethod
+    def _validate_public_context(context: WorkflowContext) -> None:
+        if _contains_reserved_storyboard_authority(context.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+
     def run(self, context: WorkflowContext) -> list[WorkflowResult]:
         """Run primary steps through quality; approval stays an explicit human command."""
+        self._validate_public_context(context)
         results: list[WorkflowResult] = []
         current = context
         while current.state != PageState.QUALITY_CHECKED:
@@ -252,3 +262,25 @@ class _UnpublishedWorkflowStep:
     canonical_event: WorkflowEvent
     events: tuple[WorkflowEvent, ...]
     trace_id: str | None
+
+
+def _contains_reserved_storyboard_authority(value: object) -> bool:
+    """Detect the private capability key anywhere in persisted metadata."""
+
+    pending = [value]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            if "_explicit_storyboard_input_authority" in current:
+                return True
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current)
+    return False
