@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const chromePath = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 if (process.platform === "win32" && existsSync(chromePath)) {
@@ -204,12 +204,68 @@ test.beforeAll(async () => {
   throw new Error(serverDiagnostics("Isolated Next.js server did not become ready within 50 seconds", lastHttpStatus, lastFailure));
 });
 
-test.afterEach(async ({}, testInfo) => {
+const confirmationFailures = new WeakMap<TestInfo, { browserPostCount: number; backendPostCount: number }>();
+
+function readConfirmationForm(page: Page) {
+  return page.evaluate((expectedFields) => {
+    const section = document.querySelector('section[aria-labelledby="explicit-storyboard-heading"]');
+    const panel = section?.querySelector("fieldset");
+    const checkbox = section?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    const button = section?.querySelector<HTMLButtonElement>('button[type="button"]');
+    const buttonText = button?.textContent?.trim();
+    const buttonState = buttonText === "Confirm storyboard" ? "confirm"
+      : buttonText === "Saving…" ? "saving"
+        : buttonText === "Reload before trying again" ? "reload"
+          : button ? "other" : "missing";
+    const fieldsMatch = Object.fromEntries(Object.entries(expectedFields).map(([name, expected]) => {
+      const label = Array.from(panel?.querySelectorAll("label") ?? []).find((item) => item.textContent?.startsWith(name));
+      const field = label?.querySelector<HTMLInputElement | HTMLTextAreaElement>("input, textarea");
+      return [name, field ? field.value === expected : null];
+    }));
+    return {
+      checkboxChecked: checkbox?.checked ?? null,
+      checkboxDisabled: checkbox?.disabled ?? null,
+      validationAlert: section ? Boolean(section.querySelector('[role="alert"]')) : null,
+      buttonState,
+      buttonDisabled: button?.disabled ?? null,
+      fieldsMatch
+    };
+  }, {
+    "Narrative intent": "The courier waits beneath the station clock.",
+    "Character IDs, comma separated": "courier-1, station-clerk",
+    "Continuity bindings, one per line": "blue coat, visible in the window\nmap, folded at the corner",
+    "Action": "The courier checks the timetable.",
+    "Background": "A small station at dusk.",
+    "Composition": "The clock frames the waiting courier.",
+    "Constraints, one per line": "No readable text, including signs.\nKeep the map, even near the edge."
+  });
+}
+
+async function logConfirmationFailure(page: Page, counts: { browserPostCount: number; backendPostCount: number }) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<{ capture: "timed_out"; form: null }>((resolve) => {
+      timer = setTimeout(() => resolve({ capture: "timed_out", form: null }), 1_000);
+    });
+    const snapshot = Promise.resolve().then(() => readConfirmationForm(page)).then(
+      (form) => ({ capture: "captured", form }),
+      () => ({ capture: "unavailable", form: null })
+    );
+    const result = await Promise.race([snapshot, deadline]);
+    console.error("Storyboard confirmation diagnostic:", JSON.stringify({ ...result, ...counts }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status === testInfo.expectedStatus) return;
   await testInfo.attach("server-diagnostics.txt", {
     body: serverDiagnostics("Post-readiness browser test failed", lastHttpStatus, lastFailure),
     contentType: "text/plain"
   });
+  const counts = confirmationFailures.get(testInfo);
+  if (counts) await logConfirmationFailure(page, counts);
 });
 
 test.afterAll(async () => {
@@ -234,7 +290,7 @@ test.afterAll(async () => {
   if (isolatedWebRoot) rmSync(isolatedWebRoot, { recursive: true, force: true });
 });
 
-test("editing or changing panel count revokes confirmation and prevents submission", async ({ page }) => {
+test("editing or changing panel count revokes confirmation and prevents submission", async ({ page }, testInfo) => {
   confirmationRequests = 0;
   submittedPanelValues = [];
   await page.goto(`${appUrl}/projects/demo/pages/1`);
@@ -284,7 +340,15 @@ test("editing or changing panel count revokes confirmation and prevents submissi
   await fillStoryboardPanel(page);
 
   await confirmation.check();
-  await expect(submit).toBeEnabled();
+  try {
+    await expect(submit).toBeEnabled();
+  } catch (error) {
+    confirmationFailures.set(testInfo, {
+      browserPostCount: browserPosts.length,
+      backendPostCount: confirmationRequests
+    });
+    throw error;
+  }
   await page.getByRole("textbox", { name: "Action" }).fill("The courier folds the timetable.");
   await expect(confirmation).not.toBeChecked();
   await expect(submit).toBeDisabled();
