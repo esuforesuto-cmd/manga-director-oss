@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ let appUrl = "";
 let confirmationRequests = 0;
 let nextStdout = "";
 let nextStderr = "";
+let requestLogProbe: { marker: string; found: boolean } | undefined;
 let nextSpawnErrorCode = "";
 let lastHttpStatus: number | null = null;
 let lastFailure = "no_response_received";
@@ -32,7 +34,11 @@ let submittedPanelValues: Array<{
 const maxCapturedOutputChars = 8_000;
 
 function appendBoundedOutput(current: string, chunk: Buffer): string {
-  return (current + chunk.toString("utf8")).slice(-maxCapturedOutputChars);
+  const output = current + chunk.toString("utf8");
+  if (requestLogProbe && output.includes(requestLogProbe.marker)) {
+    requestLogProbe.found = true;
+  }
+  return output.slice(-maxCapturedOutputChars);
 }
 
 function safeOutputSummary(output: string): string {
@@ -288,6 +294,35 @@ test.afterAll(async () => {
   }
   if (apiServer?.listening) await new Promise<void>((resolveClose) => apiServer.close(() => resolveClose()));
   if (isolatedWebRoot) rmSync(isolatedWebRoot, { recursive: true, force: true });
+});
+
+test("a rejected storyboard confirmation query stays out of the Next.js request log", async () => {
+  const marker = randomUUID();
+  const controlPath = `/projects/demo/pages/1?accessLogControl=${randomUUID()}`;
+  const initialConfirmationRequests = confirmationRequests;
+  const probe = { marker, found: false };
+  requestLogProbe = probe;
+  try {
+    const rejected = await fetch(`${appUrl}/api/projects/demo/pages/1/storyboard/confirm?testMarker=${marker}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    expect(rejected.status).toBe(422);
+    expect((await rejected.json()).code).toBe("invalid_input");
+    expect(confirmationRequests).toBe(initialConfirmationRequests);
+
+    const ordinary = await fetch(`${appUrl}${controlPath}`);
+    expect(ordinary.status).toBe(200);
+    await ordinary.text();
+    await expect.poll(
+      () => nextStdout.includes(`GET ${controlPath} `),
+      { message: "Expected an ordinary page request to appear in the Next.js access log" }
+    ).toBe(true);
+    expect(probe.found, "Unexpected query marker in Next.js stdout or stderr").toBe(false);
+  } finally {
+    requestLogProbe = undefined;
+  }
 });
 
 test("storyboard controls stay disabled until hydration", async ({ page }) => {
