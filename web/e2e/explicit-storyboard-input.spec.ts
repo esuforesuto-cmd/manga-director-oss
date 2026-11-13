@@ -290,6 +290,16 @@ test.afterAll(async () => {
   if (isolatedWebRoot) rmSync(isolatedWebRoot, { recursive: true, force: true });
 });
 
+test("storyboard controls stay disabled until hydration", async ({ page }) => {
+  await page.route((url) => url.pathname.endsWith(".js"), (route) => route.abort());
+  await page.goto(`${appUrl}/projects/demo/pages/1`);
+
+  await expect(page.getByLabel("Narrative intent").nth(0)).toBeDisabled();
+  await expect(page.getByLabel("Panel count")).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "I reviewed these exact panel details and confirm them." })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Confirm storyboard" })).toBeDisabled();
+});
+
 test("editing or changing panel count revokes confirmation and prevents submission", async ({ page }, testInfo) => {
   confirmationRequests = 0;
   submittedPanelValues = [];
@@ -337,6 +347,7 @@ test("editing or changing panel count revokes confirmation and prevents submissi
     });
   });
 
+  await expect(page.getByLabel("Narrative intent").nth(0)).toBeEnabled();
   await fillStoryboardPanel(page);
 
   await confirmation.check();

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ApiClientError,
@@ -88,14 +88,20 @@ export function ExplicitStoryboardInputForm({
   const [panels, setPanels] = useState<DraftPanel[]>([emptyPanel(1)]);
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [conflicted, setConflicted] = useState(false);
   const sent = useRef(false);
   const [message, setMessage] = useState("");
   const panelsValid = validPanels(panels);
+  const formDisabled = !hydrated || submitting;
   const expectedSource = useMemo(() => freezeJson(JSON.parse(JSON.stringify({
     state: "Reviewed", page_design: pageDesign, review
   }))) as { state: "Reviewed"; page_design: Record<string, unknown>; review: Record<string, unknown> }, [pageDesign, review]);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   function update(index: number, key: keyof DraftPanel, value: string) {
     setConfirmed(false);
@@ -156,7 +162,7 @@ export function ExplicitStoryboardInputForm({
         {expectedSourceJson ? <><h3>Exact captured source JSON</h3><pre>{expectedSourceJson}</pre></> : null}
       </details>
       <label>Panel count
-        <select aria-label="Panel count" value={panels.length} disabled={submitting} onChange={(event) => {
+        <select aria-label="Panel count" value={panels.length} disabled={formDisabled} onChange={(event) => {
           const count = Number(event.target.value);
           setConfirmed(false);
           setPanels((current) => Array.from({ length: count }, (_, index) => current[index] ?? emptyPanel(index + 1)).map((panel, index) => ({ ...panel, number: index + 1 })));
@@ -166,17 +172,17 @@ export function ExplicitStoryboardInputForm({
       </label>
       {panels.map((panel, index) => <fieldset key={panel.number}>
         <legend>Panel {panel.number}</legend>
-        <label>Narrative intent<input value={panel.narrative_intent} disabled={submitting} onChange={(event) => update(index, "narrative_intent", event.target.value)} /></label>
-        <label>Character IDs, comma separated<input value={panel.characters} disabled={submitting} onChange={(event) => update(index, "characters", event.target.value)} /></label>
-        <label>Continuity bindings, one per line<textarea rows={3} value={panel.continuity_bindings} disabled={submitting} onChange={(event) => update(index, "continuity_bindings", event.target.value)} /></label>
-        <label>Action<input value={panel.action} disabled={submitting} onChange={(event) => update(index, "action", event.target.value)} /></label>
-        <label>Background<input value={panel.background} disabled={submitting} onChange={(event) => update(index, "background", event.target.value)} /></label>
-        <label>Composition<input value={panel.composition} disabled={submitting} onChange={(event) => update(index, "composition", event.target.value)} /></label>
-        <label>Constraints, one per line<textarea rows={3} value={panel.constraints} disabled={submitting} onChange={(event) => update(index, "constraints", event.target.value)} /></label>
+        <label>Narrative intent<input value={panel.narrative_intent} disabled={formDisabled} onChange={(event) => update(index, "narrative_intent", event.target.value)} /></label>
+        <label>Character IDs, comma separated<input value={panel.characters} disabled={formDisabled} onChange={(event) => update(index, "characters", event.target.value)} /></label>
+        <label>Continuity bindings, one per line<textarea rows={3} value={panel.continuity_bindings} disabled={formDisabled} onChange={(event) => update(index, "continuity_bindings", event.target.value)} /></label>
+        <label>Action<input value={panel.action} disabled={formDisabled} onChange={(event) => update(index, "action", event.target.value)} /></label>
+        <label>Background<input value={panel.background} disabled={formDisabled} onChange={(event) => update(index, "background", event.target.value)} /></label>
+        <label>Composition<input value={panel.composition} disabled={formDisabled} onChange={(event) => update(index, "composition", event.target.value)} /></label>
+        <label>Constraints, one per line<textarea rows={3} value={panel.constraints} disabled={formDisabled} onChange={(event) => update(index, "constraints", event.target.value)} /></label>
       </fieldset>)}
-      <label><input type="checkbox" checked={confirmed} disabled={submitting} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these exact panel details and confirm them.</label>
+      <label><input type="checkbox" checked={confirmed} disabled={formDisabled} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these exact panel details and confirm them.</label>
       {!panelsValid ? <p role="alert">Complete every field with a concrete value. Use unique comma-separated character IDs, and enter continuity bindings and constraints one per line.</p> : null}
-      <button type="button" disabled={submitting || attempted || !confirmed || !panelsValid} onClick={submit}>{submitting ? "Saving…" : attempted ? "Reload before trying again" : "Confirm storyboard"}</button>
+      <button type="button" disabled={formDisabled || attempted || !confirmed || !panelsValid} onClick={submit}>{submitting ? "Saving…" : attempted ? "Reload before trying again" : "Confirm storyboard"}</button>
       {conflicted ? <button type="button" onClick={() => window.location.reload()}>Load latest state</button> : null}
       {message ? <p role="status">{message}</p> : null}
     </section>
