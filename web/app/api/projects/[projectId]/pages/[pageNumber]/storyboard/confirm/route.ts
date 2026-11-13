@@ -43,7 +43,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     || Number(pageNumber) > 2_147_483_647
     || new URL(request.url).pathname !== expectedPath || request.nextUrl.search || request.nextUrl.hash) return safeError(422, "invalid_input");
   const origin = request.headers.get("origin"); const referer = request.headers.get("referer"); const host = request.headers.get("host");
-  let refererOrigin = ""; try { refererOrigin = referer ? new URL(referer).origin : ""; } catch { /* fail closed */ }
+  let refererUrl: URL | null = null; try { refererUrl = referer ? new URL(referer) : null; } catch { /* fail closed */ }
+  const refererMatch = referer?.match(/^http:\/\/([^/?#]*)/i);
+  const refererAuthority = refererMatch?.[1] ?? "";
   const originUrl = origin && ALLOWED_ORIGINS.has(origin) ? new URL(origin) : null;
   const allowedForwarded = new Set(["x-forwarded-host", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-for"]);
   const deniedForwarding = new Set(["forwarded", "via", "x-real-ip", "x-original-host", "x-original-url", "x-rewrite-url"]);
@@ -52,14 +54,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     && request.headers.get("x-forwarded-port") === originUrl?.port
     && request.headers.get("x-forwarded-proto") === originUrl?.protocol.slice(0, -1)
     && request.headers.get("x-forwarded-for") === "127.0.0.1";
-  if (!originUrl || originUrl.protocol !== new URL(request.url).protocol || !referer || /,\s/.test(referer) || refererOrigin !== origin
+  if (!originUrl || originUrl.protocol !== new URL(request.url).protocol || !referer || !refererUrl || !refererMatch
+    || !refererAuthority || /,\s/.test(referer) || refererAuthority.includes("@")
+    || refererUrl.username || refererUrl.password || refererAuthority.toLowerCase() !== refererUrl.host.toLowerCase()
+    || refererUrl.hash || refererUrl.origin !== origin
     || request.headers.get("sec-fetch-site") !== "same-origin" || request.headers.get("sec-fetch-mode") !== "cors"
     || request.headers.get("sec-fetch-dest") !== "empty" || host !== originUrl.host
     || request.headers.has("cookie") || request.headers.has("authorization") || unexpectedForwarded || !forwardedMatches) return safeError(422, "invalid_input");
   const declared = request.headers.get("content-length");
   const contentType = request.headers.get("content-type");
+  const accept = request.headers.get("accept");
   if (!contentType || contentType.includes(",") || contentType.split(";")[0].trim().toLowerCase() !== "application/json"
-    || !request.headers.get("accept")?.split(",").some((item) => item.trim().split(";")[0] === "application/json")
+    || !accept || accept.includes(",") || accept.trim().toLowerCase() !== "application/json"
     || request.headers.has("transfer-encoding") || request.headers.has("content-encoding")
     || declared === null || !/^(0|[1-9][0-9]*)$/.test(declared) || Number(declared) < 1 || Number(declared) > MAX_BODY_BYTES) return safeError(422, "invalid_input");
   const body = await readLimited(request.body); if (!body || body.byteLength !== Number(declared)) return safeError(422, "invalid_input");

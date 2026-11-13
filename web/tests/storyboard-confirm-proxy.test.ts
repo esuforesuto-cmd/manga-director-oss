@@ -122,7 +122,14 @@ describe("storyboard confirmation same-origin proxy", () => {
   it.each([
     [{ origin: "https://attacker.invalid" }],
     [{ referer: "http://localhost:3000/projects/demo/pages/1, http://localhost:3000/projects/demo/pages/1" }],
+    [{ referer: "http://user:password@localhost:3000/projects/demo/pages/1" }],
+    [{ referer: "http://@localhost:3000/projects/demo/pages/1" }],
+    [{ referer: "http:\\localhost:3000/projects/demo/pages/1" }],
+    [{ referer: "http://localhost:3000/projects/demo/pages/1#panel" }],
     [{ "content-type": "application/json; charset=utf-8, text/plain" }],
+    [{ accept: "application/json, text/html" }],
+    [{ accept: "application/json;q=0" }],
+    [{ accept: "application/json;profile=anything" }],
     [{ authorization: "Bearer secret" }],
     [{ "sec-fetch-site": "cross-site" }],
     [{ "x-forwarded-for": "192.0.2.1" }],
@@ -130,6 +137,19 @@ describe("storyboard confirmation same-origin proxy", () => {
   ])("rejects an unsafe proxy request before forwarding", async (headers) => {
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
     const response = await POST(request(headers), { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) });
+    expect(response.status).toBe(422);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects coalesced Accept values before replacing them for the API", async () => {
+    const headers = new Headers(request().headers);
+    headers.append("accept", "application/json");
+    expect(headers.get("accept")).toBe("application/json, application/json");
+
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const coalescedRequest = new NextRequest(url, { method: "POST", body, headers });
+    const response = await POST(coalescedRequest, { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) });
+
     expect(response.status).toBe(422);
     expect(fetchMock).not.toHaveBeenCalled();
   });
