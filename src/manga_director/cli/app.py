@@ -1317,7 +1317,7 @@ def api_serve(
             import uvicorn
         except ImportError as exc:  # pragma: no cover - depends on optional extra.
             raise CLIError("Install manga-director[api] to serve the workflow API.") from exc
-        uvicorn.run(_workflow_api(runtime), host=WORKFLOW_API_HOST, port=port)
+        uvicorn.run(_workflow_api(runtime), host=WORKFLOW_API_HOST, port=port, access_log=False)
 
     _handle_error(LOGGER, lambda: _use_runtime(config, action))
 

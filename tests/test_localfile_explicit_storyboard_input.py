@@ -361,7 +361,9 @@ def _set_test_aggregate_revision(
 
 
 @contextmanager
-def _running_loopback_uvicorn(app: Any, uvicorn: Any) -> Iterator[int]:
+def _running_loopback_uvicorn(
+    app: Any, uvicorn: Any, *, access_log: bool = True
+) -> Iterator[int]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server: Any | None = None
     thread: Thread | None = None
@@ -378,7 +380,7 @@ def _running_loopback_uvicorn(app: Any, uvicorn: Any) -> Iterator[int]:
                 app,
                 host="127.0.0.1",
                 port=port,
-                access_log=True,
+                access_log=access_log,
             )
         )
         thread = Thread(
@@ -2544,6 +2546,60 @@ def _create_real_uvicorn_confirmation_harness(
         "repository": repository,
         "observer": observer,
     }
+
+
+def test_cli_api_serve_does_not_log_rejected_storyboard_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    from typer.testing import CliRunner
+
+    from manga_director.cli.app import app as cli_app
+
+    uvicorn = _load_uvicorn_for_real_server_test()
+    if _run_real_uvicorn_test_in_isolated_process(
+        "test_cli_api_serve_does_not_log_rejected_storyboard_query"
+    ):
+        return
+
+    query_marker = "synthetic-storyboard-query-marker"
+    error_marker = "synthetic Uvicorn error-log check"
+
+    def serve_and_check(
+        app: Any, *, host: str, port: int, access_log: bool = True
+    ) -> None:
+        assert (host, port) == ("127.0.0.1", 8000)
+        with _running_loopback_uvicorn(app, uvicorn, access_log=access_log) as bound_port:
+            connection = http.client.HTTPConnection(host, bound_port, timeout=5)
+            try:
+                connection.request("GET", "/health")
+                response = connection.getresponse()
+                assert response.status == 200
+                assert json.loads(response.read()) == {"status": "ok"}
+
+                connection.request(
+                    "POST",
+                    f"/projects/demo/pages/1/storyboard/confirm?probe={query_marker}",
+                    body=b"{}",
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                assert response.status == 422
+                response_body = response.read().decode("utf-8")
+                assert json.loads(response_body)["code"] == "invalid_input"
+                assert query_marker not in response_body
+                logging.getLogger("uvicorn.error").error(error_marker)
+            finally:
+                connection.close()
+
+    monkeypatch.setattr(uvicorn, "run", serve_and_check)
+    result = CliRunner().invoke(cli_app, ["api", "serve", "--config", str(tmp_path / "config.yaml")])
+    assert result.exit_code == 0, result.exception
+    stdout, stderr = capfd.readouterr()
+    captured = result.output + stdout + stderr
+    assert query_marker not in captured
+    assert error_marker in captured
 
 
 def test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values(
