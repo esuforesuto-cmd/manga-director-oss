@@ -577,3 +577,44 @@ acceptance. PR #82 remains draft and unmerged. The previously recorded six P2
 findings remain part of the review history; no full-PR review at the current
 head has yet confirmed the post-fix disposition. Final RFC-V7-015 acceptance
 therefore remains **HOLD**.
+
+## Current verification snapshot (2026-11-13, PR head 6469adb9)
+
+PR #82 and the local branch `feat/v7-17-explicit-storyboard-input` are both at
+head `6469adb9f076b1b359a59f96eb0e64af00ac333d`. PR #82 is open, draft, and
+unmerged, with 28 commits and 47 changed files, targeting `v7-dev` at base
+`e1863ed436e381c4f055d7169ff4c90441826a93`.
+
+### CI and user-verified results
+
+GitHub connector metadata for Actions run
+[#43391736468](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43391736468)
+shows all 10 of 10 jobs successful. It tested synthetic merge commit
+`4cc47799765871dd0bbdf63ed44555fd9bd65f2a`, combining the PR head with base
+`e1863ed436e381c4f055d7169ff4c90441826a93`. In the Windows Python 3.12 job,
+the [job log](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43391736468/job/131773066723)
+shows both tests in the **Verify real Uvicorn disclosure tests** step passed in
+14.89 seconds. The Windows Python 3.11 full regression suite passed, and its
+dedicated disclosure step was skipped by configuration. The user directly
+checked CodeQL and reported all 3 of 3 analyses passed.
+
+### Current code and regression evidence
+
+`test_confirmation_missing_project_page_and_damaged_durability_responses` in
+`tests/test_localfile_explicit_storyboard_input.py` verifies HTTP 404
+(`not_found`) for a missing Project and Page, that a missing Project creates no
+Project, committed-revision, prepared-revision, or activation sidecars, and
+HTTP 503 (`activation_unavailable`) for damaged or unavailable durable state.
+
+The 2026-11-12 approval-provenance record resolves the two approval-history
+records for `69b4417` and `e5298a0` only. The original messages were not
+revalidated as part of this documentation update; the dated earlier
+dispositions remain intact.
+
+The PR description still has stale candidate, P1-B, and missing-Project text;
+it was not edited. RFC-V7-015 criterion 7 remains on hold, and final acceptance
+remains **HOLD**. The prior full-PR review at `faead394` is historical, and a
+new full-PR review at `6469adb9` is pending. The ASGI-visible Content-Length
+check still cannot establish the RFC requirement of exactly one such field on
+the wire after server normalization; any RFC amendment is a separate action.
+No tests were run for this documentation-only update.

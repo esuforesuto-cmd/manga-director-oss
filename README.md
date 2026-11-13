@@ -364,8 +364,9 @@ npm run dev
 ```
 
 The UI includes Project, Chapter, and Page workflow views, loading/empty/error
-states, responsive CSS, and unit/E2E starter tests. See [Web UI](docs/web_ui.md),
-[frontend architecture](docs/frontend_architecture.md),
+states, responsive CSS, and unit/E2E starter tests. The Page Workflow includes
+an explicit Storyboard confirmation form for eligible Reviewed Pages. See
+[Web UI](docs/web_ui.md), [frontend architecture](docs/frontend_architecture.md),
 [API client](docs/api_client.md), [UI workflow](docs/ui_workflow.md), and
 [accessibility](docs/accessibility.md).
 
