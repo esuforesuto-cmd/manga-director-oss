@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import importlib
 import importlib.util
@@ -17,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -29,8 +31,12 @@ from manga_director.adapters.llm_provider import LLMResult, PromptRequest
 from manga_director.agents.registry import primary_agents, support_agents
 from manga_director.api.composition import build_workflow_app
 from manga_director.api.workflow import LOCAL_WEB_ORIGINS
-from manga_director.domain.events import EventType
-from manga_director.domain.exceptions import ProjectNotFoundError, ValidationError
+from manga_director.domain.events import EventType, WorkflowEvent
+from manga_director.domain.exceptions import (
+    ProjectNotFoundError,
+    StateTransitionError,
+    ValidationError,
+)
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
@@ -52,6 +58,12 @@ from manga_director.prompting import (
 from manga_director.prompting.contracts import PromptTemplate
 from manga_director.repositories import ProjectLoader
 from manga_director.repositories.local_file import LocalFileRepository
+from manga_director.repositories.local_file_durability import (
+    LocalFileDurabilityError as _LocalFileDurabilityError,
+)
+from manga_director.repositories.local_file_durability import (
+    _R29ActivationState,
+)
 from manga_director.workflow import (
     ChapterWorkflowEngine,
     PageNumberWorkflowScheduler,
@@ -64,7 +76,9 @@ from manga_director.workflow.contracts import AgentResult, WorkflowResult
 from manga_director.workflow.durable_execution import (
     DurablePageStorePort,
     DurableWorkflowExecutionCoordinator,
+    LocalFileDurablePageStore,
     LogicalOutputAssetQualityGatePort,
+    _route_localfile_support,
 )
 from manga_director.workflow.page_execution_fence import (
     PageExecutionFenceError,
@@ -99,6 +113,396 @@ def _use_platform_page_execution_fence() -> Iterator[None]:
     patch.setattr(DurableWorkflowExecutionCoordinator, "__init__", init_with_platform_fence)
     yield
     patch.undo()
+
+
+def _support_execution_fixture(
+    tmp_path: Path,
+) -> tuple[LocalFileRepository, dict[str, Any], MemoryEventBus, WorkflowEngine]:
+    repository = LocalFileRepository(tmp_path / "support-repository")
+    confirmed_storyboard = {
+        "confirmation": {"user_confirmed": True, "source_sha256": "a" * 64},
+        "panels": [{"number": 1, "narrative_intent": "Keep the key reveal."}],
+    }
+    repository.save(
+        Project(
+            id="demo",
+            title="Demo",
+            pages=[
+                Page(
+                    page_number=1,
+                    state=PageState.STORYBOARDED,
+                    page_design={"purpose": "Recover the brass key"},
+                    review={"checks": {"character": True}, "improvements": []},
+                    storyboard=confirmed_storyboard,
+                )
+            ],
+        )
+    )
+    event = WorkflowEvent(event_type=EventType.PAGE_REVIEWED, data={"support": "dialogue"})
+
+    class _SupportAgent:
+        def execute(self, context: WorkflowContext) -> AgentResult:
+            return AgentResult(
+                success=True,
+                state=context.state,
+                payload={"dialogue": ["Wait—where did the key go?"]},
+                events=[event],
+            )
+
+    events = MemoryEventBus()
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=events,
+        agents={},
+        support_agents={"dialogue": _SupportAgent()},
+    )
+    return repository, confirmed_storyboard, events, engine
+
+
+def _write_mismatched_project_payload(
+    repository: LocalFileRepository, requested_id: str, stored_id: str
+) -> None:
+    path = repository._path(requested_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    project = Project(id=stored_id, title="Valid project", pages=[Page(page_number=1)])
+    path.write_text(repository._serializer.dumps(project), encoding="utf-8")
+
+
+def _assert_http_support_conflict_and_failure_are_distinct(
+    client: TestClient,
+    repository: LocalFileRepository,
+    events: MemoryEventBus,
+    confirmed_storyboard: dict[str, Any],
+    headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_commit = LocalFileDurablePageStore.conditional_commit
+
+    def force_stale_save(
+        page_store: LocalFileDurablePageStore, snapshot: Any, project: Project
+    ) -> Any:
+        repository._conditional_commit(snapshot, snapshot.project)
+        return original_commit(page_store, snapshot, project)
+
+    monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", force_stale_save)
+    stale = client.post("/projects/demo/pages/1/dialogue", headers=headers, json={"metadata": {}})
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "invalid_transition"
+    assert len(events.published) == 1
+    assert repository.load("demo").page(1).storyboard == confirmed_storyboard
+    assert repository.load("demo").page(1).dialogue is None
+
+    def fail_save(
+        page_store: LocalFileDurablePageStore, snapshot: Any, project: Project
+    ) -> Any:
+        raise OSError("injected support save failure")
+
+    monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", fail_save)
+    failed = client.post("/projects/demo/pages/1/dialogue", headers=headers, json={"metadata": {}})
+    assert failed.status_code == 500
+    assert failed.json()["code"] == "internal_error"
+    assert len(events.published) == 1
+    assert repository.load("demo").page(1).storyboard == confirmed_storyboard
+    monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", original_commit)
+
+
+def test_support_identity_mismatch_precedes_revision_sidecar_creation_and_agent_execution(
+    tmp_path: Path,
+) -> None:
+    repository = LocalFileRepository(tmp_path / "support-repository")
+    _write_mismatched_project_payload(repository, "demo", "Demo")
+    events = MemoryEventBus()
+    agent_calls: list[WorkflowContext] = []
+
+    class _SpySupportAgent:
+        def execute(self, context: WorkflowContext) -> AgentResult:
+            agent_calls.append(context)
+            return AgentResult(success=True, state=context.state, payload={})
+
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=events,
+        agents={},
+        support_agents={"dialogue": _SpySupportAgent()},
+    )
+
+    with pytest.raises(ProjectNotFoundError):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    assert agent_calls == []
+    assert events.published == []
+    assert not repository._revision_store._committed_path("demo").exists()
+    assert not repository._revision_store._prepared_path("demo").exists()
+    assert not repository._revision_store._activation_path("demo").exists()
+
+
+def test_support_identity_mismatch_precedes_r29_activation_recovery(
+    tmp_path: Path,
+) -> None:
+    repository = LocalFileRepository(tmp_path / "support-repository")
+    _write_mismatched_project_payload(repository, "demo", "Demo")
+    activation = _R29ActivationState(
+        activation_binding_identity="a" * 64,
+        activation_page_id="1",
+        expected_aggregate_fingerprint="b" * 64,
+        expected_revision=1,
+        project_id="demo",
+        state="ACTIVATION_PREPARED",
+    )
+    repository._revision_store._prepare_r29_activation(activation)
+    activation_bytes = repository._revision_store._activation_path("demo").read_bytes()
+
+    with pytest.raises(ProjectNotFoundError):
+        repository._load_revisioned("demo", validate_project_identity=True)
+
+    assert repository._revision_store._activation_path("demo").read_bytes() == activation_bytes
+    assert not repository._revision_store._committed_path("demo").exists()
+    assert not repository._revision_store._prepared_path("demo").exists()
+
+
+def test_support_identity_mismatch_in_r29_capture_stops_before_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = LocalFileRepository(tmp_path / "support-repository")
+    path = repository._path("demo")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    matching = Project(id="demo", title="Valid project", pages=[Page(page_number=1)])
+    mismatched = Project(id="Demo", title="Valid project", pages=[Page(page_number=1)])
+    matching_bytes = repository._serializer.dumps(matching).encode("utf-8")
+    mismatched_bytes = repository._serializer.dumps(mismatched).encode("utf-8")
+    path.write_bytes(matching_bytes)
+    activation = _R29ActivationState(
+        activation_binding_identity="a" * 64,
+        activation_page_id="1",
+        expected_aggregate_fingerprint=hashlib.sha256(matching_bytes).hexdigest(),
+        expected_revision=1,
+        project_id="demo",
+        state="ACTIVATION_PREPARED",
+    )
+    repository._revision_store._prepare_r29_activation(activation)
+    original_read = repository._revision_store._read_aggregate
+    read_count = 0
+    recovery_attempts: list[bool] = []
+
+    def switch_capture_payload(aggregate_path: Path) -> bytes:
+        nonlocal read_count
+        read_count += 1
+        if read_count == 2:
+            return mismatched_bytes
+        return original_read(aggregate_path)
+
+    original_apply = repository._revision_store._apply_r29_restart_result
+
+    def capture_recovery_attempt(*args: Any, **kwargs: Any) -> Any:
+        recovery_attempts.append(True)
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(repository._revision_store, "_read_aggregate", switch_capture_payload)
+    monkeypatch.setattr(
+        repository._revision_store, "_apply_r29_restart_result", capture_recovery_attempt
+    )
+    activation_bytes = repository._revision_store._activation_path("demo").read_bytes()
+
+    with pytest.raises(ProjectNotFoundError):
+        repository._load_revisioned("demo", validate_project_identity=True)
+
+    assert recovery_attempts == []
+    assert repository._revision_store._activation_path("demo").read_bytes() == activation_bytes
+    assert not repository._revision_store._committed_path("demo").exists()
+    assert not repository._revision_store._prepared_path("demo").exists()
+
+
+def test_localfile_support_saves_confirmed_storyboard_before_publishing_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+    verify_calls: list[bool] = []
+    original_verify = LocalFileDurablePageStore._verify_support_committed
+
+    def verify_after_save(
+        page_store: LocalFileDurablePageStore, project_id: str, page_id: str, expected_project: Project
+    ) -> bool:
+        verify_calls.append(not events.published)
+        return original_verify(page_store, project_id, page_id, expected_project)
+
+    monkeypatch.setattr(LocalFileDurablePageStore, "_verify_support_committed", verify_after_save)
+    before = repository._load_revisioned("demo")
+
+    result = _route_localfile_support(engine, repository, "demo", "001", "dialogue", {})
+
+    after = repository._load_revisioned("demo")
+    assert after.revision == before.revision + 1
+    assert after.project.page(1).storyboard == confirmed_storyboard
+    assert after.project.page(1).dialogue == {"dialogue": ["Wait—where did the key go?"]}
+    assert result.context.state is PageState.STORYBOARDED
+    assert verify_calls == [True]
+    assert events.published == result.events
+    assert len(events.published) == 1
+
+
+def test_localfile_support_stale_save_keeps_concurrent_storyboard_and_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+    original_commit = LocalFileDurablePageStore.conditional_commit
+    concurrent_storyboard = {
+        **confirmed_storyboard,
+        "panels": [{"number": 1, "narrative_intent": "Concurrent confirmed edit."}],
+    }
+
+    def force_stale_save(
+        page_store: LocalFileDurablePageStore, snapshot: Any, project: Project
+    ) -> Any:
+        page = snapshot.project.page(1).model_copy(
+            update={"storyboard": concurrent_storyboard}, deep=True
+        )
+        repository._conditional_commit(snapshot, snapshot.project.replace_page(page))
+        return original_commit(page_store, snapshot, project)
+
+    monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", force_stale_save)
+    before = repository._load_revisioned("demo")
+
+    with pytest.raises(StateTransitionError, match="Page changed"):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    after = repository._load_revisioned("demo")
+    assert after.revision == before.revision + 1
+    assert after.project.page(1).storyboard == concurrent_storyboard
+    assert after.project.page(1).dialogue is None
+    assert events.published == []
+
+
+def test_localfile_support_save_failure_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+
+    def fail_save(page_store: LocalFileDurablePageStore, snapshot: Any, project: Project) -> Any:
+        raise OSError("injected support save failure")
+
+    monkeypatch.setattr(LocalFileDurablePageStore, "conditional_commit", fail_save)
+    before = repository._load_revisioned("demo")
+
+    with pytest.raises(OSError, match="injected support save failure"):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    after = repository._load_revisioned("demo")
+    assert after.revision == before.revision
+    assert after.project.page(1).storyboard == confirmed_storyboard
+    assert after.project.page(1).dialogue is None
+    assert events.published == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        ("project_commit_fence_contended", StateTransitionError),
+        ("project_commit_fence_unavailable", _LocalFileDurabilityError),
+    ],
+)
+def test_localfile_support_maps_only_project_lock_contention_to_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_error: type[Exception],
+) -> None:
+    repository, _confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+
+    def fail_revision_load(
+        project_id: str, *, validate_project_identity: bool = False
+    ) -> Any:
+        raise _LocalFileDurabilityError(failure)
+
+    monkeypatch.setattr(repository, "_load_revisioned", fail_revision_load)
+
+    with pytest.raises(expected_error):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    assert events.published == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        ("page_execution_fence_contended", StateTransitionError),
+        ("page_execution_fence_unavailable", PageExecutionFenceError),
+    ],
+)
+def test_localfile_support_maps_only_page_lock_contention_to_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_error: type[Exception],
+) -> None:
+    repository, _confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+    durable_module = importlib.import_module("manga_director.workflow.durable_execution")
+
+    class _FailingFence:
+        def acquire(self) -> None:
+            raise PageExecutionFenceError(failure)
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        durable_module, "local_page_execution_fence", lambda *_args: _FailingFence()
+    )
+
+    with pytest.raises(expected_error):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    assert events.published == []
+
+
+def test_localfile_support_verification_failure_is_not_a_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+    monkeypatch.setattr(LocalFileDurablePageStore, "_verify_support_committed", lambda *_args: False)
+
+    with pytest.raises(
+        _LocalFileDurabilityError, match="support_post_commit_verification_failed"
+    ):
+        _route_localfile_support(engine, repository, "demo", "1", "dialogue", {})
+
+    assert events.published == []
+
+
+@pytest.mark.parametrize("page_id", ["001", "+1", " 1 "])
+def test_cli_localfile_support_uses_fenced_revisioned_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, page_id: str
+) -> None:
+    import importlib
+
+    repository, confirmed_storyboard, events, engine = _support_execution_fixture(tmp_path)
+    runtime = SimpleNamespace(
+        engine=engine,
+        loader=SimpleNamespace(repository=repository),
+    )
+    emitted: list[WorkflowResult] = []
+    cli_app = importlib.import_module("manga_director.cli.app")
+    monkeypatch.setattr(cli_app, "_use_runtime", lambda _config, execute: execute(runtime))
+    monkeypatch.setattr(cli_app, "_emit", emitted.append)
+    before = repository._load_revisioned("demo")
+
+    cli_app._execute_support("dialogue", "demo", page_id, tmp_path / "config.yaml")
+
+    after = repository._load_revisioned("demo")
+    assert after.revision == before.revision + 1
+    assert after.project.page(1).storyboard == confirmed_storyboard
+    assert after.project.page(1).dialogue == {"dialogue": ["Wait—where did the key go?"]}
+    assert len(emitted) == 1
+    assert events.published == emitted[0].events
+
+    import typer
+
+    def fail_with_conflict(*_args: Any, **_kwargs: Any) -> None:
+        raise StateTransitionError("The Page changed. Reload it and retry the support action.")
+
+    monkeypatch.setattr(cli_app, "_route_localfile_support", fail_with_conflict)
+    with pytest.raises(typer.Exit) as error:
+        cli_app._execute_support("dialogue", "demo", "1", tmp_path / "config.yaml")
+    assert error.value.exit_code == 1
 
 
 class _ContextCapturingWorkflowObserver(WorkflowObserver):
@@ -1643,9 +2047,34 @@ def test_localfile_confirm_reloads_exact_storyboard_then_prompt_validates_it(
     }
     assert "_explicit_storyboard_input_authority" not in saved.metadata
     assert saved.storyboard["confirmation"]["user_confirmed"] is True
+
+    confirmed_storyboard = saved.storyboard
+    _assert_http_support_conflict_and_failure_are_distinct(
+        client, repository, events, confirmed_storyboard, headers, monkeypatch
+    )
+
+    before_dialogue_revision = repository._load_revisioned("demo").revision
+    dialogue = client.post(
+        "/projects/demo/pages/1/dialogue", headers=headers, json={"metadata": {}}
+    )
+    assert dialogue.status_code == 200
+    assert repository.load("demo").page(1).storyboard == confirmed_storyboard
+    assert repository._load_revisioned("demo").revision == before_dialogue_revision + 1
+    assert len(events.published) == 1
+
+    before_continuity_revision = repository._load_revisioned("demo").revision
+    continuity = client.post(
+        "/projects/demo/pages/1/continuity", headers=headers, json={"metadata": {}}
+    )
+    assert continuity.status_code == 200
+    assert repository.load("demo").page(1).storyboard == confirmed_storyboard
+    assert repository._load_revisioned("demo").revision == before_continuity_revision + 1
+    assert len(events.published) == 1
+
     prompted = client.post("/projects/demo/pages/1/prompt", headers=headers, json={})
     assert prompted.status_code == 200
     assert prompted.json()["state"] == "PromptBuilt"
+    assert len(events.published) == 2
     replay = client.post(
         "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=raw_request_body
     )

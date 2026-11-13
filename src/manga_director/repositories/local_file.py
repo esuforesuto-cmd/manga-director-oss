@@ -170,7 +170,9 @@ class LocalFileRepository(ProjectRepository):
         except FileNotFoundError as exc:
             raise ProjectNotFoundError(f"Project '{project_id}' does not exist.") from exc
 
-    def _load_revisioned(self, project_id: str) -> RevisionedProjectSnapshot:
+    def _load_revisioned(
+        self, project_id: str, *, validate_project_identity: bool = False
+    ) -> RevisionedProjectSnapshot:
         """Load the authoritative aggregate with a private conditional-save token."""
 
         return self.metrics.measure(
@@ -179,6 +181,7 @@ class LocalFileRepository(ProjectRepository):
                 project_id,
                 self._path(project_id),
                 self._deserialize_aggregate,
+                validate_project_identity=validate_project_identity,
                 requires_existing_revision=self._r27_requires_existing_revision,
                 validate_revision_record=lambda aggregate_bytes, record_project_id, record_revision, record_fingerprint: (
                     self._validate_r27_revision_binding(

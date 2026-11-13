@@ -16,6 +16,7 @@ from manga_director.workflow.durable_execution import (
     LogicalOutputAssetQualityGatePort,
     _route_localfile_primary,
     _route_localfile_storyboard_confirmation,
+    _route_localfile_support,
 )
 from manga_director.workflow.engine import WorkflowEngine
 
@@ -135,6 +136,15 @@ class WorkflowApplicationService:
     ) -> Any:
         if _contains_reserved_storyboard_authority(metadata):
             raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+        if isinstance(self._repository, LocalFileRepository):
+            return _route_localfile_support(
+                self._engine,
+                self._repository,
+                project_id,
+                str(page_number),
+                name,
+                metadata,
+            )
         context = self._loader.load_for_execution(project_id, str(page_number))
         if _contains_reserved_storyboard_authority(context.metadata):
             raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")

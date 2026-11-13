@@ -33,7 +33,9 @@ from manga_director.production.explicit_storyboard_input import (
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.local_file_durability import (
     ConditionalCommitResult,
+    LocalFileDurabilityError,
     RevisionedProjectSnapshot,
+    StaleRevisionError,
     _LocalFileProjectAbsentError,
     _R27RevisionPublicationRequest,
 )
@@ -48,6 +50,7 @@ from manga_director.workflow.page_execution_fence import (
     PageExecutionFenceError,
     PageExecutionFencePort,
     WindowsPageExecutionFence,
+    local_page_execution_fence,
 )
 
 DurableExecutionStatus = Literal[
@@ -178,6 +181,11 @@ class LocalFileDurablePageStore(DurablePageStorePort):
     def load_revisioned(self, project_id: str) -> RevisionedProjectSnapshot:
         return self._repository._load_revisioned(project_id)
 
+    def _load_support_revisioned(self, project_id: str) -> RevisionedProjectSnapshot:
+        return self._repository._load_revisioned(
+            project_id, validate_project_identity=True
+        )
+
     def context_from_snapshot(
         self, snapshot: RevisionedProjectSnapshot, page_id: str
     ) -> WorkflowContext:
@@ -272,6 +280,14 @@ class LocalFileDurablePageStore(DurablePageStorePort):
         verified = self._repository._load_revisioned(project_id).project
         return verified.page(_page_number(page_id)) == expected_project.page(_page_number(page_id))
 
+    def _verify_support_committed(
+        self, project_id: str, page_id: str, expected_project: Project
+    ) -> bool:
+        verified = self._repository._load_revisioned(
+            project_id, validate_project_identity=True
+        ).project
+        return verified.page(_page_number(page_id)) == expected_project.page(_page_number(page_id))
+
 
 class DurableWorkflowExecutionCoordinator:
     """Coordinate one ordinary durable primary workflow command without routing activation."""
@@ -293,6 +309,72 @@ class DurableWorkflowExecutionCoordinator:
         """Execute one primary command through the fenced authoritative path exactly once."""
 
         return self._execute_with_receipt(project_id, page_id, command, {}).outcome
+
+    def _execute_support(
+        self,
+        project_id: str,
+        page_id: str,
+        name: str,
+        execution_input: Mapping[str, Any],
+    ) -> WorkflowResult:
+        """Run support work from a fenced snapshot and publish only after verified CAS."""
+
+        if not isinstance(self._page_store, LocalFileDurablePageStore):
+            raise TypeError("LocalFile support execution requires the LocalFile durable store.")
+        page_store = self._page_store
+        fence = self._fence_factory(project_id, page_id)
+        try:
+            fence.acquire()
+        except PageExecutionFenceError as exc:
+            _raise_support_conflict(exc)
+            raise
+        try:
+            try:
+                snapshot = page_store._load_support_revisioned(project_id)
+            except _LocalFileProjectAbsentError as exc:
+                raise ProjectNotFoundError("Project does not exist.") from exc
+            except (StaleRevisionError, LocalFileDurabilityError) as exc:
+                _raise_support_conflict(exc)
+                raise
+            if snapshot.project.id != project_id:
+                raise ProjectNotFoundError("Project does not exist.")
+            page = snapshot.project.page(_page_number(page_id))
+            if _contains_reserved_storyboard_authority(
+                page.metadata
+            ) or _contains_reserved_storyboard_authority(page.history):
+                raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+            context = _context_from_snapshot(
+                page_store,
+                snapshot,
+                page_id,
+                storyboard_confirmation_present=False,
+            )
+            self._engine._validate_public_context(context)
+            if execution_input:
+                if _contains_reserved_storyboard_authority(execution_input):
+                    raise ValidationError(
+                        "Reserved storyboard confirmation metadata is not accepted."
+                    )
+                context = context.model_copy(
+                    update={"metadata": {**context.metadata, **execution_input}}, deep=True
+                )
+            result = self._engine._execute_support_unpublished(context, name)
+            project = page_store.project_from_context(snapshot, page_id, result.context)
+            if project.id != project_id:
+                raise ProjectNotFoundError("Project does not exist.")
+            try:
+                page_store.conditional_commit(snapshot, project)
+            except (StaleRevisionError, LocalFileDurabilityError) as exc:
+                _raise_support_conflict(exc)
+                raise
+            verified = page_store._verify_support_committed(project_id, page_id, project)
+            if not verified:
+                raise LocalFileDurabilityError("support_post_commit_verification_failed")
+            self._engine._publish_support_unpublished(result)
+            return result
+        finally:
+            fence.release()
+
 
     def _execute_with_receipt(
         self,
@@ -541,6 +623,42 @@ def _route_localfile_primary(
     if receipt.outcome.code.startswith("STORYBOARD_CONFIRMATION_"):
         raise ValidationError("Storyboard confirmation is invalid or unsupported.")
     raise _DurableRoutingError(receipt.outcome.code)
+
+
+def _route_localfile_support(
+    engine: WorkflowEngine,
+    repository: LocalFileRepository,
+    project_id: str,
+    page_id: str,
+    name: str,
+    execution_input: Mapping[str, Any],
+) -> WorkflowResult:
+    """Run LocalFile support work under the canonical Page fence and revision CAS."""
+
+    if not _valid_identity(project_id) or not _valid_identity(page_id):
+        raise ValidationError("Support execution input is invalid.")
+    normalized_page_id = str(_page_number(page_id))
+    return DurableWorkflowExecutionCoordinator(
+        engine,
+        LocalFileDurablePageStore(repository),
+        fence_factory=local_page_execution_fence,
+    )._execute_support(project_id, normalized_page_id, name, execution_input)
+
+
+def _raise_support_conflict(error: Exception) -> None:
+    if isinstance(error, StaleRevisionError):
+        raise StateTransitionError(
+            "The Page changed. Reload it and retry the support action."
+        ) from error
+    if isinstance(error, PageExecutionFenceError) and str(error) == "page_execution_fence_contended":
+        raise StateTransitionError(
+            "The Page is being updated. Retry the support action."
+        ) from None
+    if isinstance(error, LocalFileDurabilityError) and str(error) == "project_commit_fence_contended":
+        raise StateTransitionError(
+            "The Page is being updated. Retry the support action."
+        ) from None
+
 
 
 def _route_localfile_storyboard_confirmation(

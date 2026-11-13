@@ -180,6 +180,12 @@ class WorkflowEngine:
 
     def execute_support(self, context: WorkflowContext, name: str) -> WorkflowResult:
         """Run a stateless support agent without changing the workflow state."""
+        result = self._execute_support_unpublished(context, name)
+        self._publish_support_unpublished(result)
+        return result
+
+    def _execute_support_unpublished(self, context: WorkflowContext, name: str) -> WorkflowResult:
+        """Prepare a support result without publishing its events."""
         self._validate_public_context(context)
         try:
             agent = self._support_agents[name]
@@ -195,7 +201,6 @@ class WorkflowEngine:
             payload=result.payload,
             events=result.events,
         )
-        self._event_bus.publish(result.events)
         return WorkflowResult(
             current_state=next_context.state,
             completed_step=name,
@@ -203,6 +208,11 @@ class WorkflowEngine:
             logs=[f"support agent: {name}", *result.messages],
             context=next_context,
         )
+
+    def _publish_support_unpublished(self, result: WorkflowResult) -> None:
+        """Publish support events after the owning caller accepts the saved result."""
+
+        self._event_bus.publish(result.events)
 
     @staticmethod
     def _validate_public_context(context: WorkflowContext) -> None:
