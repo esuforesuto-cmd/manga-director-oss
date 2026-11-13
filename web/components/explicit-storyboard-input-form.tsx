@@ -25,7 +25,21 @@ export function parseCharacterIds(value: string): string[] {
 }
 
 export function parseLineItems(value: string): string[] {
-  return value.split(/\r?\n/).map((item) => item.trim());
+  return value.split(/\r?\n/);
+}
+
+function isPythonStripWhitespace(character: string | undefined): boolean {
+  if (character === undefined) return false;
+  return character !== "\uFEFF"
+    && (/\s/u.test(character) || character === "\u0085" || /[\u001C-\u001F]/u.test(character));
+}
+
+export function isValidTrimmedText(value: string, maxLength: number): boolean {
+  const codePoints = Array.from(value);
+  return codePoints.length > 0
+    && !isPythonStripWhitespace(codePoints[0])
+    && !isPythonStripWhitespace(codePoints[codePoints.length - 1])
+    && codePoints.length <= maxLength;
 }
 
 function freezeJson<T>(value: T): T {
@@ -41,14 +55,14 @@ function validPanels(panels: DraftPanel[]): boolean {
   return panels.length >= 1 && panels.length <= 16 && panels.every((panel, index) => {
     if (panel.number !== index + 1) return false;
     if ([panel.narrative_intent, panel.action, panel.background, panel.composition].some((value) =>
-      !value || value !== value.trim() || value.length > 4000 || abstract.has(value.toLowerCase())
+      !isValidTrimmedText(value, 4000) || abstract.has(value.toLowerCase())
         || value.startsWith("# Storyboard") || value.startsWith("```")
     )) return false;
     const characters = parseCharacterIds(panel.characters);
     const continuity = parseLineItems(panel.continuity_bindings);
     const constraints = parseLineItems(panel.constraints);
     const boundedList = (items: string[], max: number) => items.length >= 1 && items.length <= max
-      && items.every((item) => Boolean(item) && item.length <= 512 && !abstract.has(item.toLowerCase()));
+      && items.every((item) => isValidTrimmedText(item, 512) && !abstract.has(item.toLowerCase()));
     return boundedList(characters, 32)
       && characters.every((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))
       && new Set(characters).size === characters.length

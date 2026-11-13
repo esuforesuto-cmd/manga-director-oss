@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
-import { parseCharacterIds, parseLineItems } from "../components/explicit-storyboard-input-form";
+import { isValidTrimmedText, parseCharacterIds, parseLineItems } from "../components/explicit-storyboard-input-form";
 
 describe("explicit storyboard input form", () => {
   const source = readFileSync(new URL("../components/explicit-storyboard-input-form.tsx", import.meta.url), "utf8");
@@ -13,7 +13,7 @@ describe("explicit storyboard input form", () => {
     expect(source).toContain("new Set(characters).size === characters.length");
     expect(source).toContain("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$");
     expect(source).toContain("Complete every field with a concrete value");
-    expect(source).toContain("Boolean(item)");
+    expect(source).toContain("isValidTrimmedText(item, 512)");
     expect(source).toContain('value.startsWith("# Storyboard")');
     expect(source).toContain('value.startsWith("```")');
   });
@@ -58,5 +58,20 @@ describe("explicit storyboard input form", () => {
       "Do not crop the border"
     ]);
     expect(parseCharacterIds("courier, guard")).toEqual(["courier", "guard"]);
+  });
+
+  it("preserves line-item whitespace for validation and matches Python code-point length", () => {
+    expect(parseLineItems(" Keep the scarf \n\tFold the map\t")).toEqual([
+      " Keep the scarf ",
+      "\tFold the map\t"
+    ]);
+    expect(isValidTrimmedText("Keep the scarf", 512)).toBe(true);
+    expect(isValidTrimmedText(" Keep the scarf", 512)).toBe(false);
+    expect(isValidTrimmedText("Keep the scarf ", 512)).toBe(false);
+    expect(isValidTrimmedText("😀".repeat(512), 512)).toBe(true);
+    expect(isValidTrimmedText("😀".repeat(513), 512)).toBe(false);
+    expect(isValidTrimmedText("\u0085Keep the scarf", 512)).toBe(false);
+    expect(isValidTrimmedText("\u001cKeep the scarf", 512)).toBe(false);
+    expect(isValidTrimmedText("\uFEFFKeep the scarf", 512)).toBe(true);
   });
 });
