@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from manga_director.domain.exceptions import StateTransitionError
+from manga_director.domain.exceptions import StateTransitionError, ValidationError
 from manga_director.domain.state_machine import PageState
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.project_loader import ProjectLoader
@@ -14,6 +15,7 @@ from manga_director.workflow.durable_execution import (
     EvidenceLinkedApprovalGatePort,
     LogicalOutputAssetQualityGatePort,
     _route_localfile_primary,
+    _route_localfile_storyboard_confirmation,
 )
 from manga_director.workflow.engine import WorkflowEngine
 
@@ -80,6 +82,10 @@ class WorkflowApplicationService:
     def execute_page(
         self, command: str, project_id: str, page_number: int, metadata: dict[str, Any]
     ) -> Any:
+        if _contains_reserved_storyboard_authority(metadata) and not isinstance(
+            self._repository, LocalFileRepository
+        ):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
         if isinstance(self._repository, LocalFileRepository):
             if self._localfile_quality_gate is None:
                 return _route_localfile_primary(
@@ -99,7 +105,9 @@ class WorkflowApplicationService:
                 metadata,
                 logical_output_asset_quality_gate=self._localfile_quality_gate,
             )
-        context = self._loader.load(project_id, str(page_number))
+        context = self._loader.load_for_execution(project_id, str(page_number))
+        if _contains_reserved_storyboard_authority(context.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
         context = context.model_copy(
             update={"metadata": {**context.metadata, **metadata}}, deep=True
         )
@@ -107,10 +115,29 @@ class WorkflowApplicationService:
         self._loader.save(project_id, str(page_number), result.context)
         return result
 
+    def _confirm_storyboard_input(
+        self, project_id: str, page_number: int, request: dict[str, Any]
+    ) -> Any:
+        """Dedicated private confirmation entry point; unavailable to other repositories."""
+
+        if type(self._repository) is not LocalFileRepository:
+            raise StateTransitionError("Storyboard confirmation requires LocalFile.")
+        return _route_localfile_storyboard_confirmation(
+            self._engine,
+            self._repository,
+            project_id,
+            str(page_number),
+            request,
+        )
+
     def execute_support(
         self, name: str, project_id: str, page_number: int, metadata: dict[str, Any]
     ) -> Any:
-        context = self._loader.load(project_id, str(page_number))
+        if _contains_reserved_storyboard_authority(metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+        context = self._loader.load_for_execution(project_id, str(page_number))
+        if _contains_reserved_storyboard_authority(context.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
         context = context.model_copy(
             update={"metadata": {**context.metadata, **metadata}}, deep=True
         )
@@ -157,3 +184,25 @@ class WorkflowApplicationService:
             },
             evidence_linked_approval_gate=gate,
         )
+
+
+def _contains_reserved_storyboard_authority(value: Any) -> bool:
+    """Reject the private capability key anywhere in caller or persisted metadata."""
+
+    pending = [value]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            if "_explicit_storyboard_input_authority" in current:
+                return True
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current)
+    return False

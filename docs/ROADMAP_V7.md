@@ -1999,7 +1999,7 @@ ComfyUI, `main`, branch/Git operations, release/publication, or package
 publication. Slices 2 and 3 require separate exact allowlists and explicit
 approval before implementation.
 
-## V7-16 post-merge status and V7-17 candidate (2026-10-31)
+## V7-16 post-merge status and V7-17 RFC-V7-015 implementation evidence and pending acceptance (2026-11-10)
 
 PR #71 merged into `v7-dev` at `8ca2a8098b41f3acc5c403c0aae7c3dd35b2f791`;
 PR #72 merged at `fd7077791a06da5cf720332eadee37b9b9d7e873`. PR #73 fixed the
@@ -2016,12 +2016,168 @@ work only. They do not establish complete inputs from the default Storyboard,
 live ComfyUI validation, a full production one-Page end-to-end run, multiple
 Page generation, completion of a manga, or publication.
 
-V7-17, “Explicit Confirmed Storyboard Panel Input,” is a proposed next
-documentation/design candidate. RFC-V7-015 remains a draft and is not an
-accepted RFC or implementation authorization. Its proposed scope is to make
-the existing V7-14-required structured panel values explicitly user-confirmed
-and persisted before PromptBuilt, while retaining separate explicit V7-15
-layout input. The candidate does not authorize changes to frozen contracts,
-generic `/generate`, StateMachine, Provider or LocalFile boundaries, public
-APIs, Human Visual QA, or Human Approval. Any implementation requires a later
-explicit approval of its exact allowlist and validation plan.
+V7-17, “Explicit Confirmed Storyboard Panel Input,” was accepted as a design
+through RFC-V7-015 on 2026-11-06 JST. Its implementation was separately
+authorized and is recorded in commit `2d5233aec975bef061b3c71de22e7b3f35bad8e3`.
+At the historical 2026-11-10 snapshot below, the implementation was in draft
+PR #82 targeting `v7-dev`. The PR head verified at that time was
+`b65a5fa6023e96bac53e9701fa8fe3cf3a551442` (base
+`e1863ed436e381c4f055d7169ff4c90441826a93`), with 10 commits and 32 changed
+files. PR CI run [#290](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797492065)
+tested the PR #82 merge ref at that head/base and passed all 10 jobs; CodeQL run
+[#42797484040](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/42797484040)
+passed all 3 jobs.
+
+On the PR #82 merge ref, GitHub Actions reported:
+
+- Linux Python 3.11 and 3.12: each full pytest run passed 3,244 tests and
+  skipped 334.
+- Windows Python 3.11 and 3.12: each full pytest run passed 3,555 tests and
+  skipped 23.
+- Windows LocalFile security: the Windows path-containment test and
+  `mypy --platform win32 src` passed.
+- Frontend: lint, typecheck, build, and Vitest passed; Vitest reported 97/97
+  tests.
+- Browser E2E on Windows: the mock-API suite passed 4 tests and the
+  real-delivery suite passed 5 tests. The real-delivery suite includes the
+  current confirmation flow; its 409 and 503 cases use browser-route mocks.
+- Security gates passed: `pip-audit --strict .`, production-only
+  `npm audit --omit=dev`, and Gitleaks. The npm install log reported 8
+  moderate findings before the production-only audit; no claim is made that
+  all development dependency advisories are absent. Gitleaks used the
+  repository's `.gitleaksignore`.
+- Linux static analysis passed Ruff and its configured mypy command. That
+  command excludes six source modules, including `local_file_durability.py`;
+  full Linux mypy coverage of those exclusions and mypy over tests are not
+  established by this CI run. Windows mypy over `src` passed.
+
+These results verify the reported CI gates; they do not establish complete
+RFC-V7-015 acceptance. CI #290 used the PR merge ref and its aggregate logs do
+not identify individual real-Uvicorn test executions. That PR-head test
+version checks labeled revision/fingerprint diagnostics and structured keys;
+the current local test revision additionally checks unlabeled numeric values
+and their supported textual forms. The current local test changes were not
+included in CI #290. CI coverage at the configured 80% threshold for those
+local changes is UNVERIFIED. The absolute absence requirements for RFC criteria
+7 and 8 remain unproven. Detailed evidence and remaining authorization/review
+items are in `docs/V7_17_PR82_RESOLUTION.md`.
+
+### Local focused verification (2026-11-11)
+
+The current working-tree test file passed four focused tests on Windows with
+Python 3.12.10 and Uvicorn 0.54.0 in 8.684 seconds (exit 0, no skips). Two
+tests use in-process HTTP clients and two use real Uvicorn over loopback. The
+first Uvicorn test checks HTTP 200 success, HTTP 409 replay conflict, and an
+injected HTTP 503 save failure. The second checks a true stale-revision CAS
+failure and an event-publication failure, each returning HTTP 503. The tests
+inspect response bodies and headers, persisted values, application logs,
+stdout, stderr, and Uvicorn access logs. The current revision sentinels are
+above the uint32 process-ID range, and the failed CAS/publication paths inspect
+raw persisted Project payloads and individual Page JSON as well as reloaded
+models. Ruff and `git diff --check` passed for the local change. Independent
+read-only review of these two test fixes reported P0/P1/P2 = 0/0/0 within that
+scope. This focused result does not establish the CI coverage threshold or
+complete RFC acceptance.
+
+No GitHub review submissions were present for PR #82 at the recorded CI
+snapshot. The independent review recorded with that snapshot focused on the
+approval-related paths and RFC disclosure boundaries; it did not inspect all
+32 changed files individually. It reported no P0 and no implementation P1 in
+that reviewed scope, a P1 approval boundary because two exact-path approval
+records remained unrecovered and three inherited items remained deferred, and
+a P2 verification gap for unlabeled numeric revisions in the then-current
+test. The requested reviewer model/settings were GPT-6.1 Sol High; actual
+runtime model/settings remain UNVERIFIED. Do not record whole-PR P0/P1/P2 as
+0/0/0.
+PR #82 remains draft and unmerged; final RFC acceptance, review closure, and
+merge remain pending. Design acceptance and implementation authorization
+remain separate. This record does not authorize changes to
+frozen contracts, generic `/generate`, StateMachine, Provider or LocalFile
+boundaries, public APIs, Human Visual QA, Human Approval, V6 LTS, or I02, and
+does not authorize release or publication.
+
+### Historical PR #82 local state and acceptance boundaries (2026-11-11)
+
+The local branch and GitHub PR #82 head are both
+`1b6dd1330b975435a49a1713596d86c7f650a6b6`; the open PR remains draft with 11
+commits and 32 changed files. Four pre-existing implementation/test files have
+local changes that are not included in that head. They contain the P1-A
+implementation and focused regression test, plus the 409 conflict reload UI
+and its E2E spec. Both real-Uvicorn test bodies and numeric-revision checks are
+already in commit `1b6dd13`. This status update also modifies the CI workflow
+and these two evidence documents, making seven tracked paths that differ from
+the PR head. The reported normal-Windows 409 E2E PASS is reused; it was not
+rerun during this status update.
+
+At this historical snapshot, P1-B was recorded as an unresolved
+approval-history exception: the original edit
+approval for `tests/test_local_file_project_fence_linux.py` associated with
+`69b4417`, and the initial create/edit approval for `.gitleaksignore`, have not
+been recovered. Later approval of the final Linux test shape, limited commit
+and push, and later approval to retain the exact fingerprint exclusion do not
+retroactively establish those original approvals. See
+`docs/V7_17_PR82_RESOLUTION.md` for the evidence and disposition.
+
+The local CI workflow change adds a named focused Windows Python 3.12 run for
+the two real-Uvicorn tests and uploads their individual JUnit results; this
+change is not yet in the PR head. No run has executed for it, so the result and
+artifact remain pending. The prior local Windows real-Uvicorn PASS evidence
+remains available and is not a substitute for that CI artifact. The live PR
+body still has stale head/commit metadata and retains an earlier claim that
+the numeric-revision test change was uncommitted and lacked local execution
+evidence. Both test bodies are now in commit `1b6dd13` and have local Windows
+execution evidence. The new individual CI results and JUnit artifact remain
+pending.
+
+P1-B, current-diff independent review, CI execution/artifact, final-head
+documentation and PR-body synchronization, and complete RFC-V7-015 acceptance
+remain outstanding. No commit, push, PR update, CI rerun, or merge is authorized
+by this status entry.
+
+### Latest V7-17 candidate status (2026-11-11)
+
+The local branch `feat/v7-17-explicit-storyboard-input` and live PR #82 head are
+at `8973d9fc59c0b9ba2e94a0e183444eb70ffe1f3a`. PR #82 is open and draft,
+targets `v7-dev` at base `e1863ed436e381c4f055d7169ff4c90441826a93`, and has 15
+commits and 33 changed files. The head is pushed. CI run
+[#294](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127)
+tested the PR merge ref `a923aebf9dc143e4d4c834956a88c2692965b23f` and passed
+10/10 jobs. CodeQL run
+[#43009296264](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009296264)
+passed 3/3 analyses. The Windows Python 3.12 job passed both focused real-Uvicorn
+tests and published JUnit artifact
+[#13850898729](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43009302127/artifacts/13850898729).
+The XML contents were not independently parsed. In the historical local
+candidate snapshot at `5fa6282`, the user reported browser E2E 2/2 in 28.0
+seconds (exit 0), with PASS also reported by `.last-run`; preceding
+user-reported pytest and Vitest runs passed 15 and 32 tests. CI #292 and its
+10/10 result applied to the prior PR head `0b19fdb`. These historical local and
+hosted results are not runs on the current head. No tests were run for this
+documentation update.
+
+P2-A and P2-B are implemented at this head. The browser measures the exact
+serialized confirmation body in UTF-8 bytes and blocks bodies larger than
+32,768 bytes before POST. The Python API rejects every nonempty raw query string,
+including inputs such as `?&` and `?&&`, before JSON parsing. ASGI exposes the
+query bytes after `?` and excludes the delimiter from `raw_path`, so a bare
+trailing `?` and no query cannot be distinguished from the standard scope alone.
+This is an implementation boundary, not a change to RFC-V7-015.
+
+P1-B remains an unresolved approval-history exception. A prior report cited
+chat `01a1b6d6-60fb-7ea2-b28b-941e54e46ed3` (“V7-17 E2E環境を調査”) and user
+messages `01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46:05 JST) and
+`01a1bc5d-03e0-7ea2-a741-70421c087949` (2026-11-09 03:12:54 JST) as recovered
+approval records for the `69b4417` Linux fence-test edit and initial
+`.gitleaksignore` creation. This status update has not revalidated those source
+messages or their correspondence to the original edits. The prior claims remain
+in the record, but P1-B remains unresolved and later approvals are not applied
+retroactively. RFC-V7-015 acceptance criteria 7 and 8 remain on hold. PR #82
+remains draft and unmerged.
+
+The earlier statement that safe missing-project handling remained deferred is
+superseded. The confirmation route returns HTTP 404 for a missing Project
+without creating aggregate or revision sidecars, and HTTP 503 for damaged
+durability state. Regression coverage is in
+`tests/test_localfile_explicit_storyboard_input.py` around lines 956 and 992.
+Historical sections retain their dated evidence and do not describe the current
+candidate state.

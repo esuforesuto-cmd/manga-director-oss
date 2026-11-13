@@ -10,7 +10,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from manga_director.adapters import ImageGeneratorFactory, LLMFactory
 from manga_director.agents import ApprovalAgent
+from manga_director.agents.registry import primary_agents, support_agents
 from manga_director.api import composition as api_composition
 from manga_director.api import workflow as workflow_api
 from manga_director.api.composition import build_workflow_app
@@ -37,6 +39,7 @@ from manga_director.production.next_generation_provider_adapter_composition impo
     ProviderPrivateTransportRequest,
     ProviderPrivateTransportResult,
 )
+from manga_director.prompting import PromptPipeline
 from manga_director.repositories import InMemoryRepository, ProjectLoader
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow import (
@@ -969,6 +972,114 @@ def test_windows_panel_page_completes_quality_review_approval_and_download(
     assert restarted_download.status_code == 200
     assert restarted_download.content == download.content
     assert transport.submit_count == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable Page fence contract")
+def test_windows_confirmed_storyboard_completes_fake_provider_review_approval_and_download(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Exercise confirmation through approved download with only a fake provider transport."""
+
+    repository = LocalFileRepository((tmp_path / "confirmed").resolve())
+    page_design = {
+        "page_type": "manga", "purpose": "Aki finds the archive key.",
+        "reader_emotion": "tension", "featured_character": "character-aki-v1",
+        "big_moment": "Aki reaches the lock.", "hook": "Footsteps approach.",
+        "panel_count": 1, "panel_roles": ["discovery"],
+    }
+    review_source = {"checks": {"story_beat": True}, "improvements": []}
+    page = Page(
+        page_number=1, state=PageState.REVIEWED, page_design=page_design, review=review_source,
+        metadata={
+            "previous_page": {"page_id": "1", "panel_id": "panel:before", "props": ["prop:book"], "location": "location:archive", "time": "time:dawn"},
+            "current_page": {"page_id": "1", "panel_id": "panel:current", "props": ["prop:key"], "location": "location:archive", "time": "time:dawn"},
+        },
+    )
+    repository.save(Project(id="demo", title="Demo", pages=[page], created_at=datetime(2026, 10, 28, tzinfo=UTC), updated_at=datetime(2026, 10, 28, tzinfo=UTC)))
+    events = MemoryEventBus()
+    loader = ProjectLoader(repository)
+    engine = WorkflowEngine(
+        state_machine=StateMachine(), event_bus=events,
+        agents=primary_agents(ImageGeneratorFactory.create("mock"), None, LLMFactory.create("mock"), PromptPipeline()),
+        support_agents=support_agents(LLMFactory.create("mock"), None),
+    )
+    coordinator = WorkflowCoordinator(
+        ProjectWorkflowEngine(repository, events),
+        ChapterWorkflowEngine(repository, events, PageNumberWorkflowScheduler()),
+        engine, loader,
+    )
+    app = build_workflow_app(
+        workflow_engine=engine, workflow_coordinator=coordinator,
+        project_loader=loader, repository=repository,
+    )
+    client = TestClient(app)
+    panel = {
+        "number": 1, "narrative_intent": "Aki finds the archive key.",
+        "characters": ["character-aki-v1"],
+        "continuity_bindings": ["costume-aki-blue-coat-v2"],
+        "action": "Aki turns the brass key in the archive lock.",
+        "background": "The east archive corridor at dawn.",
+        "composition": "Medium shot, Aki left and the lock in the foreground.",
+        "constraints": ["Keep the key visible."],
+    }
+    confirmed = client.post(
+        "/projects/demo/pages/1/storyboard/confirm", headers=_headers(),
+        json={"requestVersion": 1, "expectedSource": {"state": "Reviewed", "page_design": page_design, "review": review_source}, "confirmed": True, "panels": [panel]},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json() == {"status": "storyboarded"}
+    prompt = client.post("/projects/demo/pages/1/prompt", headers=_headers(), json={})
+    assert prompt.status_code == 200
+    assert prompt.json()["state"] == "PromptBuilt"
+    assert repository._load_authoritative_page("demo", 1).storyboard["panels"] == [panel]
+
+    image_bytes = encode_rgb_png(1024, 1024, b"\xff" * (1024 * 1024 * 3))
+    transport = _FakePanelTransport(
+        repository._next_generation_normal_execution_owner_root() / "panel-generation-authority",
+        image_bytes,
+    )
+    real_execute = execute_localfile_panel_aware_generation
+
+    def execute_with_fake_transport(*args, **kwargs):
+        return real_execute(*args, **kwargs, transport_factory=lambda _checkpoint, _configuration: transport)
+
+    monkeypatch.setattr(api_composition, "execute_localfile_panel_aware_generation", execute_with_fake_transport)
+    generated = client.post(
+        "/projects/demo/pages/1/panel-aware-generation", headers=_headers(), json=_body()
+    )
+    assert generated.status_code == 200
+    assert generated.json() == {"status": "generated"}
+    assert transport.submit_count == 1
+    generated_asset = client.get("/projects/demo/pages/1/generated-asset")
+    assert generated_asset.status_code == 200
+
+    pre_review = _human_visual_review_body("2026-10-29T09:00:00Z")
+    readiness = client.post("/projects/demo/pages/1/visual-review-readiness", json=pre_review)
+    assert readiness.status_code == 200 and readiness.json()["ready"] is False
+    evidence = client.post("/projects/demo/pages/1/visual-review-evidence", headers=_headers(), json=pre_review)
+    assert evidence.status_code == 200 and evidence.json()["ready"] is False
+    quality = client.post("/projects/demo/pages/1/quality", headers=_headers(), json={})
+    assert quality.status_code == 200 and quality.json()["state"] == "QualityChecked"
+
+    final_review = _human_visual_review_body("2026-10-29T09:01:00Z")
+    final_readiness = client.post("/projects/demo/pages/1/visual-review-readiness", json=final_review)
+    assert final_readiness.status_code == 200 and final_readiness.json()["ready"] is True
+    final_evidence = client.post("/projects/demo/pages/1/visual-review-evidence", headers=_headers(), json=final_review)
+    assert final_evidence.status_code == 200 and final_evidence.json()["ready"] is True
+    history = client.get("/projects/demo/pages/1/visual-review-evidence", headers=_headers())
+    record = next(item for item in history.json()["records"] if item["pageState"] == "QualityChecked" and item["ready"])
+    approval = client.post(
+        "/projects/demo/pages/1/evidence-linked-approval", headers=_headers(),
+        json={"approvedBy": "editor-17", "reviewId": record["reviewId"]},
+    )
+    assert approval.status_code == 200 and approval.json()["state"] == "Approved"
+    download = client.get(
+        "/projects/demo/pages/1/approved-asset-download",
+        headers={"Referer": f"{LOCAL_WEB_ORIGINS[0]}/projects/demo/pages/1", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", "Sec-Fetch-User": "?1"},
+    )
+    assert download.status_code == 200
+    assert download.content == generated_asset.content
+    assert download.content
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows durable Quality fence contract")

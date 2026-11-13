@@ -40,3 +40,37 @@ rendering HTML from responses. The server permits only the localhost and
 
 The initial layout is responsive and uses semantic headings, labels, tables,
 keyboard-visible focus, and `aria-live` status/error regions.
+
+## Explicit Storyboard confirmation
+
+The UI is an App Router application under `web/app/`. A Page in `Reviewed`
+state shows the Storyboard input panel only when both Page Design and Review
+artifacts are present. Enter the details for every panel, inspect the captured
+source, then select the confirmation checkbox and choose **Confirm storyboard**.
+The confirmation is bound to the displayed Reviewed source, including Page
+Design and Review, and requires that deliberate user action.
+
+The browser sends this confirmation to the same-origin server route in the
+Pages Router at
+`web/pages/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm.ts`.
+That route validates the request and proxies it to the local Workflow API; the
+browser does not submit this confirmation directly to that API.
+
+- **Success:** the UI requests a route refresh so you can inspect the saved
+  Page. It does not submit the confirmation again automatically.
+- **HTTP 409:** the source changed or the Page is no longer eligible for
+  confirmation. Reload the latest Page and review its current source. Only
+  confirm again if it is still `Reviewed` with Page Design and Review present,
+  and the entered panels still match that source.
+- **HTTP 404:** reload the Project and inspect its current state; the requested
+  Project or Page could not be found.
+- **Uncertain result, including HTTP 503:** reload the Page and inspect its
+  state before taking another action. Do not repeat the confirmation until you
+  have checked whether it was saved.
+
+The API returns HTTP 404 (`not_found`) for a missing Project or Page. A missing
+Project is not created by this request, and its Project, committed revision,
+prepared revision, and activation sidecars remain absent. Damaged or unavailable
+durable state returns HTTP 503 (`activation_unavailable`). The regression test
+`test_confirmation_missing_project_page_and_damaged_durability_responses` in
+`tests/test_localfile_explicit_storyboard_input.py` covers these outcomes.

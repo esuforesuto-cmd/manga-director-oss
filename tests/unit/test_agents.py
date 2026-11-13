@@ -17,9 +17,43 @@ from manga_director.agents import (
     QualityAgent,
     StoryboardAgent,
 )
+from manga_director.domain.exceptions import ValidationError
 from manga_director.domain.state_machine import PageState
+from manga_director.production.explicit_storyboard_input import create_authority
+from manga_director.prompting import PromptPipeline
 from manga_director.workflow import WorkflowContext
 from manga_director.workflow.durable_execution import _EvidenceLinkedApprovalAuthority
+
+
+def test_storyboard_agent_projects_only_confirmed_panel_fields_without_llm() -> None:
+    source = {
+        "state": "Reviewed",
+        "page_design": {"purpose": "Recover the key", "featured_character": "courier"},
+        "review": {"checks": {"character": True}},
+    }
+    panels = [{
+        "number": 1,
+        "narrative_intent": "The courier reaches for the key",
+        "characters": ["courier"],
+        "continuity_bindings": ["red scarf"],
+        "action": "Reaches for the key",
+        "background": "A stone archive room",
+        "composition": "The key sits in the foreground",
+        "constraints": ["keep the scarf visible"],
+    }]
+    authority = create_authority("demo", 1, 3, "a" * 64, source, panels)
+    result = StoryboardAgent().execute(WorkflowContext(
+        page={"project_id": "demo", "page_id": "1"},
+        state=PageState.REVIEWED,
+        metadata={"_explicit_storyboard_input_authority": authority},
+    ))
+    assert result.payload["panels"] == panels
+    assert set(result.payload) == {"panels", "confirmation"}
+    assert result.payload["confirmation"]["user_confirmed"] is True
+    assert set(result.payload["panels"][0]) == {
+        "number", "narrative_intent", "characters", "continuity_bindings",
+        "action", "background", "composition", "constraints"
+    }
 
 
 @dataclass
@@ -55,6 +89,44 @@ def test_all_agents_are_stateless_base_agents() -> None:
     assert all(isinstance(agent, BaseAgent) for agent in agents)
     assert all(callable(agent.execute) for agent in agents)
     assert all(not hasattr(agent, "state") for agent in agents)
+
+
+def test_prompt_agent_preserves_legacy_nonnumeric_page_identifier() -> None:
+    context = WorkflowContext(
+        page={"project_id": "demo", "page_id": "legacy-page"},
+        state=PageState.STORYBOARDED,
+        artifacts={
+            "Designed": {"purpose": "Reveal the brass key", "featured_character": "courier"},
+            "Storyboarded": {"panels": [{"number": 1, "action": "Reaches for the key"}]},
+        },
+    )
+    agent = PromptAgent()
+
+    agent._preflight_explicit_storyboard(context)
+    result = agent.execute(context)
+
+    assert result.state == PageState.PROMPT_BUILT
+    assert "legacy-page" in result.payload["prompt_markdown"]
+
+
+def test_prompt_agent_preflight_always_enforces_prompt_validation() -> None:
+    context = WorkflowContext(
+        page={"project_id": "demo", "page_id": "1"},
+        state=PageState.STORYBOARDED,
+        artifacts={
+            "Designed": {"purpose": "Reveal the brass key"},
+            "Storyboarded": {"panels": [{"number": 1, "action": "Reaches for the key"}]},
+        },
+    )
+
+    with pytest.raises(ValidationError, match="character information is required"):
+        PromptAgent(PromptPipeline(validation_enabled=False))._preflight_explicit_storyboard(context)
+
+
+def test_prompt_agent_preserves_base_agent_public_surface() -> None:
+    assert {name for name in dir(PromptAgent) if not name.startswith("_")} == {
+        "execute", "result", "target_state"
+    }
 
 
 def test_page_design_agent_returns_all_required_design_fields() -> None:

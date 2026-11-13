@@ -23,6 +23,7 @@ from manga_director.workflow.localfile_panel_aware_activation_bridge import (
     _build_panel_aware_page_generation_operation,
     _convert_revisioned_page_snapshot,
     _snapshot_page_binding,
+    _source_panels,
 )
 
 
@@ -782,3 +783,18 @@ def test_source_page_number_must_be_an_exact_positive_integer(
 
     with pytest.raises(ValueError, match="requested PromptBuilt Page"):
         _snapshot_page_binding(replace(snapshot, project=project), 1)
+
+
+def test_confirmed_storyboard_root_metadata_is_not_mapped_into_panel_input() -> None:
+    storyboard = {
+        "panels": [_panel()],
+        "confirmation": {
+            "schema_id": "manga_director.explicit_storyboard_input",
+            "schema_version": 1,
+            "panel_input_sha256": "a" * 64,
+        },
+    }
+    source = _source_panels(storyboard, (_rectangle(),))
+    assert len(source) == 1
+    assert source[0]["narrative_intent"] == "Aki discovers the sealed archive door."
+    assert "confirmation" not in source[0]

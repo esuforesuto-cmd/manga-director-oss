@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from manga_director.domain.exceptions import ProjectAlreadyExistsError
+from manga_director.domain.exceptions import ProjectAlreadyExistsError, ValidationError
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
 from manga_director.repositories.database_factory import DatabaseFactory
@@ -11,13 +13,24 @@ from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.repositories.serializer import ProjectSerializer, SerializationFormat
 from manga_director.workflow.contracts import WorkflowContext
+from manga_director.workflow.engine import _contains_reserved_storyboard_authority
+
+
+@dataclass
+class _ExecutionSnapshot:
+    project_id: str
+    page_number: int
+    project: Project | None
 
 
 class ProjectLoader:
-    """Maps persisted Project pages to WorkflowContext without workflow decisions."""
+    """Map persisted pages and validate their metadata before execution."""
 
     def __init__(self, repository: ProjectRepository) -> None:
         self._repository = repository
+        self._execution_snapshot: ContextVar[_ExecutionSnapshot | None] = ContextVar(
+            "project_loader_execution_snapshot", default=None
+        )
 
     @property
     def repository(self) -> ProjectRepository:
@@ -80,8 +93,58 @@ class ProjectLoader:
         return self._context_from_page(project, project.page(int(page_id)))
 
     def load(self, project_id: str, page_id: str) -> WorkflowContext:
+        snapshot = self._execution_snapshot.get()
+        if snapshot is not None and snapshot.project_id == project_id:
+            project = snapshot.project
+            if project is not None and snapshot.page_number == int(page_id):
+                return self._context_from_page(project, project.page(snapshot.page_number))
         project = self._repository.load(project_id)
         return self._context_from_page(project, project.page(int(page_id)))
+
+    def load_for_execution(self, project_id: str, page_id: str) -> WorkflowContext:
+        """Load a Page through the public loader after validating persisted data."""
+        project = self._repository.load(project_id)
+        if project.id != project_id:
+            raise ValidationError("Loaded Project does not match the requested Project.")
+        page = project.page(int(page_id))
+        self._reject_reserved_storyboard_authority(page.metadata)
+        self._reject_reserved_storyboard_authority(page.history)
+        snapshot = _ExecutionSnapshot(project_id, page.page_number, project)
+        token = self._execution_snapshot.set(snapshot)
+        try:
+            context = self.load(project_id, page_id)
+        finally:
+            # A copied context can retain the holder after this binding is reset.
+            snapshot.project = None
+            self._execution_snapshot.reset(token)
+        self._validate_execution_identity(context, project_id, page.page_number)
+        self._reject_reserved_storyboard_authority(context.metadata)
+        return context
+
+    @staticmethod
+    def _validate_execution_identity(
+        context: WorkflowContext, project_id: str, page_number: int
+    ) -> None:
+        message = "Loaded workflow context does not match the requested Project and Page."
+        if "project_id" in context.page and context.page["project_id"] != project_id:
+            raise ValidationError(message)
+        for key in ("page_id", "page_number"):
+            if key not in context.page:
+                continue
+            value = context.page[key]
+            if not isinstance(value, (int, str)) or isinstance(value, bool):
+                raise ValidationError(message)
+            try:
+                matches = int(value) == page_number
+            except ValueError:
+                matches = False
+            if not matches:
+                raise ValidationError(message)
+
+    @staticmethod
+    def _reject_reserved_storyboard_authority(value: object) -> None:
+        if _contains_reserved_storyboard_authority(value):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
 
     def save(self, project_id: str, page_id: str, context: WorkflowContext) -> None:
         project = self._repository.load(project_id)

@@ -8,6 +8,7 @@ from manga_director.domain.exceptions import (
     AgentExecutionError,
     AgentNotAvailableError,
     InvalidPageTransition,
+    ValidationError,
 )
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events.bus import EventBus
@@ -51,15 +52,27 @@ class WorkflowEngine:
 
     def execute(self, context: WorkflowContext) -> WorkflowResult:
         """Invoke only the agent for the next legal state and publish its resulting events."""
+        self._validate_public_context(context)
         unpublished = self._execute_unpublished(context)
         self._publish_unpublished(unpublished)
-        return unpublished.result
+        return self._public_result(unpublished.result)
 
     def execute_command(self, context: WorkflowContext, command: str) -> WorkflowResult:
         """Execute a named primary workflow command only when it is currently legal."""
+        self._validate_public_context(context)
         unpublished = self._execute_unpublished(context, command=command)
         self._publish_unpublished(unpublished)
-        return unpublished.result
+        return self._public_result(unpublished.result)
+
+    @staticmethod
+    def _public_result(result: WorkflowResult) -> WorkflowResult:
+        private_key = "_explicit_storyboard_input_authority"
+        if private_key not in result.context.metadata:
+            return result
+        metadata = dict(result.context.metadata)
+        del metadata[private_key]
+        context = result.context.model_copy(update={"metadata": metadata})
+        return result.model_copy(update={"context": context})
 
     def _execute_unpublished(
         self, context: WorkflowContext, *, command: str | None = None
@@ -73,7 +86,21 @@ class WorkflowEngine:
         if command is not None:
             self._state_machine.validate_command(context.state, command)
         next_state = self._state_machine.next_state(context.state)
-        trace_id = self._observer.begin(context, next_state) if self._observer else None
+        observer_context = context
+        if self._observer and "_explicit_storyboard_input_authority" in context.metadata:
+            observer_context = context.model_copy(
+                update={
+                    "metadata": {
+                        key: value
+                        for key, value in context.metadata.items()
+                        if key != "_explicit_storyboard_input_authority"
+                    }
+                },
+                deep=False,
+            )
+        trace_id = (
+            self._observer.begin(observer_context, next_state) if self._observer else None
+        )
         agent = self._agent_for(next_state)
         try:
             agent_result = agent.execute(context)
@@ -153,6 +180,7 @@ class WorkflowEngine:
 
     def execute_support(self, context: WorkflowContext, name: str) -> WorkflowResult:
         """Run a stateless support agent without changing the workflow state."""
+        self._validate_public_context(context)
         try:
             agent = self._support_agents[name]
         except KeyError as exc:
@@ -176,8 +204,14 @@ class WorkflowEngine:
             context=next_context,
         )
 
+    @staticmethod
+    def _validate_public_context(context: WorkflowContext) -> None:
+        if _contains_reserved_storyboard_authority(context.metadata):
+            raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
+
     def run(self, context: WorkflowContext) -> list[WorkflowResult]:
         """Run primary steps through quality; approval stays an explicit human command."""
+        self._validate_public_context(context)
         results: list[WorkflowResult] = []
         current = context
         while current.state != PageState.QUALITY_CHECKED:
@@ -228,3 +262,25 @@ class _UnpublishedWorkflowStep:
     canonical_event: WorkflowEvent
     events: tuple[WorkflowEvent, ...]
     trace_id: str | None
+
+
+def _contains_reserved_storyboard_authority(value: object) -> bool:
+    """Detect the private capability key anywhere in persisted metadata."""
+
+    pending = [value]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            if "_explicit_storyboard_input_authority" in current:
+                return True
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity not in visited:
+                visited.add(identity)
+                pending.extend(current)
+    return False

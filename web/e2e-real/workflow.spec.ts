@@ -56,3 +56,55 @@ test("runs one persisted page through the real local delivery boundary", async (
   expect(body.artifacts.storyboard).toBeTruthy();
   expect(body.artifacts.approval.approved_by).toBe("v7-02-e2e-reviewer");
 });
+
+test("confirms explicit storyboard input through the browser proxy and persists it in LocalFile", async ({ page, request }) => {
+  const storyboardProjectId = "v7-17-storyboard-confirm-real-e2e";
+  const storyboardApiUrl = `${apiOrigin}/projects/${storyboardProjectId}/pages/1`;
+  const created = await request.post(`${apiOrigin}/projects`, {
+    data: { id: storyboardProjectId, title: "V7-17 explicit storyboard confirmation" }
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  for (const action of ["design", "review"]) {
+    const response = await request.post(`${storyboardApiUrl}/${action}`, { data: {} });
+    expect(response.status(), await response.text()).toBe(200);
+  }
+  const reviewed = await request.get(storyboardApiUrl);
+  expect(reviewed.status(), await reviewed.text()).toBe(200);
+  expect((await reviewed.json()).state).toBe("Reviewed");
+
+  await page.goto(`/projects/${storyboardProjectId}/pages/1`);
+  await expect(page.getByRole("heading", { name: "Confirm storyboard input" })).toBeVisible();
+  await page.getByLabel("Narrative intent").fill("A courier reaches the sealed gate");
+  await page.getByLabel("Character IDs, comma separated").fill("courier, gatekeeper");
+  await page.getByLabel("Continuity bindings, one per line").fill("red scarf, visible in every panel\nmap, folded at the corner");
+  await page.getByLabel("Action", { exact: true }).fill("The courier raises a hand to knock");
+  await page.getByLabel("Background").fill("A stone gate at sunset");
+  await page.getByLabel("Composition").fill("Wide view from behind the courier");
+  await page.getByLabel("Constraints, one per line").fill("keep the red scarf visible, even when the courier turns\ndo not crop the map, even at the panel edge");
+  await page.getByRole("checkbox", { name: "I reviewed these exact panel details and confirm them." }).check();
+
+  const confirmation = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/api/projects/${storyboardProjectId}/pages/1/storyboard/confirm`)
+  );
+  await page.getByRole("button", { name: "Confirm storyboard" }).click();
+  const confirmationResponse = await confirmation;
+  expect(confirmationResponse.status(), await confirmationResponse.text()).toBe(200);
+  await expect(page.getByText("Storyboarded", { exact: true })).toBeVisible();
+
+  const persisted = await request.get(storyboardApiUrl);
+  expect(persisted.status(), await persisted.text()).toBe(200);
+  const body = await persisted.json();
+  expect(body.state).toBe("Storyboarded");
+  expect(body.artifacts.storyboard.panels).toEqual([{
+    number: 1,
+    narrative_intent: "A courier reaches the sealed gate",
+    characters: ["courier", "gatekeeper"],
+    continuity_bindings: ["red scarf, visible in every panel", "map, folded at the corner"],
+    action: "The courier raises a hand to knock",
+    background: "A stone gate at sunset",
+    composition: "Wide view from behind the courier",
+    constraints: ["keep the red scarf visible, even when the courier turns", "do not crop the map, even at the panel edge"]
+  }]);
+});

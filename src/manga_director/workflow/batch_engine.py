@@ -174,7 +174,10 @@ class BatchWorkflowEngine:
                 self._persist(current)
                 return self._finish(current, perf_counter() - started_at)
             try:
-                context = self._page_store.load(current.project_id, str(item.page_number))
+                load_for_execution = getattr(
+                    self._page_store, "load_for_execution", self._page_store.load
+                )
+                context = load_for_execution(current.project_id, str(item.page_number))
                 result = self._worker.run(context)
                 self._page_store.save(current.project_id, str(item.page_number), result.context)
             except Exception as exc:  # Worker errors become recoverable, persisted failed items.

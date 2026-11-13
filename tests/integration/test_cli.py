@@ -1,13 +1,16 @@
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
 
+import manga_director.cli.app as cli_app
 from manga_director.cli.app import app
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState
+from manga_director.repositories import InMemoryRepository, ProjectLoader
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow.contracts import WorkflowResult
 from manga_director.workflow.durable_execution import (
@@ -48,6 +51,16 @@ def _route_with_test_fence(
     )._execute_with_receipt(project_id, page_id, command, execution_input)
     assert receipt.workflow_result is not None
     return receipt.workflow_result
+
+
+def _install_test_run_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    route_localfile_run = cli_app._route_localfile_run
+
+    def route_with_test_fence(*args: Any, **kwargs: Any) -> Any:
+        kwargs["fence_factory"] = _Fence
+        return route_localfile_run(*args, **kwargs)
+
+    monkeypatch.setattr(cli_app, "_route_localfile_run", route_with_test_fence)
 
 
 def _advance_to_prompt_built(runner: CliRunner, config: Path) -> None:
@@ -334,6 +347,87 @@ def test_cli_run_status_and_explicit_approval(tmp_path: Path) -> None:
     assert '"workflow_history"' in status_result.stdout
     assert approval_result.exit_code == 0
     assert '"current_state": "Approved"' in approval_result.stdout
+
+
+def test_cli_execution_rejects_reserved_saved_metadata_while_status_stays_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_test_run_fence(monkeypatch)
+    runner = CliRunner()
+    config = tmp_path / "config.yaml"
+    common = ["--config", str(config)]
+    assert runner.invoke(app, ["init", "--project", "demo", "--page", "001", *common]).exit_code == 0
+    repository = LocalFileRepository(config.parent / ".manga-director")
+    project = repository.load("demo")
+    page = project.page(1).model_copy(
+        update={
+            "metadata": {
+                "workflow_history": [
+                    {"nested": [{"_explicit_storyboard_input_authority": "private-marker"}]}
+                ]
+            }
+        }
+    )
+    repository.save(project.replace_page(page))
+
+    run = runner.invoke(app, ["run", "demo", "001", *common])
+    support = runner.invoke(app, ["continuity", "demo", "001", *common])
+    status = runner.invoke(app, ["status", "demo", "001", *common])
+
+    assert run.exit_code == 1
+    assert support.exit_code == 1
+    assert "DURABLE_EXECUTION_INPUT_INVALID" in run.stderr
+    assert "Reserved storyboard confirmation metadata is not accepted." in support.stderr
+    assert "private-marker" not in run.stdout + run.stderr + support.stdout + support.stderr
+    assert status.exit_code == 0
+    assert '"current_state": "Draft"' in status.stdout
+    assert repository.load("demo").page(1) == page
+
+
+@pytest.mark.parametrize("history_source", ["metadata", "page_history"])
+@pytest.mark.parametrize(
+    "reserved_entry",
+    [
+        {"_explicit_storyboard_input_authority": None},
+        {"nested": [{"_explicit_storyboard_input_authority": "private-marker"}]},
+    ],
+    ids=["null-value", "nested-list"],
+)
+def test_cli_nonlocal_run_rejects_reserved_saved_workflow_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    history_source: str,
+    reserved_entry: dict[str, object],
+) -> None:
+    page_values = (
+        {"metadata": {"workflow_history": [reserved_entry]}}
+        if history_source == "metadata"
+        else {"history": [reserved_entry]}
+    )
+    repository = InMemoryRepository()
+    project = Project(
+        id="demo",
+        title="Demo",
+        pages=[Page(page_number=1, **page_values)],
+    )
+    repository.save(project)
+    loader = ProjectLoader(repository)
+    save_page = Mock(wraps=loader.save)
+    monkeypatch.setattr(loader, "save", save_page)
+    engine = Mock()
+    runtime = SimpleNamespace(loader=loader, engine=engine)
+    monkeypatch.setattr(
+        "manga_director.cli.app._use_runtime", lambda _config, action: action(runtime)
+    )
+
+    result = CliRunner().invoke(app, ["run", "demo", "1", "--config", str(tmp_path / "config.yaml")])
+
+    assert result.exit_code == 1
+    assert "Reserved storyboard confirmation metadata is not accepted." in result.stderr
+    assert "private-marker" not in result.stdout + result.stderr
+    engine.run.assert_not_called()
+    save_page.assert_not_called()
+    assert repository.load("demo").page(1) == project.page(1)
 
 
 def test_cli_reports_invalid_workflow_command_with_a_nonzero_exit_code(tmp_path: Path) -> None:

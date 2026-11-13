@@ -64,6 +64,7 @@ export interface PageDetail extends PageSummary {
   errors: ApiError[];
   executionTimeMs: number | null;
   approvalRequired: boolean;
+  __storyboardExpectedSourceJson?: string;
 }
 
 export interface StoryboardPanelSummary {
@@ -76,6 +77,28 @@ export interface StoryboardPanelSummary {
   composition: string;
   constraints: string[];
 }
+
+export interface StoryboardConfirmationPanel {
+  number: number;
+  narrative_intent: string;
+  characters: string[];
+  continuity_bindings: string[];
+  action: string;
+  background: string;
+  composition: string;
+  constraints: string[];
+}
+export interface StoryboardConfirmationRequest {
+  requestVersion: 1;
+  expectedSource: {
+    state: "Reviewed";
+    page_design: Record<string, unknown>;
+    review: Record<string, unknown>;
+  };
+  confirmed: true;
+  panels: StoryboardConfirmationPanel[];
+}
+export type StoryboardConfirmationResponse = { status: "storyboarded" };
 
 export interface PanelRectangleInput { left: number; top: number; right: number; bottom: number }
 export interface PanelAwareGenerationRequest {

@@ -189,3 +189,16 @@ jobs:
         run: python -m pytest --strict-markers --cov=manga_director --cov-report=xml
       - if: matrix.python-version == '3.12'
         run: python -m pytest --strict-markers
+      - name: Verify real Uvicorn disclosure tests
+        if: always() && matrix.python-version == '3.12'
+        run: >-
+          python -m pytest -o addopts= -vv
+          tests/test_localfile_explicit_storyboard_input.py::test_real_uvicorn_storyboard_confirmation_logs_do_not_disclose_internal_values
+          tests/test_localfile_explicit_storyboard_input.py::test_real_uvicorn_cas_and_publication_failure_logs_hide_internal_values
+          --junitxml="${{ runner.temp }}/real-uvicorn-tests.xml"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && matrix.python-version == '3.12'
+        with:
+          name: real-uvicorn-test-results
+          path: ${{ runner.temp }}/real-uvicorn-tests.xml
+          if-no-files-found: error
