@@ -1,5 +1,7 @@
 # manga-director Architecture Design — Phase 9 (v1.0.0)
 
+> This document records the Phase 9 (v1.0.0) design. In the current V7 implementation, LocalFile CLI execution includes a Durable path, and ProjectLoader projects Page history and metadata into the workflow context during restoration while preserving existing `load()` overrides. The standard `manga-director api serve` command disables Uvicorn access logging. Some descriptions below therefore do not represent the full current V7 implementation. The body is retained as a historical design record.
+
 ## Scope
 
 Phase 2 supplied a safe, extensible, headless workflow execution foundation. Phase 3 added stateless commercial manga production agents. Phase 4 added CLI delivery. Phase 5 added Project persistence. Phase 6 completed image adapters. Phase 7 prepared the package for public OSS use. Phase 8 completed the release-candidate review. Phase 9 promotes the unchanged RC1 runtime to v1.0.0 and adds release documentation only.

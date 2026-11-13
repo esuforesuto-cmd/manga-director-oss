@@ -3,7 +3,7 @@
 Date: 2026-11-10 JST.
 Historical corrective-work baseline: `00c79f6a786d3c37794e06835034e737512c3c49` on
 `feat/v7-17-explicit-storyboard-input`.
-Current evidence status (2026-11-11): HOLD / final RFC-V7-015 acceptance remains open. The historical snapshots below are dated evidence; the latest local candidate and live PR state are recorded at the end of this document.
+Current evidence status (2026-11-13): HOLD / final RFC-V7-015 acceptance remains open. The historical snapshots below are dated evidence; the latest local candidate and live PR state are recorded at the end of this document.
 Model routing: GPT-6 Luna High was requested for normal work; actual primary
 runtime model/reasoning setting is UNVERIFIED. GPT-6.1 Sol High was requested
 for the independent review; its actual runtime model/reasoning setting is also
@@ -407,3 +407,173 @@ durability state. Regression coverage is in
 `tests/test_localfile_explicit_storyboard_input.py` around lines 956 and 992.
 Historical sections retain their dated evidence and do not describe the current
 candidate state.
+
+## Current verification snapshot (2026-11-12)
+
+PR #82 is open, draft, and unmerged. The current PR head is
+`faead3947a0b6bd7fd1cad50b843e534ce88ed12`, with 19 commits and 45 changed
+files, targeting `v7-dev` at base
+`e1863ed436e381c4f055d7169ff4c90441826a93`.
+
+### Approval provenance
+
+The two original user-authored approval messages cited in the previous status
+were re-opened and compared with the corresponding edits:
+
+- User message `01a1bbd6-98c1-7f10-8d56-9836632e4910` (2026-11-09 00:46 JST)
+  authorizes the Linux fence-test change. Commit `69b4417` contains that test
+  change; its roadmap and LocalFile test edits were covered by separate prior
+  approved scopes.
+- User message `01a1bc5d-03e0-7ea2-a741-70421c087949` (2026-11-09 03:12 JST)
+  authorizes the test-file update and a fingerprint-specific `.gitleaksignore`
+  entry. Commit `e5298a0` changes those two files and excludes only the recorded
+  false-positive fingerprint.
+
+P1-B is resolved for these two approval-history records. This does not complete
+the independent review or final acceptance of the entire PR.
+
+### Missing Project and damaged durability
+
+The confirmation route returns HTTP 404 (`not_found`) for a missing Project
+without creating Project or revision sidecars. Corrupt or unavailable Durable
+state returns HTTP 503 (`activation_unavailable`). The regression test checks
+these responses and verifies that diagnostic values are not disclosed.
+
+### CI for the current PR head
+
+[Actions run #43133145305](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43133145305)
+completed with 10 of 10 jobs successful. It tested the synthetic PR merge
+commit `07a166c84446ccf1ed4b369e1db80a2cb0d87a58`, which combines head
+`faead394` with base `e1863ed`. The earlier check on this head had
+7 successful jobs and 3 still running. The Linux Python 3.11 and 3.12 suites
+each reported 3,297 passed and 334 skipped. The Windows Python 3.11 and 3.12
+full regression suites each reported 3,608 passed and 23 skipped.
+[CodeQL run #43133139859](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43133139859)
+passed all 3 analyses.
+
+The [Windows Python 3.12 job log](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43133145305/job/130901932000)
+reports both dedicated real-Uvicorn disclosure tests passed in 17.54 seconds.
+GitHub lists the uploaded [JUnit artifact #13907312877](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43133145305/artifacts/13907312877).
+The XML contents were not independently inspected.
+
+### Independent review of the full PR
+
+The independent read-only review covered all 45 changed files from base
+`e1863ed` to head `faead394`. It reported zero P0 findings, zero P1 findings,
+and six P2 findings:
+
+1. **Access logs on rejection.** The confirmation API rejects nonempty query
+   strings, but the stock CLI's Uvicorn access log includes the query. A
+   credential carried in a rejected query can therefore appear in the access
+   log. The dedicated tests cover canonical URLs and credentials in headers.
+   The rejected-query behavior was established by source review
+   (`src/manga_director/cli/app.py:1320`, `src/manga_director/api/workflow.py:549`).
+2. **Content-Length cardinality.** The API counts headers visible in ASGI.
+   h11 can collapse identical duplicate Content-Length fields before ASGI,
+   so that check cannot establish the RFC's requirement of exactly one field
+   on the wire. The application still bounds the actual request body
+   (`src/manga_director/api/workflow.py:526`, `:549`, `:588`, `:1648`).
+3. **Execution loading compatibility.** The exported `ProjectLoader` adds
+   `load_for_execution()`. The application and recovery paths now use that
+   method, which reads from the repository directly and bypasses subclasses'
+   existing `load()` overrides. This differs from the RFC's unchanged public
+   Python API scope (`src/manga_director/repositories/project_loader.py:87`).
+4. **Exact panel input.** The Web form trims continuity and constraint lines
+   before sending them, while the RFC requires rejection of untrimmed values
+   and the form promises exact preservation. The form counts UTF-16 code
+   units, while the Python validator counts Unicode code points
+   (`web/components/explicit-storyboard-input-form.tsx:27`, `:44`, `:51`, `:137`).
+5. **Web proxy admission.** The proxy forwards some Referer forms that Python
+   rejects, including user information or fragments. It can also accept
+   coalesced Accept values and forward a single replacement header, so the
+   downstream API cannot verify the browser's original header cardinality
+   (`web/app/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm/route.ts:46`, `:61`, `:74`).
+6. **Committed evidence references.** The roadmap and the committed resolution
+   record identify `8973d9f` as the latest candidate and cite CI #294, which
+   belongs to that historical head. Their missing-Project test line references
+   have drifted. The no-sidecar assertions for `faead394` start at
+   `tests/test_localfile_explicit_storyboard_input.py:976`
+   (`docs/ROADMAP_V7.md:2137`, `:2181`, `docs/V7_17_PR82_RESOLUTION.md:349`, `:407`).
+
+### RFC acceptance status
+
+**RFC-V7-015 acceptance criterion 7 remains on hold.** The successful
+real-Uvicorn tests support nondisclosure on the exercised paths. The rejected
+query can still be logged in the stock server configuration, as recorded in
+P2 finding 1.
+
+The reviewed code and tests support criterion 8 for the exercised paths. They
+check that the aggregate source revision and fingerprint are absent from the
+reloaded Project and confirmation, returned WorkflowResult, canonical event,
+and Page detail. The PR remains draft and unmerged, and final acceptance is
+on hold.
+
+## Current verification snapshot (2026-11-13)
+
+This section supersedes the 2026-11-12 candidate snapshot above; that earlier
+snapshot remains unchanged as historical evidence. PR #82 is open, draft, and
+unmerged at head
+`b7f47449a80b9b94049eb87cdf1a14c605dc3343`, with 23 commits and 45 changed
+files, targeting `v7-dev` at base
+`e1863ed436e381c4f055d7169ff4c90441826a93`.
+
+### Changes since the previous independent review
+
+The commits after the review of `faead394` address four reported P2 areas:
+
+- `2e6c0df` disables Uvicorn access logging for the standard CLI API server
+  and adds a loopback regression test for a rejected query containing a
+  marker value. This covers the standard CLI launch path; a separately
+  embedded Uvicorn or ASGI host controls its own logging configuration.
+- `2e0f9bf` preserves line input for continuity and constraints, rejects
+  surrounding whitespace instead of rewriting the input, and updates the Web
+  form to count Unicode code points, matching the existing Python validator.
+- `b395d17` tightens proxy checks for Referer and coalesced Accept values.
+  This does not establish original wire-level header cardinality after
+  server normalization.
+- `b7f4744` restores existing `ProjectLoader.load()` override behavior in
+  execution loading and validates persisted reserved authority before
+  projection. The new `load_for_execution()` method remains an addition to
+  the exported class API.
+
+The six P2 findings in the prior independent review are historical findings
+against head `faead394`. These four commits address the areas described above;
+they do not close every review concern. In particular, the RFC requirement
+for exactly one Content-Length field on the wire is not established by the
+ASGI-visible header check. The roadmap and PR description also have older
+candidate evidence that is outside these two document edits. No new full-PR
+independent review has been completed at `b7f4744`.
+
+### CI and CodeQL for the current PR head
+
+[Actions run #43348013493](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43348013493)
+completed with 10 of 10 jobs successful. It tested synthetic merge commit
+`0847ab906670aa52e148da3f0a25b53b754ec1c0`, combining head `b7f47449` with
+base `e1863ed`. The Linux Python 3.11 and 3.12 suites each reported 3,312
+passed and 334 skipped. The Windows Python 3.11 and 3.12 suites each reported
+3,623 passed and 23 skipped; Windows Python 3.11 coverage was 88.62%.
+[CodeQL run #43348007303](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43348007303)
+passed all 3 analyses.
+
+The [Windows Python 3.12 job](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43348013493/job/131631955001)
+passed both dedicated real-Uvicorn disclosure tests and uploaded
+[JUnit artifact #14004265974](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43348013493/artifacts/14004265974).
+The XML contents were not independently inspected. The new rejected-query
+logging regression is part of the normal test suite; it is separate from the
+two-test dedicated Uvicorn step.
+
+### Current acceptance status
+
+The stock CLI API server now disables access logging, and the regression test
+checks that the marker in a rejected query is absent from captured logs while
+normal response and server error logging behavior remains covered. This
+evidence supports the exercised standard CLI path. RFC-V7-015 criterion 7
+remains on hold pending the final independent review of the whole PR and
+coverage of the stated scope. Criterion 8 is supported for the exercised
+paths described in the 2026-11-12 snapshot, subject to that same review.
+
+The CI and CodeQL results are green, but they do not constitute final PR
+acceptance. PR #82 remains draft and unmerged. The previously recorded six P2
+findings remain part of the review history; no full-PR review at the current
+head has yet confirmed the post-fix disposition. Final RFC-V7-015 acceptance
+therefore remains **HOLD**.
