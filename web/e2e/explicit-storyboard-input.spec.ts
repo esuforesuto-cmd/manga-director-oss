@@ -1,7 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type OutgoingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -41,6 +41,12 @@ let submittedPanelValues: Array<{
   constraints: string[];
 }> = [];
 
+type RawHttpRequestHeaders = {
+  [Name in keyof OutgoingHttpHeaders]: Name extends "cache-control"
+    ? OutgoingHttpHeaders[Name] | string[]
+    : OutgoingHttpHeaders[Name];
+};
+
 const maxCapturedOutputChars = 8_000;
 
 function appendBoundedOutput(current: string, chunk: Buffer, stream: "stdout" | "stderr"): string {
@@ -68,7 +74,7 @@ function appendBoundedOutput(current: string, chunk: Buffer, stream: "stdout" | 
   return output.slice(-maxCapturedOutputChars);
 }
 
-function rawHttpRequest(path: string, method: string, body?: string, headers?: IncomingHttpHeaders): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
+function rawHttpRequest(path: string, method: string, body?: string, headers?: RawHttpRequestHeaders): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
   return new Promise((resolveRequest, rejectRequest) => {
     const target = new URL(appUrl);
     const request = httpRequest({
@@ -89,7 +95,7 @@ function rawHttpRequest(path: string, method: string, body?: string, headers?: I
         }),
         ...(body === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(body) }),
         ...headers
-      }
+      } as OutgoingHttpHeaders
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
