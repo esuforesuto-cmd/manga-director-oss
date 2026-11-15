@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import multiprocessing
-import time
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 import pytest
@@ -31,10 +31,22 @@ def _renamed(project: Project, title: str) -> Project:
     return project.model_copy(update={"title": title}, deep=True)
 
 
-def _hold_fence(root: Path, project_id: str, ready: multiprocessing.Queue[bool]) -> None:
-    with _select_project_commit_fence(root, project_id, timeout_ms=1_000):
-        ready.put(True)
-        time.sleep(0.5)
+def _hold_fence(
+    root: Path,
+    project_id: str,
+    ready: multiprocessing.Queue[object],
+    started: Any,
+    release: Any,
+) -> None:
+    started.release()
+    try:
+        with _select_project_commit_fence(root, project_id, timeout_ms=1_000):
+            ready.put(True)
+            if not release.acquire(timeout=30):
+                raise TimeoutError("parent did not release the project commit fence")
+    except Exception as error:
+        ready.put(f"{type(error).__name__}: {error}")
+        raise
 
 
 def test_legacy_aggregate_lazily_receives_private_revision(tmp_path: Path) -> None:
@@ -77,17 +89,49 @@ def test_project_commit_fence_contends_and_repeated_release_is_safe(tmp_path: Pa
     root = tmp_path / "projects"
     root.mkdir()
     project_id = "durable-demo"
-    ready: multiprocessing.Queue[bool] = multiprocessing.Queue()
-    holder = multiprocessing.Process(target=_hold_fence, args=(root, project_id, ready))
-    holder.start()
-    assert ready.get(timeout=2) is True
+    ready: multiprocessing.Queue[object] = multiprocessing.Queue()
+    started = multiprocessing.Semaphore(0)
+    release = multiprocessing.Semaphore(0)
+    holder = multiprocessing.Process(
+        target=_hold_fence, args=(root, project_id, ready, started, release)
+    )
+    process_started = False
+    holder_exitcode: int | None = None
     try:
+        holder.start()
+        process_started = True
+        assert started.acquire(timeout=10), "child process did not reach the fence acquisition"
+        try:
+            ready_value = ready.get(timeout=2)
+        except Empty as error:
+            holder.join(timeout=0.1)
+            if holder.exitcode is not None:
+                raise AssertionError(
+                    "child process exited before fence readiness "
+                    f"(exit code {holder.exitcode})"
+                ) from error
+            raise AssertionError("child process did not report fence readiness within 2 seconds") from error
+        assert ready_value is True, f"child failed before acquiring the fence: {ready_value!r}"
         with pytest.raises(LocalFileDurabilityError, match="project_commit_fence_contended"):
             with _select_project_commit_fence(root, project_id, timeout_ms=1):
                 pass
     finally:
-        holder.join(timeout=2)
-    assert holder.exitcode == 0
+        try:
+            release.release()
+            if process_started:
+                holder.join(timeout=2)
+                if holder.is_alive():
+                    holder.terminate()
+                    holder.join(timeout=2)
+                if holder.is_alive():
+                    holder.kill()
+                    holder.join(timeout=2)
+                assert not holder.is_alive(), "child process could not be reaped"
+                holder_exitcode = holder.exitcode
+                holder.close()
+        finally:
+            ready.close()
+    assert holder_exitcode == 0
     first = _select_project_commit_fence(root, project_id, timeout_ms=50)
     with first:
         pass

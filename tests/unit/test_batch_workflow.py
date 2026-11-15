@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from manga_director.domain.events import EventType
 from manga_director.domain.exceptions import WorkflowError
 from manga_director.domain.project import Chapter, Page, Project
-from manga_director.domain.state_machine import PageState
+from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
-from manga_director.repositories import InMemoryRepository
+from manga_director.repositories import InMemoryRepository, ProjectLoader
 from manga_director.workflow import (
     AutoExecution,
     BatchWorkflowEngine,
@@ -18,7 +20,9 @@ from manga_director.workflow import (
     QueueItemStatus,
     SequentialExecution,
     WorkflowContext,
+    WorkflowEngine,
     WorkflowResult,
+    WorkflowWorker,
 )
 
 
@@ -146,3 +150,45 @@ def test_resume_skips_completed_pages_and_retry_requeues_failed_pages_only() -> 
     assert retried.skipped == []
     persisted = repository.load("demo").workflow["batches"]["batch-1"]
     assert persisted["queue"][1]["status"] == QueueItemStatus.COMPLETED.value
+
+
+def test_batch_rejects_saved_storyboard_authority_before_page_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryRepository()
+    project = _project()
+    page = project.page(1).model_copy(
+        update={
+            "metadata": {
+                "workflow_history": [{"nested": [{"_explicit_storyboard_input_authority": None}]}]
+            }
+        }
+    )
+    repository.save(project.replace_page(page))
+    loader = ProjectLoader(repository)
+    save_page = Mock(wraps=loader.save)
+    monkeypatch.setattr(loader, "save", save_page)
+    agent = Mock()
+    agent.execute.side_effect = AssertionError("Page agent ran before metadata validation")
+    events = MemoryEventBus()
+    engine = WorkflowEngine(
+        state_machine=StateMachine(), event_bus=events, agents={PageState.DESIGNED: agent}
+    )
+    batch = BatchWorkflowEngine(repository, loader, WorkflowWorker(engine), events)
+
+    result = batch.run("demo", batch_id="batch-1")
+    resumed = batch.resume("demo", "batch-1")
+    retried = batch.retry("demo", "batch-1")
+
+    agent.execute.assert_not_called()
+    save_page.assert_not_called()
+    assert repository.load("demo").page(1) == page
+    assert result.failed == [1]
+    assert result.completed == []
+    assert resumed.failed == [1]
+    assert retried.failed == [1]
+    event_types = [event.event_type for event in events.published]
+    assert EventType.BATCH_STARTED in event_types
+    assert EventType.BATCH_FAILED in event_types
+    persisted = repository.load("demo").workflow["batches"]["batch-1"]
+    assert persisted["queue"][0]["error"] == "Reserved storyboard confirmation metadata is not accepted."

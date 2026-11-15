@@ -69,7 +69,11 @@ from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.repositories.protocols import ProjectRepository
 from manga_director.sdk import ExtensionValidator
 from manga_director.workflow import WorkflowContext
-from manga_director.workflow.durable_execution import _route_localfile_primary, _route_localfile_run
+from manga_director.workflow.durable_execution import (
+    _route_localfile_primary,
+    _route_localfile_run,
+    _route_localfile_support,
+)
 from manga_director.workflow.localfile_comfyui_real_image_generation import (
     execute_localfile_comfyui_real_image_generation,
 )
@@ -894,7 +898,9 @@ def _execute_primary(
                         logical_output_asset_quality_gate=composition.quality_gate,
                     )
             else:
-                context = _with_metadata(runtime.loader.load(project, page), metadata or {})
+                context = _with_metadata(
+                    runtime.loader._load_for_execution(project, page), metadata or {}
+                )
                 result = runtime.engine.execute_command(context, command)
                 runtime.loader.save(project, page, result.context)
             logger.info("State transition: %s", result.logs[0])
@@ -912,8 +918,16 @@ def _execute_support(command: str, project: str, page: str, config_path: Path) -
     def action() -> None:
         def execute(runtime: CliRuntime) -> None:
             logger.info("Workflow support start: %s %s/%s", command, project, page)
-            result = runtime.engine.execute_support(runtime.loader.load(project, page), command)
-            runtime.loader.save(project, page, result.context)
+            repository = runtime.loader.repository
+            if isinstance(repository, LocalFileRepository):
+                result = _route_localfile_support(
+                    runtime.engine, repository, project, str(int(page)), command, {}
+                )
+            else:
+                result = runtime.engine.execute_support(
+                    runtime.loader._load_for_execution(project, page), command
+                )
+                runtime.loader.save(project, page, result.context)
             logger.info("Workflow support end: %s", command)
             _emit(result)
 
@@ -1088,7 +1102,7 @@ def run(
                 logger.info("Workflow end: run at %s", result.current_state.value)
                 _emit(result)
                 return
-            context = runtime.loader.load(project, page)
+            context = runtime.loader._load_for_execution(project, page)
             results = runtime.engine.run(context)
             final_context = results[-1].context if results else context
             runtime.loader.save(project, page, final_context)
@@ -1313,7 +1327,7 @@ def api_serve(
             import uvicorn
         except ImportError as exc:  # pragma: no cover - depends on optional extra.
             raise CLIError("Install manga-director[api] to serve the workflow API.") from exc
-        uvicorn.run(_workflow_api(runtime), host=WORKFLOW_API_HOST, port=port)
+        uvicorn.run(_workflow_api(runtime), host=WORKFLOW_API_HOST, port=port, access_log=False)
 
     _handle_error(LOGGER, lambda: _use_runtime(config, action))
 

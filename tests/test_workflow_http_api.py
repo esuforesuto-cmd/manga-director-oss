@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from manga_director.api import workflow as workflow_api
@@ -14,6 +17,7 @@ from manga_director.application import WorkflowApplicationService, build_workflo
 from manga_director.application.evidence_linked_approval import (
     EvidenceLinkedApprovalUnavailable,
 )
+from manga_director.domain.exceptions import ProjectNotFoundError
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
@@ -46,8 +50,13 @@ class _RecordingAgent:
         return AgentResult(success=True, state=target, payload=payload)
 
 
-def _application(*, failure: str | None = None) -> tuple[WorkflowApplicationService, list[_RecordingAgent]]:
-    repository = InMemoryRepository()
+def _application(
+    *,
+    failure: str | None = None,
+    repository: InMemoryRepository | LocalFileRepository | None = None,
+) -> tuple[WorkflowApplicationService, list[_RecordingAgent]]:
+    if repository is None:
+        repository = InMemoryRepository()
     loader = ProjectLoader(repository)
     events = MemoryEventBus()
     recording = {
@@ -146,6 +155,30 @@ def test_http_routes_delegate_project_chapter_page_support_and_approval() -> Non
     assert dialogue.json()["artifacts"]["dialogue"] == {"ok": True}
 
 
+def test_support_route_rejects_reserved_storyboard_authority_metadata() -> None:
+    application, agents = _application()
+    client = TestClient(create_workflow_app(application))
+    client.post("/projects", json={"id": "support-metadata", "title": "Support metadata"})
+
+    for metadata in (
+        {"_explicit_storyboard_input_authority": {"forged": True}},
+        {"trace": {"_explicit_storyboard_input_authority": {"forged": True}}},
+    ):
+        response = client.post(
+            "/projects/support-metadata/pages/1/dialogue", json={"metadata": metadata}
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "invalid_input"
+
+    valid = client.post(
+        "/projects/support-metadata/pages/1/dialogue",
+        json={"metadata": {"trace_id": "safe-support-trace"}},
+    )
+    assert valid.status_code == 200
+    assert valid.json()["artifacts"]["dialogue"] == {"ok": True}
+    assert agents[-2].calls == 1
+
+
 def test_http_error_mapping_cors_and_delete_exclusion_are_safe() -> None:
     application, _agents = _application()
     client = TestClient(create_workflow_app(application))
@@ -196,6 +229,302 @@ def test_unexpected_failures_return_no_internal_detail() -> None:
         "message": "An internal error occurred.",
     }
     assert "secret" not in response.text
+
+
+def test_explicit_storyboard_confirmation_route_is_localfile_only() -> None:
+    application, agents = _application()
+    client = TestClient(create_workflow_app(application))
+    confirmation_path = "/projects/{project_id}/pages/{page_number}/storyboard/confirm"
+    assert confirmation_path not in client.get("/openapi.json").json()["paths"]
+    client.post("/projects", json={"id": "demo", "title": "Demo"})
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+            "Accept": "application/json", "Content-Type": "application/json",
+            "Origin": origin, "Referer": f"{origin}/projects/demo/pages/1",
+            "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty",
+    }
+    response = client.post(
+        "/projects/demo/pages/1/storyboard/confirm",
+        headers=headers,
+        json={
+            "requestVersion": 1,
+            "expectedSource": {"state": "Reviewed", "page_design": {}, "review": {}},
+            "confirmed": True,
+            "panels": [{
+                "number": 1, "narrative_intent": "A courier opens the gate", "characters": ["courier"],
+                "continuity_bindings": ["red scarf"], "action": "Opens the gate",
+                "background": "A stone courtyard", "composition": "Wide view from the north",
+                "constraints": ["keep the scarf visible"],
+            }],
+        },
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+    assert response.headers["cache-control"] == "no-store"
+    assert sum(agent.calls for agent in agents) == 0
+
+    malformed = client.post(
+        "/projects/demo/pages/1/storyboard/confirm", headers=headers,
+        json={"unexpected_private_field": "body-secret"},
+    )
+    assert malformed.status_code == 404
+    assert "body-secret" not in malformed.text
+
+    nested_unknown = client.post(
+        "/projects/demo/pages/1/storyboard/confirm",
+        headers=headers,
+        json={
+            "requestVersion": 1,
+            "expectedSource": {
+                "state": "Reviewed", "page_design": {}, "review": {}, "private": "nested-secret"
+            },
+            "confirmed": True,
+            "panels": [{
+                "number": 1, "narrative_intent": "A courier opens the gate", "characters": ["courier"],
+                "continuity_bindings": ["red scarf"], "action": "Opens the gate",
+                "background": "A stone courtyard", "composition": "Wide view from the north",
+                "constraints": ["keep the scarf visible"],
+            }],
+        },
+    )
+    assert nested_unknown.status_code == 404
+    assert "nested-secret" not in nested_unknown.text
+
+    deeply_nested = (
+        '{"requestVersion":1,"expectedSource":'
+        + "[" * 10_000 + "0" + "]" * 10_000
+        + ',"confirmed":true,"panels":[]}'
+    )
+    nested_response = client.post(
+        "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=deeply_nested,
+    )
+    assert nested_response.status_code == 404
+
+
+def test_explicit_storyboard_confirmation_rejects_any_nonempty_raw_query_before_processing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    application, _agents = _application(repository=LocalFileRepository(tmp_path))
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    body = (
+        b'{"requestVersion":1,"expectedSource":{"state":"Reviewed",'
+        b'"page_design":{},"review":{}},"confirmed":true,"panels":[]}'
+    )
+    application_calls: list[tuple[object, ...]] = []
+
+    def confirm(*args: object) -> None:
+        application_calls.append(args)
+        raise ProjectNotFoundError("missing")
+
+    monkeypatch.setattr(application, "_confirm_storyboard_input", confirm)
+    parsed = False
+    original_loads = workflow_api.json.loads
+
+    def track_json_parse(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed = True
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_api.json, "loads", track_json_parse)
+
+    for raw_query in ("mode=confirm", "&", "&&"):
+        response = client.post(
+            f"/projects/demo/pages/1/storyboard/confirm?{raw_query}",
+            headers=headers,
+            content=body,
+        )
+        assert response.status_code == 422, raw_query
+        assert not parsed, raw_query
+        assert application_calls == []
+
+
+def test_explicit_storyboard_confirmation_allows_an_empty_raw_query(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    application, _agents = _application(repository=LocalFileRepository(tmp_path))
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    body = {
+        "requestVersion": 1,
+        "expectedSource": {"state": "Reviewed", "page_design": {}, "review": {}},
+        "confirmed": True,
+        "panels": [{
+            "number": 1,
+            "narrative_intent": "A courier opens the gate",
+            "characters": ["courier"],
+            "continuity_bindings": ["red scarf"],
+            "action": "Opens the gate",
+            "background": "A stone courtyard",
+            "composition": "Wide view from the north",
+            "constraints": ["keep the scarf visible"],
+        }],
+    }
+    application_calls: list[tuple[object, ...]] = []
+
+    def confirm(*args: object) -> None:
+        application_calls.append(args)
+        raise ProjectNotFoundError("missing")
+
+    monkeypatch.setattr(application, "_confirm_storyboard_input", confirm)
+
+    response = client.post(
+        "/projects/demo/pages/1/storyboard/confirm",
+        headers=headers,
+        json=body,
+    )
+
+    assert response.status_code == 404
+    assert len(application_calls) == 1
+
+
+def test_explicit_storyboard_body_limit_uses_actual_stream_size_before_json_parse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    application, _agents = _application(repository=LocalFileRepository(tmp_path))
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Content-Length": "1",
+    }
+    parsed = False
+    original_loads = json.loads
+
+    def track_json_parse(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed = True
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", track_json_parse)
+    body = b'{"padding":"' + b"x" * workflow_api._STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH + b'"}'
+    response = client.post(
+        "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=body
+    )
+
+    assert len(body) > workflow_api._STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH
+    assert response.status_code == 422
+    assert '"code":"invalid_input"' in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert not parsed
+
+
+def test_explicit_storyboard_rejects_numbers_that_change_in_json_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, agents = _application(repository=LocalFileRepository(tmp_path))
+
+    def raise_missing_page(*_args: object) -> None:
+        raise ProjectNotFoundError("The requested Page does not exist.")
+
+    monkeypatch.setattr(application, "_confirm_storyboard_input", raise_missing_page)
+    client = TestClient(create_workflow_app(application))
+    origin = LOCAL_WEB_ORIGINS[0]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": origin,
+        "Referer": f"{origin}/projects/demo/pages/1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+
+    def body(value: str) -> str:
+        return (
+            '{"requestVersion":1,"expectedSource":{"state":"Reviewed",'
+            f'"page_design":{{"value":{value}}},"review":{{}}'
+            '},"confirmed":true,"panels":[{"number":1,'
+            '"narrative_intent":"A courier reaches the gate",'
+            '"characters":["courier"],"continuity_bindings":["red scarf"],'
+            '"action":"Reaches for the gate","background":"Stone courtyard",'
+            '"composition":"Wide view","constraints":["keep scarf visible"]}]}'
+        )
+
+    # These values survive JavaScript Number parsing and a JSON stringify/parse
+    # cycle with the same numeric value, including exact integers above 2**53.
+    for value in (
+        "0",
+        "-1",
+        "9007199254740991",
+        "9007199254740992",
+        "9007199254740994",
+        "100000000000000000000",
+        "0.1",
+        "1.25",
+        "1e-7",
+        "5e-324",
+        "1.7976931348623157e308",
+    ):
+        response = client.post(
+            "/projects/demo/pages/1/storyboard/confirm", headers=headers, content=body(value)
+        )
+        # The application stub raises not-found before storage or platform fences;
+        # reaching its 404 proves JSON validation accepted the number.
+        assert response.status_code == 404, value
+        assert response.headers["cache-control"] == "no-store"
+
+    # Precision loss, non-finite conversion, underflow, negative zero, and
+    # duplicate members are rejected before the route can access workflow state.
+    invalid_bodies = (
+        body("9007199254740993"),
+        body("-9007199254740993"),
+        body("1000000000000000128"),
+        body("0.10000000000000001"),
+        body("1.234567890123456789e0"),
+        body("1.0000000000000001e18"),
+        body("1e309"),
+        body("1e999999999999999999999999"),
+        body("1e-400"),
+        body("-0"),
+        body("-0.0"),
+        body("NaN"),
+        body("Infinity"),
+        body("-Infinity"),
+        body("1," + '"value":2'),
+        body("0").replace('"action":"Reaches for the gate"', '"action":"Courier \\ud800"'),
+        body("0").replace('"review":{}', '"review":{},"private":"nested-secret"'),
+    )
+    for request_body in invalid_bodies:
+        response = client.post(
+            "/projects/demo/pages/1/storyboard/confirm",
+            headers=headers,
+            content=request_body,
+        )
+        assert response.status_code == 422
+        assert response.json() == {
+            "code": "invalid_input",
+            "message": "Request validation failed.",
+        }
+        assert response.headers["cache-control"] == "no-store"
+        assert "value" not in response.text
+        assert "nested-secret" not in response.text
+
+    assert sum(agent.calls for agent in agents) == 0
 
 
 def test_generated_asset_route_has_fixed_binary_contract_and_rejects_extra_input(

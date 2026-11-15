@@ -13,6 +13,18 @@ import {
 } from "@/lib/workflow-view";
 
 describe("UI workflow contract", () => {
+  it("offers explicit confirmation only for a Reviewed page with displayed source artifacts", () => {
+    const source = readFileSync(new URL("../components/page-workflow.tsx", import.meta.url), "utf8");
+    expect(source).toContain('page.state === "Reviewed"');
+    expect(source).toContain("page.artifacts.pageDesign");
+    expect(source).toContain("page.artifacts.review");
+    expect(source).toContain("ExplicitStoryboardInputForm");
+    const form = readFileSync(new URL("../components/explicit-storyboard-input-form.tsx", import.meta.url), "utf8");
+    expect(form).toContain("sent.current");
+    expect(form).toContain("Reload the Page and inspect its state");
+    expect(form).toContain("I reviewed these exact panel details");
+  });
+
   it("accepts only the persisted contiguous Storyboard panel sequence and never derives a layout", () => {
     const page = { artifacts: { storyboard: { panels: [{
       number: 1, narrative_intent: "A character arrives", characters: ["hero"], continuity_bindings: ["coat"],

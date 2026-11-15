@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useId, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiClientError, api } from "@/lib/api/client";
@@ -18,8 +18,10 @@ export function PageActions({
   actions
 }: Readonly<{ projectId: string; pageNumber: number; actions: PageAction[] }>) {
   const router = useRouter();
+  const storyboardHelpId = useId();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const hasStoryboard = actions.includes("storyboard");
 
   function execute(action: PageAction) {
     setError(null);
@@ -33,5 +35,26 @@ export function PageActions({
     });
   }
 
-  return <div aria-live="polite"><div className="actionGroup">{actions.map((action) => <button className="button secondary" type="button" disabled={pending} key={action} onClick={() => execute(action)}>{labels[action]}</button>)}</div>{error ? <p className="inlineError" role="alert">{error}</p> : null}</div>;
+  return (
+    <div aria-live="polite">
+      <div className="actionGroup">
+        {actions.map((action) => (
+          <button
+            aria-describedby={action === "storyboard" ? storyboardHelpId : undefined}
+            className="button secondary"
+            disabled={pending}
+            key={action}
+            onClick={() => execute(action)}
+            type="button"
+          >
+            {labels[action]}
+          </button>
+        ))}
+      </div>
+      {hasStoryboard ? (
+        <p id={storyboardHelpId}>Creates panels from the page design using default details.</p>
+      ) : null}
+      {error ? <p className="inlineError" role="alert">{error}</p> : null}
+    </div>
+  );
 }

@@ -1,10 +1,18 @@
 # RFC-V7-015: Explicit Confirmed Storyboard Panel Input
 
-- Status: Draft proposal; not accepted and not implementation authorization
+- Status: Accepted (2026-11-06 JST; design acceptance only, not implementation authorization)
 - Related roadmap item: V7-17 — Explicit Confirmed Storyboard Panel Input
 - Prerequisites: V7-15 local Web activation and V7-16 proof bridge
 - Scope: Planning → Storyboard → PromptBuilt input completeness for the existing private LocalFile panel-generation path
 - Frozen references: RFC-V7-012, RFC-V7-013, and RFC-V7-014 remain unchanged
+
+## Acceptance record (2026-11-06 JST)
+
+This design was explicitly accepted on 2026-11-06 JST. Under `RFC_PROCESS.md`,
+acceptance permits an implementation proposal; implementation has not started
+and is not authorized by this record. Any implementation requires separate
+explicit authorization of its exact file allowlist and validation plan. The
+technical requirements and the frozen RFC references above remain unchanged.
 
 ## Problem
 
@@ -155,6 +163,19 @@ same-origin proxy uses only the fixed loopback backend destination, validates
 its browser request metadata and exact body bound, forwards an explicit header
 allowlist, and does not follow redirects. These local checks do not provide
 authentication or identity proof.
+
+For the standard Windows local API, the single `Content-Length` requirement may
+be satisfied by one valid field exposed to ASGI after normalization, provided
+the serving environment is verified to use Uvicorn 0.54.0 with `H11Protocol`
+selected and h11 0.16.0 loaded. The exception applies only to repeated
+instances of the same valid decimal digit sequence after trimming surrounding
+whitespace. Conflicting or malformed lengths must be rejected before ASGI.
+Other configurations remain subject to the single-field requirement.
+
+App-level response codes apply to requests that reach the application. The
+prohibition on `Transfer-Encoding`, the 32,768-byte body limit, the Web proxy’s
+duplicate-header rejection, and the existing access-control and nondisclosure
+requirements remain in force.
 
 Success returns HTTP 200 with `{"status":"storyboarded"}`. Invalid or
 malformed requests return HTTP 422 with a bounded `invalid_input` code; an
@@ -343,7 +364,7 @@ automatic Page-state rollback or data rewrite. Before implementation is
 approved, a compatibility test must prove the supported prior version safely
 ignores the additive dictionary key. If that cannot be proven, stop and add a
 separately reviewed data-compatibility plan. No rollback or source revert is
-authorized by this draft.
+authorized by this RFC.
 
 ## Exact future implementation allowlist
 
@@ -368,7 +389,7 @@ generic overlay, stop and obtain a revised design and explicit approval.
    capability to project confirmed Storyboard fields; preserve the legacy path.
 6. `web/lib/api/types.ts` — additive request/response types.
 7. `web/lib/api/client.ts` — additive confirmation client method.
-8. `web/app/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm/route.ts`
+8. `web/pages/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm.ts`
    — new same-origin proxy to the LocalFile confirmation route.
 9. `web/components/page-workflow.tsx` — render the explicit input flow only
    for eligible Reviewed Pages.
@@ -476,3 +497,30 @@ change and request approval rather than silently changing a frozen contract.
 No change to V6 LTS, I02, dependencies, database/schema/migration, public
 Python APIs, CLI, MCP, SDK, remote routing, authentication, Provider behavior,
 `main`, branch state, release, or publication is included or authorized.
+
+## Implementation evidence snapshot (2026-11-14 JST; not a design amendment)
+
+The live Web confirmation proxy is the Pages Router API route
+`web/pages/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm.ts`;
+the Web presentation uses the App Router.
+
+The proposed PR #82 acceptance scope is the exercised standard Windows CLI
+launch and dedicated HTTP confirmation, which uses `WindowsPageExecutionFence`.
+If an eligible request reaches that standard fence on Linux, it rejects
+execution and activation maps to HTTP 503 `activation_unavailable`. Standard
+Linux confirmation success remains unverified; the Linux POSIX fence factory
+has only been exercised when injected. This does not establish a product-wide
+Linux policy or external-hosting support.
+
+Only Windows with Uvicorn 0.54.0 and h11 0.16.0 is verified for Python
+`Content-Length`: five reported local Windows probes showed valid identical
+repeated or comma-list lengths exposed to ASGI once, and conflicting or invalid
+lengths rejected before ASGI with HTTP 400. The two hosted real-Uvicorn CI
+tests are separate evidence and do not verify this parser matrix. Other
+deployments are unverified. The existing conditional paragraph above is
+unchanged; the historical wording and approval discrepancy is recorded in
+`docs/V7_17_PR82_RESOLUTION.md`.
+
+The raw LocalFile recovery-helper concurrency limitation and remaining
+acceptance questions are tracked in the resolution record. RFC criteria 7 and 8
+remain **HOLD**; this snapshot is not a formal amendment or final acceptance.

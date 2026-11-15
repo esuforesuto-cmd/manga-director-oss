@@ -452,6 +452,55 @@ def test_durable_execution_commits_before_one_canonical_event_and_uses_authorita
     assert fences.created[0].release_calls == 1
 
 
+def test_durable_execution_rejects_reserved_source_metadata_before_context_conversion() -> None:
+    page = Page(
+        page_number=1,
+        metadata={
+            "workflow_history": [
+                {"nested": [{"_explicit_storyboard_input_authority": "private-marker"}]}
+            ]
+        },
+    )
+    store = FakeDurablePageStore(Project(id="project:durable-core", title="Durable core", pages=[page]))
+    agent = RecordingDesignAgent()
+    bus = InspectingEventBus(store)
+    fences = FenceFactory()
+
+    result = _coordinator(store, bus, agent, fences).execute(store.project.id, "1", "design")
+
+    assert result.code == "DURABLE_EXECUTION_INPUT_INVALID"
+    assert "private-marker" not in str(result)
+    assert agent.calls == 0
+    assert store.context_calls == store.commit_calls == store.verify_calls == 0
+    assert store.project.page(1) == page
+    assert bus.calls == len(bus.published) == 0
+    assert fences.created[0].release_calls == 1
+
+
+def test_durable_execution_rejects_reserved_projected_history_before_agent_or_commit() -> None:
+    page = Page(
+        page_number=1,
+        history=[
+            {"nested": [{"_explicit_storyboard_input_authority": "private-marker"}]}
+        ],
+    )
+    store = FakeDurablePageStore(Project(id="project:durable-core", title="Durable core", pages=[page]))
+    agent = RecordingDesignAgent()
+    bus = InspectingEventBus(store)
+    fences = FenceFactory()
+
+    result = _coordinator(store, bus, agent, fences).execute(store.project.id, "1", "design")
+
+    assert result.code == "DURABLE_EXECUTION_INPUT_INVALID"
+    assert "private-marker" not in str(result)
+    assert agent.calls == 0
+    assert store.context_calls == 1
+    assert store.commit_calls == store.verify_calls == 0
+    assert store.project.page(1) == page
+    assert bus.calls == len(bus.published) == 0
+    assert fences.created[0].release_calls == 1
+
+
 def test_state_machine_and_agent_selection_are_reused_without_public_engine_change() -> None:
     store = FakeDurablePageStore(_project(1))
     agent = RecordingDesignAgent()

@@ -21,8 +21,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from manga_director.domain.exceptions import RepositoryError
+from manga_director.domain.exceptions import ProjectNotFoundError, RepositoryError, ValidationError
 from manga_director.domain.project import Project
+from manga_director.repositories._windows_safe_filesystem import WindowsSafeFilesystem
 from manga_director.repositories.local_file_aggregate_envelope import (
     _build_r27_aggregate,
     _decode_r27_aggregate,
@@ -43,6 +44,10 @@ _R29_ACTIVATION_COMMITTED_KEYS = _R29_ACTIVATION_PREPARED_KEYS | frozenset({"com
 
 class LocalFileDurabilityError(RepositoryError):
     """Raised for redacted local durability failures."""
+
+
+class _LocalFileProjectAbsentError(LocalFileDurabilityError):
+    """Raised when neither the aggregate nor any durability record exists."""
 
 
 class StaleRevisionError(LocalFileDurabilityError):
@@ -451,19 +456,33 @@ class LocalFileRevisionStore:
         aggregate_path: Path,
         deserialize: Callable[[bytes], Project],
         *,
+        validate_project_identity: bool = False,
         requires_existing_revision: Callable[[bytes], bool] | None = None,
         validate_revision_record: Callable[[bytes, str, int, str], None] | None = None,
     ) -> RevisionedProjectSnapshot:
         with self._project_fence(project_id):
-            payload = self._read_aggregate(aggregate_path)
+            try:
+                payload = self._read_aggregate(aggregate_path)
+            except LocalFileDurabilityError as exc:
+                if str(exc) != "authoritative_aggregate_missing":
+                    raise
+                if not self._has_durability_metadata(project_id):
+                    raise _LocalFileProjectAbsentError("authoritative_project_missing") from None
+                raise
+            if validate_project_identity:
+                project = deserialize(payload)
+                _validate_expected_project_id(project.id, project_id)
             if self._r29_restart_applies(project_id, payload):
                 return self._load_r29_aware_snapshot(
                     project_id,
                     aggregate_path,
                     deserialize,
+                    validate_project_identity=validate_project_identity,
                     requires_existing_revision=requires_existing_revision,
                     validate_revision_record=validate_revision_record,
                 )
+            if not validate_project_identity:
+                project = deserialize(payload)
             requires_existing = (
                 requires_existing_revision(payload) if requires_existing_revision is not None else False
             )
@@ -474,7 +493,7 @@ class LocalFileRevisionStore:
                 validate_record=validate_revision_record if requires_existing else None,
             )
             return RevisionedProjectSnapshot(
-                project=deserialize(payload),
+                project=project,
                 revision=record.revision,
                 fingerprint=record.fingerprint,
             )
@@ -566,12 +585,17 @@ class LocalFileRevisionStore:
         aggregate_path: Path,
         deserialize: Callable[[bytes], Project],
         *,
+        validate_project_identity: bool,
         requires_existing_revision: Callable[[bytes], bool] | None,
         validate_revision_record: Callable[[bytes, str, int, str], None] | None,
     ) -> RevisionedProjectSnapshot:
         """Apply exactly one R29 classifier result before any recovery mutation."""
 
         snapshot = self._capture_r29_pre_reconciliation_snapshot_locked(project_id, aggregate_path)
+        if validate_project_identity:
+            _validate_expected_project_id(
+                deserialize(snapshot.aggregate_payload).id, project_id
+            )
         result = _classify_r29_pre_reconciliation(snapshot)
         if result == "FAIL_CLOSED":
             raise LocalFileDurabilityError("r29_restart_fail_closed")
@@ -585,14 +609,18 @@ class LocalFileRevisionStore:
             snapshot,
             result,
             aggregate_path,
+            validate_project_identity=validate_project_identity,
             allow_initialization=not requires_existing,
             validate_record=validate_revision_record if requires_existing else None,
         )
         reread = self._read_aggregate(aggregate_path)
         if _fingerprint(reread) != record.fingerprint:
             raise LocalFileDurabilityError("r29_restart_post_action_stale")
+        project = deserialize(reread)
+        if validate_project_identity:
+            _validate_expected_project_id(project.id, project_id)
         return RevisionedProjectSnapshot(
-            project=deserialize(reread),
+            project=project,
             revision=record.revision,
             fingerprint=record.fingerprint,
         )
@@ -603,6 +631,7 @@ class LocalFileRevisionStore:
         result: str,
         aggregate_path: Path,
         *,
+        validate_project_identity: bool,
         allow_initialization: bool,
         validate_record: Callable[[bytes, str, int, str], None] | None,
     ) -> _RevisionRecord:
@@ -626,6 +655,9 @@ class LocalFileRevisionStore:
                 )
             raise LocalFileDurabilityError("r29_restart_action_invalid")
         current = self._read_aggregate(aggregate_path)
+        if validate_project_identity:
+            if current != snapshot.aggregate_payload:
+                raise StaleRevisionError("stale_authoritative_revision")
         if result == "ACTIVATION_RECOVERY" and snapshot.aggregate_state == "RAW":
             if _decode_r27_aggregate(current) is not None:
                 raise LocalFileDurabilityError("r29_restart_post_action_stale")
@@ -1039,6 +1071,39 @@ class LocalFileRevisionStore:
     def _durability_directory(self) -> Path:
         return self._root / "_durability"
 
+    def _has_durability_metadata(self, project_id: str) -> bool:
+        paths = (
+            self._committed_path(project_id),
+            self._prepared_path(project_id),
+            self._activation_path(project_id),
+        )
+        if os.name == "nt":
+            try:
+                filesystem = WindowsSafeFilesystem(self._root)
+                return any(filesystem.exists("_durability", path.name) for path in paths)
+            except ValidationError as exc:
+                raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+        if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+            raise LocalFileDurabilityError("durability_metadata_unavailable")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(self._durability_directory(), flags)
+        except OSError as exc:
+            raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+        try:
+            for path in paths:
+                try:
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise LocalFileDurabilityError("durability_metadata_unavailable") from exc
+                return True
+            return False
+        finally:
+            os.close(descriptor)
+
     def _record_stem(self, project_id: str) -> str:
         return _project_commit_identity(self._root, project_id)
 
@@ -1298,6 +1363,11 @@ class LocalFileRevisionStore:
 
 def _fingerprint(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_expected_project_id(actual_project_id: str, requested_project_id: str) -> None:
+    if actual_project_id != requested_project_id:
+        raise ProjectNotFoundError("Project does not exist.")
 
 
 def _r29_metadata_state(

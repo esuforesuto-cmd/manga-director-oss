@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import unicodedata
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -54,6 +56,11 @@ from manga_director.domain.exceptions import (
 )
 from manga_director.domain.project import Chapter, Page, Project
 from manga_director.domain.state_machine import PageState
+from manga_director.production.explicit_storyboard_input import (
+    canonical_json,
+    validate_expected_source,
+    validate_panels,
+)
 from manga_director.production.next_generation_page_generation_plan import PanelRectangle
 from manga_director.repositories.local_file import LocalFileRepository
 from manga_director.workflow.contracts import WorkflowStatus
@@ -85,6 +92,7 @@ _VISUAL_REVIEW_SUFFIX = "/visual-review-readiness"
 _VISUAL_REVIEW_EVIDENCE_SUFFIX = "/visual-review-evidence"
 _EVIDENCE_LINKED_APPROVAL_SUFFIX = "/evidence-linked-approval"
 _PANEL_AWARE_GENERATION_SUFFIX = "/panel-aware-generation"
+_STORYBOARD_CONFIRM_SUFFIX = "/storyboard/confirm"
 _VISUAL_REVIEW_SUFFIXES = (
     _VISUAL_REVIEW_SUFFIX,
     _VISUAL_REVIEW_EVIDENCE_SUFFIX,
@@ -92,6 +100,7 @@ _VISUAL_REVIEW_SUFFIXES = (
 )
 _VISUAL_REVIEW_MAX_CONTENT_LENGTH = 32_768
 _PANEL_AWARE_GENERATION_MAX_CONTENT_LENGTH = 32_768
+_STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH = 32_768
 _VISUAL_REVIEW_HISTORY_MAX_RESPONSE_BYTES = 1_048_576
 _VISUAL_REVIEW_HISTORY_REJECTED_HEADERS = (
     "range",
@@ -256,6 +265,45 @@ class EvidenceLinkedApprovalRequest(_ClosedHttpRequestModel):
         return value
 
 
+class StoryboardConfirmationRequest(_ClosedHttpRequestModel):
+    request_version: Literal[1] = Field(alias="requestVersion")
+    expected_source: dict[str, Any] = Field(alias="expectedSource")
+    confirmed: Literal[True]
+    panels: list[dict[str, Any]] = Field(min_length=1, max_length=16)
+
+    @field_validator("expected_source", mode="before")
+    @classmethod
+    def _validate_expected_source_before_application(cls, value: Any) -> Any:
+        try:
+            validate_expected_source(value)
+        except ValidationError as error:
+            raise ValueError("expectedSource is invalid") from error
+        return value
+
+    @field_validator("panels", mode="before")
+    @classmethod
+    def _validate_panels_before_application(cls, value: Any) -> Any:
+        try:
+            canonical_json(validate_panels(value))
+        except ValidationError as error:
+            raise ValueError("panels are invalid") from error
+        return value
+
+    @field_validator("request_version", mode="before")
+    @classmethod
+    def _strict_request_version(cls, value: Any) -> Any:
+        if type(value) is not int:
+            raise ValueError("requestVersion must be an integer")
+        return value
+
+    @field_validator("confirmed", mode="before")
+    @classmethod
+    def _strict_confirmation(cls, value: Any) -> Any:
+        if type(value) is not bool or value is not True:
+            raise ValueError("confirmed must be true")
+        return value
+
+
 class PanelAwareGenerationRequest(_ClosedHttpRequestModel):
     request_version: Literal[1] = Field(alias="requestVersion")
     authorized_by: str = Field(alias="authorizedBy", min_length=1, max_length=128)
@@ -415,7 +463,14 @@ def create_workflow_app(
         raise RuntimeError("Install manga-director[api] to enable workflow HTTP routes.") from exc
 
     app = FastAPI(title="manga-director workflow", version=__version__)
-    _register_visual_review_request_guard(app, json_response=JSONResponse)
+    localfile_storyboard_confirmation = (
+        type(getattr(application, "_repository", None)) is LocalFileRepository
+    )
+    _register_visual_review_request_guard(
+        app,
+        json_response=JSONResponse,
+        localfile_storyboard_confirmation=localfile_storyboard_confirmation,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(LOCAL_WEB_ORIGINS),
@@ -440,8 +495,21 @@ def create_workflow_app(
     return app
 
 
-def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> None:
+def _register_visual_review_request_guard(
+    app: Any,
+    *,
+    json_response: Any,
+    localfile_storyboard_confirmation: bool,
+) -> None:
     async def reject_unbounded_visual_review_request(request: Any, call_next: Any) -> Any:
+        storyboard_confirmation_alias = (
+            localfile_storyboard_confirmation
+            and request.method == "POST"
+            and request.url.path != request.url.path.rstrip("/")
+            and request.url.path.rstrip("/").endswith(_STORYBOARD_CONFIRM_SUFFIX)
+        )
+        if storyboard_confirmation_alias:
+            return _visual_review_error(json_response, 422, "invalid_input")
         evidence_linked_approval = (
             request.method == "POST"
             and request.url.path.endswith(_EVIDENCE_LINKED_APPROVAL_SUFFIX)
@@ -449,9 +517,14 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
         panel_aware_generation = request.method == "POST" and request.url.path.endswith(
             _PANEL_AWARE_GENERATION_SUFFIX
         )
+        storyboard_confirmation = (
+            localfile_storyboard_confirmation
+            and request.method == "POST"
+            and request.url.path.endswith(_STORYBOARD_CONFIRM_SUFFIX)
+        )
         content_length = (
             _single_request_header(request, "content-length")
-            if evidence_linked_approval or panel_aware_generation
+            if evidence_linked_approval or panel_aware_generation or storyboard_confirmation
             else request.headers.get("content-length")
         )
         if (
@@ -472,16 +545,32 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
             )
         ):
             return _panel_aware_generation_error(json_response, 422, "invalid_input")
-        if evidence_linked_approval or panel_aware_generation:
+        if storyboard_confirmation and (
+            request.scope.get("query_string", b"") != b""
+            or "transfer-encoding" in request.headers
+            or not _bounded_panel_generation_content_length(
+                content_length, maximum=_STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH
+            )
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        if evidence_linked_approval or panel_aware_generation or storyboard_confirmation:
             try:
                 value = json.loads(
-                    await request.body(),
+                    await (
+                        _read_bounded_request_body(
+                            request, _STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH
+                        )
+                        if storyboard_confirmation
+                        else request.body()
+                    ),
                     object_pairs_hook=_closed_json_members,
+                    parse_int=_lossless_json_integer if storyboard_confirmation else int,
+                    parse_float=_lossless_json_float if storyboard_confirmation else float,
                     parse_constant=lambda _value: (_ for _ in ()).throw(
                         ValueError("non-finite JSON value")
                     ),
                 )
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
                 if panel_aware_generation:
                     return _panel_aware_generation_error(json_response, 422, "invalid_input")
                 return _visual_review_error(json_response, 422, "invalid_input")
@@ -489,9 +578,24 @@ def _register_visual_review_request_guard(app: Any, *, json_response: Any) -> No
                 if panel_aware_generation:
                     return _panel_aware_generation_error(json_response, 422, "invalid_input")
                 return _visual_review_error(json_response, 422, "invalid_input")
+            if storyboard_confirmation and not _bounded_json_tree(value):
+                return _visual_review_error(json_response, 422, "invalid_input")
         return await call_next(request)
 
     app.middleware("http")(reject_unbounded_visual_review_request)
+
+
+async def _read_bounded_request_body(request: Any, maximum: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if total + len(chunk) > maximum:
+            raise ValueError("request body exceeds supported bounds")
+        total += len(chunk)
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    request._body = body
+    return body
 
 
 def _closed_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -501,6 +605,41 @@ def _closed_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate JSON member")
         result[key] = value
     return result
+
+
+def _lossless_json_integer(token: str) -> int:
+    value = int(token)
+    if token == "-0":
+        raise ValueError("JSON integer cannot be represented without loss")
+    try:
+        browser_value = float(token)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("JSON integer cannot be represented without loss") from exc
+    if not math.isfinite(browser_value) or int(browser_value) != value:
+        raise ValueError("JSON integer cannot be represented without loss")
+    if abs(browser_value) < 1e21 and browser_value.is_integer():
+        if Decimal(repr(browser_value)) != Decimal(int(browser_value)):
+            raise ValueError("JSON integer cannot be represented without loss")
+    return value
+
+
+def _lossless_json_float(token: str) -> float:
+    try:
+        value = float(token)
+        decimal_value = Decimal(token)
+        round_trip_value = Decimal(repr(value))
+    except (InvalidOperation, OverflowError, ValueError) as exc:
+        raise ValueError("JSON number cannot be represented without loss") from exc
+    if (
+        not math.isfinite(value)
+        or (value == 0.0 and token.startswith("-"))
+        or decimal_value != round_trip_value
+    ):
+        raise ValueError("JSON number cannot be represented without loss")
+    if abs(value) < 1e21 and value.is_integer():
+        if round_trip_value != Decimal(int(value)):
+            raise ValueError("JSON number cannot be represented without loss")
+    return value
 
 
 def _register_error_handlers(
@@ -525,6 +664,14 @@ def _register_error_handlers(
         )
 
     async def request_validation_error(request: Any, error: Any) -> Any:
+        if getattr(getattr(request, "url", None), "path", "").endswith(
+            _STORYBOARD_CONFIRM_SUFFIX
+        ):
+            return json_response(
+                status_code=422,
+                content={"code": "invalid_input", "message": "Request validation failed."},
+                headers=_VISUAL_REVIEW_HEADERS,
+            )
         issues = [
             {
                 "location": [str(part) for part in item.get("loc", ())],
@@ -594,7 +741,9 @@ def _visual_review_headers_for(request: Any) -> dict[str, str] | None:
     path = getattr(getattr(request, "url", None), "path", "")
     return (
         _VISUAL_REVIEW_HEADERS
-        if path.endswith(_VISUAL_REVIEW_SUFFIXES) or path.endswith(_PANEL_AWARE_GENERATION_SUFFIX)
+        if path.endswith(_VISUAL_REVIEW_SUFFIXES)
+        or path.endswith(_PANEL_AWARE_GENERATION_SUFFIX)
+        or path.endswith(_STORYBOARD_CONFIRM_SUFFIX)
         else None
     )
 
@@ -692,6 +841,11 @@ def _register_routes(
         request_type=request_type,
         json_response=json_response,
     )
+    confirm_storyboard = _storyboard_confirmation_route(
+        application,
+        request_type=request_type,
+        json_response=json_response,
+    )
 
     def execute_page(
         project_id: str,
@@ -749,9 +903,98 @@ def _register_routes(
     app.post(
         "/projects/{project_id}/pages/{page_number}/panel-aware-generation",
     )(generate_panels)
+    if type(getattr(application, "_repository", None)) is LocalFileRepository:
+        app.post(
+            "/projects/{project_id}/pages/{page_number}/storyboard/confirm",
+        )(confirm_storyboard)
     app.post(
         "/projects/{project_id}/pages/{page_number}/{action}", response_model=PageDetailDTO
     )(execute_page)
+
+
+def _storyboard_confirmation_route(
+    application: WorkflowApplicationService,
+    *,
+    request_type: type[Any],
+    json_response: Any,
+) -> Any:
+    def confirm_storyboard(
+        project_id: str,
+        page_number: str,
+        body: StoryboardConfirmationRequest,
+        request: Any,
+    ) -> Any:
+        if (
+            request.scope.get("query_string", b"") != b""
+            or "transfer-encoding" in request.headers
+            or not _bounded_content_length(
+                _single_request_header(request, "content-length"),
+                maximum=_STORYBOARD_CONFIRM_MAX_CONTENT_LENGTH,
+            )
+            or not _evidence_linked_approval_admission(request)
+        ):
+            return _visual_review_error(json_response, 422, "invalid_input")
+        try:
+            project_id = _validated_project_id(project_id)
+            page = _validated_download_page_number(page_number)
+            _raw_storyboard_confirmation_page_number(request, project_id, str(page))
+        except ValidationError:
+            return _visual_review_error(json_response, 422, "invalid_input")
+        if type(getattr(application, "_repository", None)) is not LocalFileRepository:
+            return _visual_review_error(json_response, 404, "not_found")
+        try:
+            application._confirm_storyboard_input(
+                project_id, page, body.model_dump(mode="json", by_alias=True)
+            )
+        except ProjectNotFoundError:
+            return _storyboard_confirmation_error(json_response, 404, "not_found")
+        except StateTransitionError:
+            return _storyboard_confirmation_error(json_response, 409, "confirmation_conflict")
+        except ValidationError:
+            return _storyboard_confirmation_error(json_response, 422, "invalid_input")
+        except Exception:
+            return _storyboard_confirmation_error(json_response, 503, "activation_unavailable")
+        return json_response(
+            status_code=200,
+            content={"status": "storyboarded"},
+            headers=_VISUAL_REVIEW_HEADERS,
+        )
+
+    confirm_storyboard.__annotations__["request"] = request_type
+    return confirm_storyboard
+
+
+def _raw_storyboard_confirmation_page_number(
+    request: Any, project_id: str, page_number: str
+) -> str:
+    raw_path = request.scope.get("raw_path")
+    try:
+        expected = (
+            b"/projects/"
+            + project_id.encode("ascii", errors="strict")
+            + b"/pages/"
+            + page_number.encode("ascii", errors="strict")
+            + b"/storyboard/confirm"
+        )
+    except UnicodeEncodeError as error:
+        raise ValidationError("Storyboard confirmation route is invalid.") from error
+    if not isinstance(raw_path, bytes) or raw_path != expected:
+        raise ValidationError("Storyboard confirmation route is invalid.")
+    return page_number
+
+
+def _storyboard_confirmation_error(json_response: Any, status_code: int, code: str) -> Any:
+    messages = {
+        "invalid_input": "Request validation failed.",
+        "not_found": "Not found.",
+        "confirmation_conflict": "The Page changed. Reload and review it before confirming again.",
+        "activation_unavailable": "Storyboard confirmation is unavailable.",
+    }
+    return json_response(
+        status_code=status_code,
+        content={"code": code, "message": messages[code]},
+        headers=_VISUAL_REVIEW_HEADERS,
+    )
 
 
 def _panel_aware_generation_route(
@@ -1185,15 +1428,38 @@ def _bounded_content_length(
     return 0 < length <= maximum
 
 
-def _bounded_panel_generation_content_length(value: str | None) -> bool:
+def _bounded_panel_generation_content_length(
+    value: str | None, *, maximum: int = _PANEL_AWARE_GENERATION_MAX_CONTENT_LENGTH
+) -> bool:
     return bool(
         value is not None
         and re.fullmatch(r"[0-9]+", value) is not None
         and _bounded_content_length(
             value,
-            maximum=_PANEL_AWARE_GENERATION_MAX_CONTENT_LENGTH,
+            maximum=maximum,
         )
     )
+
+
+def _bounded_json_tree(value: object) -> bool:
+    nodes = 0
+
+    def visit(item: object, depth: int) -> bool:
+        nonlocal nodes
+        nodes += 1
+        if nodes > 4096 or depth > 16:
+            return False
+        if isinstance(item, dict):
+            return all(type(key) is str and visit(child, depth + 1) for key, child in item.items())
+        if isinstance(item, list):
+            return all(visit(child, depth + 1) for child in item)
+        if item is None or type(item) in (str, bool, int):
+            return True
+        if type(item) is float:
+            return item == item and item not in (float("inf"), float("-inf"))
+        return False
+
+    return visit(value, 0)
 
 
 def _safe_visual_review_text(value: str, label: str) -> str:

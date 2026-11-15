@@ -16,6 +16,7 @@ from benchmarks import (
     workflow_repeatability,
 )
 from manga_director.cli.app import app
+from manga_director.domain.exceptions import ValidationError
 from manga_director.domain.project import Page, Project
 from manga_director.domain.state_machine import PageState, StateMachine
 from manga_director.events import MemoryEventBus
@@ -89,6 +90,85 @@ def test_workflow_recovery_does_not_persist_a_failed_step() -> None:
         WorkflowRecovery(engine, loader).resume_step(project.id, 1)
 
     assert repository.load(project.id).page(1).state == PageState.DRAFT
+
+
+class _SuccessfulAgent:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, context: WorkflowContext) -> AgentResult:
+        self.calls += 1
+        return AgentResult(success=True, state=PageState.DESIGNED, payload={"design": "ready"})
+
+
+@pytest.mark.parametrize("history_source", ["metadata", "page_history"])
+@pytest.mark.parametrize(
+    "reserved_entry",
+    [
+        {"_explicit_storyboard_input_authority": None},
+        {"nested": [{"_explicit_storyboard_input_authority": "private-marker"}]},
+    ],
+    ids=["null-value", "nested-list"],
+)
+def test_workflow_recovery_rejects_reserved_history_without_side_effects(
+    history_source: str, reserved_entry: dict[str, object]
+) -> None:
+    page_values = (
+        {"metadata": {"workflow_history": [reserved_entry]}}
+        if history_source == "metadata"
+        else {"history": [reserved_entry]}
+    )
+    page = Page(page_number=1, **page_values)
+    repository = InMemoryRepository()
+    project = Project(id="recovery-reserved", title="Recovery", pages=[page])
+    repository.save(project)
+    loader = ProjectLoader(repository)
+    events = MemoryEventBus()
+    agent = _SuccessfulAgent()
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=events,
+        agents={PageState.DESIGNED: agent},
+    )
+    recovery = WorkflowRecovery(engine, loader)
+
+    status = recovery.status(project.id, 1)
+    save_count_before = repository.metrics.metrics.snapshot()["counters"].get(
+        "repository.operations.save", 0
+    )
+    with pytest.raises(ValidationError, match="Reserved storyboard confirmation metadata"):
+        recovery.resume_step(project.id, 1)
+    save_count_after = repository.metrics.metrics.snapshot()["counters"].get(
+        "repository.operations.save", 0
+    )
+
+    assert status.current_state == PageState.DRAFT
+    assert status.executable_step is not None
+    assert agent.calls == 0
+    assert events.published == []
+    assert save_count_after == save_count_before
+    assert repository.load(project.id).page(1) == page
+
+
+def test_workflow_recovery_persists_one_successful_step() -> None:
+    repository = InMemoryRepository()
+    project = Project(id="recovery-success", title="Recovery", pages=[Page(page_number=1)])
+    repository.save(project)
+    loader = ProjectLoader(repository)
+    events = MemoryEventBus()
+    agent = _SuccessfulAgent()
+    engine = WorkflowEngine(
+        state_machine=StateMachine(),
+        event_bus=events,
+        agents={PageState.DESIGNED: agent},
+    )
+
+    result = WorkflowRecovery(engine, loader).resume_step(project.id, 1)
+
+    assert result.current_state == PageState.DESIGNED
+    assert agent.calls == 1
+    assert repository.load(project.id).page(1).state == PageState.DESIGNED
+    assert len(events.published) == 1
 
 
 def test_repository_integrity_and_recovery_validate_metadata_history_and_snapshots() -> None:
