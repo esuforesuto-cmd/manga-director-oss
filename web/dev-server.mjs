@@ -33,6 +33,8 @@ if (keepAliveTimeout !== undefined && (!Number.isInteger(keepAliveTimeout) || ke
   throw new Error("Invalid keep-alive timeout.");
 }
 if (production) process.env.NODE_ENV = "production";
+const suppressedDebugNamespaces = ["-next:router-server:main", "-next:router-server:resolve-routes"];
+process.env.DEBUG = [...(process.env.DEBUG ?? "").split(",").map((namespace) => namespace.trim()).filter(Boolean), ...suppressedDebugNamespaces].join(",");
 const { default: next } = await import("next");
 const app = next({ dev: !production, hostname, port });
 const handle = app.getRequestHandler();
@@ -91,6 +93,7 @@ function hasUnsafeReferer(request) {
     || parsed.username !== ""
     || parsed.password !== ""
     || parsed.hash !== ""
+    || referer.includes("?")
     || !["http://127.0.0.1:3000", "http://localhost:3000"].includes(parsed.origin)
     || /,\s/.test(referer)
   ) {
@@ -99,6 +102,49 @@ function hasUnsafeReferer(request) {
 
   const rawAuthority = referer.match(/^http:\/\/([^/?#]*)/i)?.[1];
   return !rawAuthority || rawAuthority.includes("@") || rawAuthority.toLowerCase() !== parsed.host.toLowerCase();
+}
+
+const allowedConfirmationHeaders = new Set([
+  "host", "connection", "content-length", "content-type", "accept", "accept-language", "accept-encoding",
+  "user-agent", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
+  "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "priority", "dnt", "sec-gpc", "x-forwarded-port",
+  "pragma", "cache-control"
+]);
+
+function hasUnsafeConfirmationHeaders(request) {
+  const seen = new Set();
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    const name = request.rawHeaders[index].toLowerCase();
+    if (seen.has(name) || !allowedConfirmationHeaders.has(name)) return true;
+    if ((name === "pragma" || name === "cache-control") && request.rawHeaders[index + 1] !== "no-cache") return true;
+    seen.add(name);
+  }
+  const headers = request.headers;
+  const origin = headers.origin;
+  const referer = headers.referer;
+  let refererUrl;
+  try {
+    refererUrl = new URL(referer);
+  } catch {
+    return true;
+  }
+  const originUrl = typeof origin === "string" && ["http://127.0.0.1:3000", "http://localhost:3000"].includes(origin)
+    ? new URL(origin) : null;
+  const host = headers.host;
+  const contentType = headers["content-type"];
+  const accept = headers.accept;
+  const contentLength = headers["content-length"];
+  return !originUrl || !referer || !host || !contentType || !accept
+    || originUrl.host !== host || refererUrl.origin !== origin || refererUrl.search !== "" || referer.includes("?")
+    || refererUrl.hash !== "" || /,\s/.test(referer)
+    || headers["sec-fetch-site"] !== "same-origin" || headers["sec-fetch-mode"] !== "cors"
+    || headers["sec-fetch-dest"] !== "empty" || contentType.includes(",")
+    || contentType.split(";")[0].trim().toLowerCase() !== "application/json"
+    || accept.includes(",") || accept.trim().toLowerCase() !== "application/json"
+    || (headers.dnt !== undefined && !["0", "1"].includes(headers.dnt))
+    || (headers["sec-gpc"] !== undefined && headers["sec-gpc"] !== "1")
+    || (headers["x-forwarded-port"] !== undefined && headers["x-forwarded-port"] !== originUrl.port)
+    || !contentLength || !/^[1-9][0-9]*$/.test(contentLength) || Number(contentLength) > 32 * 1024;
 }
 
 function rejectConfirmationRequest(request, response) {
@@ -126,7 +172,8 @@ const server = createServer((request, response) => {
   const hasCredentials = Object.hasOwn(request.headers, "authorization")
     || Object.hasOwn(request.headers, "cookie")
     || Object.hasOwn(request.headers, "proxy-authorization");
-  if (isConfirmationRoute && (rawUrl.includes("?") || rawUrl.includes("#") || hasCredentials || hasUnsafeReferer(request))) {
+  if (isConfirmationRoute && (rawUrl.includes("?") || rawUrl.includes("#") || hasCredentials || hasUnsafeReferer(request)
+    || (request.method === "POST" && hasUnsafeConfirmationHeaders(request)))) {
     rejectConfirmationRequest(request, response);
     return;
   }

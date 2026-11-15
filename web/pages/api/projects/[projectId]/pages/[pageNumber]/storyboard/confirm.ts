@@ -138,7 +138,7 @@ export default async function confirm(request: NextApiRequest, response: NextApi
   if (!origin || !originUrl || originUrl.protocol !== protocol || !referer || !refererUrl
     || !refererAuthority || /,\s/.test(referer) || refererAuthority.includes("@")
     || refererUrl.username || refererUrl.password || refererAuthority.toLowerCase() !== refererUrl.host.toLowerCase()
-    || refererUrl.hash || refererUrl.origin !== origin || host !== originUrl.host
+    || refererUrl.hash || referer.includes("?") || refererUrl.origin !== origin || host !== originUrl.host
     || headers.get("sec-fetch-site") !== "same-origin" || headers.get("sec-fetch-mode") !== "cors"
     || headers.get("sec-fetch-dest") !== "empty" || headers.has("cookie") || headers.has("authorization")
     || unexpectedForwarded || forwarded["x-forwarded-host"] !== host

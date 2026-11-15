@@ -13,12 +13,19 @@ if (process.platform === "win32" && existsSync(chromePath)) {
 }
 
 let apiServer: Server;
+let browserProxy: Server;
 let nextProcess: ChildProcess;
 let isolatedWebRoot = "";
 let appUrl = "";
+let browserProxyUrl = "";
+let browserProxyServerUrl = "";
+let appPort = 0;
 let confirmationRequests = 0;
+let mockPostRequests = 0;
 let nextStdout = "";
 let nextStderr = "";
+let filesystemDebugTail = "";
+let unrelatedDebugSeen = false;
 let requestLogProbe: { needles: string[]; stdoutTail: string; stderrTail: string; found: boolean } | undefined;
 let debugHeaderProbe: { needle: string; stdoutTail: string; stderrTail: string; found: boolean } | undefined;
 let traceProbe: { rejectedPaths: string[]; rejectedMarkers: string[]; controlPath: string; querylessPath: string } | undefined;
@@ -37,10 +44,14 @@ let submittedPanelValues: Array<{
 const maxCapturedOutputChars = 8_000;
 
 function appendBoundedOutput(current: string, chunk: Buffer, stream: "stdout" | "stderr"): string {
-  const output = current + chunk.toString("utf8");
+  const chunkText = chunk.toString("utf8");
+  const filesystemScan = filesystemDebugTail + chunkText;
+  if (filesystemScan.includes("next:router-server:filesystem")) unrelatedDebugSeen = true;
+  filesystemDebugTail = filesystemScan.slice(-"next:router-server:filesystem".length);
+  const output = current + chunkText;
   if (requestLogProbe) {
     const tail = stream === "stdout" ? requestLogProbe.stdoutTail : requestLogProbe.stderrTail;
-    const scan = tail + chunk.toString("utf8");
+    const scan = tail + chunkText;
     if (requestLogProbe.needles.some((needle) => scan.includes(needle))) requestLogProbe.found = true;
     const nextTail = scan.slice(-Math.max(1, ...requestLogProbe.needles.map((needle) => needle.length)));
     if (stream === "stdout") requestLogProbe.stdoutTail = nextTail;
@@ -48,7 +59,7 @@ function appendBoundedOutput(current: string, chunk: Buffer, stream: "stdout" | 
   }
   if (debugHeaderProbe) {
     const tail = stream === "stdout" ? debugHeaderProbe.stdoutTail : debugHeaderProbe.stderrTail;
-    const scan = tail + chunk.toString("utf8");
+    const scan = tail + chunkText;
     if (scan.includes(debugHeaderProbe.needle)) debugHeaderProbe.found = true;
     const nextTail = scan.slice(-Math.max(1, debugHeaderProbe.needle.length));
     if (stream === "stdout") debugHeaderProbe.stdoutTail = nextTail;
@@ -66,6 +77,16 @@ function rawHttpRequest(path: string, method: string, body?: string, headers?: I
       path,
       method,
       headers: {
+        ...(body === undefined ? {} : {
+          host: "127.0.0.1:3000",
+          origin: "http://127.0.0.1:3000",
+          referer: "http://127.0.0.1:3000/projects/demo/pages/1",
+          "sec-fetch-site": "same-origin",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+          "x-forwarded-port": "3000",
+          accept: "application/json"
+        }),
         ...(body === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(body) }),
         ...headers
       }
@@ -129,10 +150,10 @@ async function fillStoryboardPanel(page: Page, index = 0): Promise<void> {
   await page.getByLabel("Constraints, one per line").nth(index).fill("No readable text, including signs.\nKeep the map, even near the edge.");
 }
 
-function listen(server: Server): Promise<number> {
+function listen(server: Server, port = 0): Promise<number> {
   return new Promise((resolveListen, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(port, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") return reject(new Error("Local test server did not bind."));
       resolveListen(address.port);
@@ -145,6 +166,38 @@ async function availablePort(): Promise<number> {
   const port = await listen(server);
   await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
   return port;
+}
+
+async function startBrowserProxy(appPort: number): Promise<void> {
+  browserProxy = createServer((incoming, outgoing) => {
+    let target: URL;
+    try {
+      target = new URL(incoming.url ?? "/", "http://127.0.0.1:3000");
+      if (target.origin !== "http://127.0.0.1:3000") {
+        outgoing.writeHead(400).end();
+        return;
+      }
+    } catch {
+      outgoing.writeHead(400).end();
+      return;
+    }
+    const headers: IncomingHttpHeaders = { ...incoming.headers, host: "127.0.0.1:3000" };
+    headers["x-forwarded-port"] = "3000";
+    delete headers["proxy-connection"];
+    delete headers["proxy-authorization"];
+    const forward = httpRequest({
+      hostname: "127.0.0.1", port: appPort, path: `${target.pathname}${target.search}`,
+      method: incoming.method, headers
+    }, (response) => {
+      outgoing.writeHead(response.statusCode ?? 502, response.headers);
+      response.pipe(outgoing);
+    });
+    forward.once("error", () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end(); });
+    incoming.pipe(forward);
+  });
+  const port = await listen(browserProxy);
+  browserProxyUrl = "http://127.0.0.1:3000";
+  browserProxyServerUrl = `http://127.0.0.1:${port}`;
 }
 
 test.beforeAll(async () => {
@@ -177,6 +230,7 @@ test.beforeAll(async () => {
   };
 
   apiServer = createServer((request, response) => {
+    if (request.method === "POST") mockPostRequests += 1;
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && pathname === "/projects/demo/pages/1") {
@@ -190,7 +244,15 @@ test.beforeAll(async () => {
     }
     response.writeHead(404).end(JSON.stringify({ code: "not_found", message: "Not found." }));
   });
-  const apiPort = await listen(apiServer);
+  let apiPort: number;
+  try {
+    apiPort = await listen(apiServer, 8000);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    throw new Error(code === "EADDRINUSE"
+      ? "Local mock backend port 8000 is already in use."
+      : "Local mock backend could not start.");
+  }
 
   const sourceWebRoot = resolve(process.cwd());
   isolatedWebRoot = mkdtempSync(join(tmpdir(), "manga-director-ui-e2e-"));
@@ -200,7 +262,7 @@ test.beforeAll(async () => {
   });
   cpSync(join(sourceWebRoot, "node_modules"), join(isolatedWebRoot, "node_modules"), { recursive: true });
 
-  const appPort = await availablePort();
+  appPort = await availablePort();
   appUrl = `http://127.0.0.1:${appPort}`;
   nextProcess = spawn(process.execPath, [
     join(isolatedWebRoot, "dev-server.mjs"), "--hostname", "127.0.0.1", "--port", String(appPort)
@@ -208,7 +270,7 @@ test.beforeAll(async () => {
     cwd: isolatedWebRoot,
     env: {
       ...process.env,
-      DEBUG: "next:router-server:main",
+      DEBUG: "*",
       NEXT_PUBLIC_MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`,
       MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`
     },
@@ -237,6 +299,7 @@ test.beforeAll(async () => {
         lastFailure = "http_response_not_successful";
       } else if ((await response.text()).includes("Confirm storyboard input")) {
         lastFailure = "readiness_confirmed";
+        await startBrowserProxy(appPort);
         return;
       } else {
         lastFailure = "expected_page_text_missing";
@@ -344,6 +407,7 @@ test.afterAll(async () => {
       });
     }
   } finally {
+    if (browserProxy?.listening) await new Promise<void>((resolveClose) => browserProxy.close(() => resolveClose()));
     if (apiServer?.listening) await new Promise<void>((resolveClose) => apiServer.close(() => resolveClose()));
   }
   if (!isolatedWebRoot) return;
@@ -354,6 +418,8 @@ test.afterAll(async () => {
   try {
     if (traceProbe) {
       expect(requestLogProbe?.found === false, "A rejected query, URL, or credential marker appeared in Next.js output").toBe(true);
+      expect(debugHeaderProbe?.found === false, "A harmless request header appeared in Next.js debug output").toBe(true);
+      expect(unrelatedDebugSeen, "Wildcard DEBUG should continue emitting the unrelated filesystem namespace").toBe(true);
       let trace: string;
       try {
         trace = readFileSync(join(cleanupRoot, ".next", "trace"), "utf8");
@@ -383,18 +449,43 @@ test("query-bearing storyboard confirmation requests are rejected before Next.js
   const authorizationMarker = randomUUID();
   const cookieMarker = randomUUID();
   const ordinaryHeaderMarker = randomUUID();
+  const refererMarker = randomUUID();
+  const unknownHeaderMarker = randomUUID();
+  const acceptMarker = randomUUID();
+  const pragmaMarker = randomUUID();
+  const cacheControlMarker = randomUUID();
   const initialConfirmationRequests = confirmationRequests;
   const queryMethodTargets = [
     { path: `${basePath}?methodOptions=${randomUUID()}`, method: "OPTIONS" },
     { path: `${trailingPath}?methodGet=${randomUUID()}`, method: "GET" },
     { path: `${basePath}?methodOther=${randomUUID()}`, method: "PROPFIND" }
   ];
-  const rejectedPaths = [...variants.map(({ path }) => path), ...queryMethodTargets.map(({ path }) => path)];
+  const unsafeHeaderTargets = [
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { authorization: `Bearer ${authorizationMarker}` } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { cookie: `session=${cookieMarker}` } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { referer: `http://127.0.0.1:3000/projects/demo/pages/1?probe=${refererMarker}` } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { "x-e2e-unexpected": unknownHeaderMarker } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { accept: `text/html;probe=${acceptMarker}` } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { pragma: pragmaMarker } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { "cache-control": cacheControlMarker } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { pragma: ["no-cache", "no-cache"] } },
+    { path: `/api/projects/probe-${randomUUID()}/pages/1/storyboard/confirm`, headers: { "cache-control": ["no-cache", "no-cache"] } }
+  ];
+  const rejectedPaths = [
+    ...variants.map(({ path }) => path),
+    ...queryMethodTargets.map(({ path }) => path),
+    ...unsafeHeaderTargets.map(({ path }) => path)
+  ];
   const rejectedMarkers = [
     ...rejectedPaths.flatMap((path) => path.includes("?") && path.split("?")[1]
       ? [path.split("?")[1].split("=").at(-1) ?? ""] : []),
     authorizationMarker,
-    cookieMarker
+    cookieMarker,
+    refererMarker,
+    unknownHeaderMarker,
+    acceptMarker,
+    pragmaMarker,
+    cacheControlMarker
   ];
   const logNeedles = [...rejectedPaths, ...rejectedMarkers];
   requestLogProbe = { needles: logNeedles, stdoutTail: "", stderrTail: "", found: false };
@@ -413,22 +504,21 @@ test("query-bearing storyboard confirmation requests are rejected before Next.js
       && !rejected.body.includes("testMarker"), "Queried POST response should be bounded and contain no query value").toBe(true);
   }
 
-  for (const headers of [
-    { authorization: `Bearer ${authorizationMarker}` },
-    { cookie: `session=${cookieMarker}` }
-  ]) {
-    const rejected = await rawHttpRequest(basePath, "POST", "{}", headers);
-    expect(rejected.status === 422, "Credential-bearing queryless POST should return the bounded validation response without redirecting").toBe(true);
-    expect(rejected.headers["cache-control"] === "no-store", "Credential-bearing POST should retain the no-store header").toBe(true);
-    expect(typeof rejected.headers["content-type"] === "string" && rejected.headers["content-type"]?.startsWith("application/json"), "Credential-bearing POST should retain the JSON content type").toBe(true);
-    expect(rejected.headers["x-content-type-options"] === "nosniff", "Credential-bearing POST should retain the nosniff header").toBe(true);
-    expect(rejected.headers.location === undefined && rejected.headers.refresh === undefined, "Credential-bearing POST should not redirect").toBe(true);
+  const initialMockPostRequests = mockPostRequests;
+  for (const { path, headers } of unsafeHeaderTargets) {
+    const rejected = await rawHttpRequest(path, "POST", "{}", headers);
+    expect(rejected.status === 422, "Unsafe queryless POST should return the bounded validation response without redirecting").toBe(true);
+    expect(rejected.headers["cache-control"] === "no-store", "Unsafe POST should retain the no-store header").toBe(true);
+    expect(typeof rejected.headers["content-type"] === "string" && rejected.headers["content-type"]?.startsWith("application/json"), "Unsafe POST should retain the JSON content type").toBe(true);
+    expect(rejected.headers["x-content-type-options"] === "nosniff", "Unsafe POST should retain the nosniff header").toBe(true);
+    expect(rejected.headers.location === undefined && rejected.headers.refresh === undefined, "Unsafe POST should not redirect").toBe(true);
     expect(rejected.body === JSON.stringify({ code: "invalid_input", message: "Request validation failed." })
       && Number(rejected.headers["content-length"]) === Buffer.byteLength(rejected.body)
       && !rejectedMarkers.some((marker) => rejected.body.includes(marker))
       && !Object.values(rejected.headers).flat().some((value) => typeof value === "string"
-        && rejectedMarkers.some((marker) => value.includes(marker))), "Credential-bearing POST response should be bounded and contain no marker").toBe(true);
+        && rejectedMarkers.some((marker) => value.includes(marker))), "Unsafe POST response should be bounded and contain no marker").toBe(true);
   }
+  expect(mockPostRequests === initialMockPostRequests, "Unsafe POST requests must not reach the mock API").toBe(true);
 
   for (const { path, method } of queryMethodTargets) {
     const result = await rawHttpRequest(path, method);
@@ -455,10 +545,6 @@ test("query-bearing storyboard confirmation requests are rejected before Next.js
     expect(ordinary.status).toBe(200);
     expect(!ordinary.body.includes(ordinaryHeaderMarker), "Ordinary response should not echo the request header marker").toBe(true);
     await expect.poll(
-      () => debugHeaderProbe?.found === true,
-      { message: "Expected the ordinary request header marker to appear in Next.js debug output" }
-    ).toBe(true);
-    await expect.poll(
       () => nextStdout.includes(`GET ${controlPath} `),
       { message: "Expected an ordinary page request to appear in the Next.js access log" }
     ).toBe(true);
@@ -472,6 +558,32 @@ test("query-bearing storyboard confirmation requests are rejected before Next.js
         await response.arrayBuffer();
       }));
     }
+});
+
+test("a real browser confirmation reaches the Web proxy and mock backend", async ({ browser }) => {
+  const context = await browser.newContext({ proxy: { server: browserProxyServerUrl, bypass: "<-loopback>" } });
+  try {
+    const page = await context.newPage();
+    await page.goto(`${browserProxyUrl}/projects/demo/pages/1`);
+    await expect(page.getByLabel("Narrative intent").nth(0)).toBeEnabled();
+    await fillStoryboardPanel(page);
+    await page.getByRole("checkbox", { name: "I reviewed these exact panel details and confirm them." }).check();
+
+    const confirmationPath = "/api/projects/demo/pages/1/storyboard/confirm";
+    const initialConfirmationRequests = confirmationRequests;
+    const initialMockPostRequests = mockPostRequests;
+    const responsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === confirmationPath
+    );
+    await page.getByRole("button", { name: "Confirm storyboard" }).click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+    await expect(page.getByText("Storyboard saved. Reload the page to inspect the result.")).toBeVisible();
+    expect(confirmationRequests).toBe(initialConfirmationRequests + 1);
+    expect(mockPostRequests).toBe(initialMockPostRequests + 1);
+  } finally {
+    await context.close();
+  }
 });
 
 test("storyboard controls stay disabled until hydration", async ({ page }) => {

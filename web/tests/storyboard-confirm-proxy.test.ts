@@ -123,15 +123,15 @@ describe("storyboard confirmation same-origin proxy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("allows a single Referer URL with a comma in its query", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "storyboarded" }), { status: 200 }));
+  it("rejects a Referer URL with a query before calling the backend", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const response = await POST(
       request({ referer: "http://localhost:3000/projects/demo/pages/1?note=a,b" }),
       { params: Promise.resolve({ projectId: "demo", pageNumber: "1" }) }
     );
-    expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(422);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
