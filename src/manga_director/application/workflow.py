@@ -106,7 +106,7 @@ class WorkflowApplicationService:
                 metadata,
                 logical_output_asset_quality_gate=self._localfile_quality_gate,
             )
-        context = self._loader.load_for_execution(project_id, str(page_number))
+        context = self._loader._load_for_execution(project_id, str(page_number))
         if _contains_reserved_storyboard_authority(context.metadata):
             raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
         context = context.model_copy(
@@ -145,7 +145,7 @@ class WorkflowApplicationService:
                 name,
                 metadata,
             )
-        context = self._loader.load_for_execution(project_id, str(page_number))
+        context = self._loader._load_for_execution(project_id, str(page_number))
         if _contains_reserved_storyboard_authority(context.metadata):
             raise ValidationError("Reserved storyboard confirmation metadata is not accepted.")
         context = context.model_copy(

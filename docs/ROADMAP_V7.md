@@ -2181,3 +2181,27 @@ durability state. Regression coverage is in
 `tests/test_localfile_explicit_storyboard_input.py` around lines 956 and 992.
 Historical sections retain their dated evidence and do not describe the current
 candidate state.
+
+## V7-17 current evidence and acceptance boundary (2026-11-14)
+
+PR #82 is open, draft, and unmerged at remote head
+`9945bf666cdf0380a884d0bda80c83e94d18e8da`, based on
+`e1863ed436e381c4f055d7169ff4c90441826a93`, with 29 commits and 49 changed
+files; no submitted reviews are recorded. Actions run
+[#43406709466](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43406709466)
+passed 10/10 jobs; its Windows Python 3.12 suite reported 3,623 passed and 23
+skipped, including two real-Uvicorn disclosure tests. This result applies to
+the remote candidate only. Local HEAD is
+`4494ae8744819b43be89b1a42ca1018dc62fbc64`, an unpushed seven-file commit on
+top of the remote head; its local Python run reported 363 passed and 9 POSIX
+skips. Other focused local evidence, including the separate Project ID and
+Web changes, is recorded in `docs/V7_17_PR82_RESOLUTION.md` and is not an
+integrated-candidate result.
+
+The proposed acceptance scope is the exercised standard Windows CLI launch
+and dedicated HTTP confirmation. Linux standard activation success, other
+parser/server deployments, the full current candidate review and CI, and
+PR-description synchronization remain unverified or pending. RFC-V7-015
+criteria 7 and 8 remain **HOLD**; no formal RFC amendment or final acceptance
+is recorded. See the resolution record for route, parser, recovery-helper, and
+remaining code-to-RFC evidence.

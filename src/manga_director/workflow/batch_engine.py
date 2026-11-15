@@ -175,7 +175,7 @@ class BatchWorkflowEngine:
                 return self._finish(current, perf_counter() - started_at)
             try:
                 load_for_execution = getattr(
-                    self._page_store, "load_for_execution", self._page_store.load
+                    self._page_store, "_load_for_execution", self._page_store.load
                 )
                 context = load_for_execution(current.project_id, str(item.page_number))
                 result = self._worker.run(context)

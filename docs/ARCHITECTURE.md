@@ -1,6 +1,6 @@
 # manga-director Architecture Design — Phase 9 (v1.0.0)
 
-> This document records the Phase 9 (v1.0.0) design. In the current V7 implementation, LocalFile CLI execution includes a Durable path, and ProjectLoader projects Page history and metadata into the workflow context during restoration while preserving existing `load()` overrides. The standard `manga-director api serve` command disables Uvicorn access logging. Some descriptions below therefore do not represent the full current V7 implementation. The body is retained as a historical design record.
+> This document records the Phase 9 (v1.0.0) design. In the current V7 implementation, LocalFile CLI execution includes a Durable path. The private execution loader first loads the persisted Project, checks that its identity and requested Page match, and checks persisted Page metadata and history for reserved storyboard authority before projecting the Page into workflow context through the overridable `load()` method. The standard `manga-director api serve` command disables Uvicorn access logging. Some descriptions below therefore do not represent the full current V7 implementation. The body is retained as a historical design record.
 
 ## Scope
 

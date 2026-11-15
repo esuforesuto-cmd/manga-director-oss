@@ -1,9 +1,9 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
@@ -19,7 +19,10 @@ let appUrl = "";
 let confirmationRequests = 0;
 let nextStdout = "";
 let nextStderr = "";
-let requestLogProbe: { marker: string; found: boolean } | undefined;
+let requestLogProbe: { needles: string[]; stdoutTail: string; stderrTail: string; found: boolean } | undefined;
+let debugHeaderProbe: { needle: string; stdoutTail: string; stderrTail: string; found: boolean } | undefined;
+let traceProbe: { rejectedPaths: string[]; rejectedMarkers: string[]; controlPath: string; querylessPath: string } | undefined;
+let nextProcessClosed = false;
 let nextSpawnErrorCode = "";
 let lastHttpStatus: number | null = null;
 let lastFailure = "no_response_received";
@@ -33,12 +36,52 @@ let submittedPanelValues: Array<{
 
 const maxCapturedOutputChars = 8_000;
 
-function appendBoundedOutput(current: string, chunk: Buffer): string {
+function appendBoundedOutput(current: string, chunk: Buffer, stream: "stdout" | "stderr"): string {
   const output = current + chunk.toString("utf8");
-  if (requestLogProbe && output.includes(requestLogProbe.marker)) {
-    requestLogProbe.found = true;
+  if (requestLogProbe) {
+    const tail = stream === "stdout" ? requestLogProbe.stdoutTail : requestLogProbe.stderrTail;
+    const scan = tail + chunk.toString("utf8");
+    if (requestLogProbe.needles.some((needle) => scan.includes(needle))) requestLogProbe.found = true;
+    const nextTail = scan.slice(-Math.max(1, ...requestLogProbe.needles.map((needle) => needle.length)));
+    if (stream === "stdout") requestLogProbe.stdoutTail = nextTail;
+    else requestLogProbe.stderrTail = nextTail;
+  }
+  if (debugHeaderProbe) {
+    const tail = stream === "stdout" ? debugHeaderProbe.stdoutTail : debugHeaderProbe.stderrTail;
+    const scan = tail + chunk.toString("utf8");
+    if (scan.includes(debugHeaderProbe.needle)) debugHeaderProbe.found = true;
+    const nextTail = scan.slice(-Math.max(1, debugHeaderProbe.needle.length));
+    if (stream === "stdout") debugHeaderProbe.stdoutTail = nextTail;
+    else debugHeaderProbe.stderrTail = nextTail;
   }
   return output.slice(-maxCapturedOutputChars);
+}
+
+function rawHttpRequest(path: string, method: string, body?: string, headers?: IncomingHttpHeaders): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const target = new URL(appUrl);
+    const request = httpRequest({
+      hostname: target.hostname,
+      port: Number(target.port),
+      path,
+      method,
+      headers: {
+        ...(body === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(body) }),
+        ...headers
+      }
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => resolveRequest({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString("utf8")
+      }));
+    });
+    request.once("error", rejectRequest);
+    if (body !== undefined) request.write(body);
+    request.end();
+  });
 }
 
 function safeOutputSummary(output: string): string {
@@ -48,7 +91,9 @@ function safeOutputSummary(output: string): string {
     if (/^\s*[-✓] Ready in [\d.]+\s*(?:ms|s)\s*$/.test(line)) return ["Ready message observed"];
     if (/^\s*○ Compiling \/projects\/(?:demo|\[projectId\])\/pages\/(?:1|\[pageNumber\])(?:\/page)?(?: \(\/projects\/demo\/pages\/1\))?\s*\.\.\.\s*$/.test(line)) return ["Target page compilation started"];
     if (/^\s*✓ Compiled \/projects\/(?:demo|\[projectId\])\/pages\/(?:1|\[pageNumber\])(?:\/page)? in [\d.]+\s*(?:ms|s)(?: \(\d+ modules\))?\s*$/.test(line)) return ["Target page compilation completed"];
-    if (/EADDRINUSE/.test(line)) return ["Startup error category: address already in use"];
+    if (/EADDRINUSE/.test(line) || line === "Web server port is already in use.") {
+      return ["Startup error category: address already in use"];
+    }
     if (/ERR_MODULE_NOT_FOUND|Cannot find module/.test(line)) return ["Startup error category: module unavailable"];
     if (/Module not found/.test(line)) return ["Compilation error category: module unavailable"];
     if (/Failed to compile|Build Error/.test(line)) return ["Compilation error category: compilation failed"];
@@ -158,23 +203,24 @@ test.beforeAll(async () => {
   const appPort = await availablePort();
   appUrl = `http://127.0.0.1:${appPort}`;
   nextProcess = spawn(process.execPath, [
-    join(isolatedWebRoot, "node_modules", "next", "dist", "bin", "next"),
-    "dev", "--hostname", "127.0.0.1", "--port", String(appPort)
+    join(isolatedWebRoot, "dev-server.mjs"), "--hostname", "127.0.0.1", "--port", String(appPort)
   ], {
     cwd: isolatedWebRoot,
     env: {
       ...process.env,
+      DEBUG: "next:router-server:main",
       NEXT_PUBLIC_MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`,
       MANGA_DIRECTOR_API_URL: `http://127.0.0.1:${apiPort}`
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  nextProcess.stdout?.on("data", (chunk: Buffer) => { nextStdout = appendBoundedOutput(nextStdout, chunk); });
-  nextProcess.stderr?.on("data", (chunk: Buffer) => { nextStderr = appendBoundedOutput(nextStderr, chunk); });
+  nextProcess.stdout?.on("data", (chunk: Buffer) => { nextStdout = appendBoundedOutput(nextStdout, chunk, "stdout"); });
+  nextProcess.stderr?.on("data", (chunk: Buffer) => { nextStderr = appendBoundedOutput(nextStderr, chunk, "stderr"); });
   nextProcess.once("error", (error: NodeJS.ErrnoException) => {
     const code = error.code;
     nextSpawnErrorCode = code && ["ENOENT", "EACCES", "EPERM", "EADDRINUSE", "UNKNOWN"].includes(code) ? code : "other";
   });
+  nextProcess.once("close", () => { nextProcessClosed = true; });
 
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
@@ -275,54 +321,157 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 test.afterAll(async () => {
-  if (nextProcess && nextProcess.exitCode === null && nextProcess.signalCode === null) {
-    if (process.platform === "win32" && nextProcess.pid !== undefined) {
-      try {
-        execFileSync("taskkill.exe", ["/PID", String(nextProcess.pid), "/T", "/F"], { stdio: "ignore" });
-      } catch (error) {
-        if (nextProcess.exitCode === null && nextProcess.signalCode === null) throw error;
+  let taskkillFailed = false;
+  try {
+    if (nextProcess && !nextProcessClosed) {
+      if (nextProcess.exitCode === null && nextProcess.signalCode === null) {
+        if (process.platform === "win32" && nextProcess.pid !== undefined) {
+          try {
+            execFileSync("taskkill.exe", ["/PID", String(nextProcess.pid), "/T", "/F"], { stdio: "ignore" });
+          } catch {
+            taskkillFailed = true;
+          }
+        } else if (nextProcess.pid !== undefined) {
+          nextProcess.kill("SIGTERM");
+        }
       }
-    } else {
-      nextProcess.kill("SIGTERM");
+      if (!nextProcessClosed) await new Promise<void>((resolveClose, rejectClose) => {
+        const timeoutMessage = taskkillFailed
+          ? "Windows process stop failed and Next.js did not close; preserving its temporary root."
+          : "Isolated Next.js process did not close; preserving its temporary root.";
+        const timeout = setTimeout(() => rejectClose(new Error(timeoutMessage)), 5_000);
+        nextProcess.once("close", () => { clearTimeout(timeout); nextProcessClosed = true; resolveClose(); });
+      });
     }
-    if (nextProcess.exitCode === null && nextProcess.signalCode === null) await new Promise<void>((resolveExit, rejectExit) => {
-      const timeout = setTimeout(resolveExit, 5_000);
-      nextProcess.once("exit", () => { clearTimeout(timeout); resolveExit(); });
-      nextProcess.once("error", (error) => { clearTimeout(timeout); rejectExit(error); });
-    });
-    if (nextProcess.exitCode === null && nextProcess.signalCode === null) throw new Error("Isolated Next.js process did not exit; preserving its temporary root.");
+  } finally {
+    if (apiServer?.listening) await new Promise<void>((resolveClose) => apiServer.close(() => resolveClose()));
   }
-  if (apiServer?.listening) await new Promise<void>((resolveClose) => apiServer.close(() => resolveClose()));
-  if (isolatedWebRoot) rmSync(isolatedWebRoot, { recursive: true, force: true });
+  if (!isolatedWebRoot) return;
+  const cleanupRoot = realpathSync(isolatedWebRoot);
+  if (dirname(cleanupRoot) !== realpathSync(tmpdir()) || !basename(cleanupRoot).startsWith("manga-director-ui-e2e-")) {
+    throw new Error("Isolated Next.js directory is outside the expected temporary root.");
+  }
+  try {
+    if (traceProbe) {
+      expect(requestLogProbe?.found === false, "A rejected query, URL, or credential marker appeared in Next.js output").toBe(true);
+      let trace: string;
+      try {
+        trace = readFileSync(join(cleanupRoot, ".next", "trace"), "utf8");
+      } catch {
+        throw new Error("Next.js trace could not be read after server shutdown.");
+      }
+      expect(trace.includes(traceProbe.controlPath), "Expected the ordinary positive control in the Next.js trace").toBe(true);
+      expect(trace.includes(traceProbe.querylessPath), "Expected the queryless confirmation request in the Next.js trace").toBe(true);
+      expect(traceProbe.rejectedPaths.some((path) => trace.includes(path)), "A rejected confirmation request reached the Next.js trace").toBe(false);
+      expect(traceProbe.rejectedMarkers.some((marker) => trace.includes(marker)), "A rejected query or credential marker reached the Next.js trace").toBe(false);
+    }
+  } finally {
+    rmSync(cleanupRoot, { recursive: true, force: true });
+  }
 });
 
-test("a rejected storyboard confirmation query stays out of the Next.js request log", async () => {
-  const marker = randomUUID();
+test("query-bearing storyboard confirmation requests are rejected before Next.js logging", async () => {
+  test.setTimeout(60_000);
+  const basePath = "/api/projects/demo/pages/1/storyboard/confirm";
+  const trailingPath = `${basePath}/`;
+  const repeatedSlashPath = "//api//projects/demo/pages/1//storyboard/confirm";
+  const variants = [basePath, trailingPath, repeatedSlashPath].flatMap((path) => [
+    { path: `${path}?testMarker=${randomUUID()}` },
+    { path: `${path}?` }
+  ]);
   const controlPath = `/projects/demo/pages/1?accessLogControl=${randomUUID()}`;
+  const authorizationMarker = randomUUID();
+  const cookieMarker = randomUUID();
+  const ordinaryHeaderMarker = randomUUID();
   const initialConfirmationRequests = confirmationRequests;
-  const probe = { marker, found: false };
-  requestLogProbe = probe;
-  try {
-    const rejected = await fetch(`${appUrl}/api/projects/demo/pages/1/storyboard/confirm?testMarker=${marker}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}"
-    });
-    expect(rejected.status).toBe(422);
-    expect((await rejected.json()).code).toBe("invalid_input");
-    expect(confirmationRequests).toBe(initialConfirmationRequests);
+  const queryMethodTargets = [
+    { path: `${basePath}?methodOptions=${randomUUID()}`, method: "OPTIONS" },
+    { path: `${trailingPath}?methodGet=${randomUUID()}`, method: "GET" },
+    { path: `${basePath}?methodOther=${randomUUID()}`, method: "PROPFIND" }
+  ];
+  const rejectedPaths = [...variants.map(({ path }) => path), ...queryMethodTargets.map(({ path }) => path)];
+  const rejectedMarkers = [
+    ...rejectedPaths.flatMap((path) => path.includes("?") && path.split("?")[1]
+      ? [path.split("?")[1].split("=").at(-1) ?? ""] : []),
+    authorizationMarker,
+    cookieMarker
+  ];
+  const logNeedles = [...rejectedPaths, ...rejectedMarkers];
+  requestLogProbe = { needles: logNeedles, stdoutTail: "", stderrTail: "", found: false };
+  debugHeaderProbe = { needle: ordinaryHeaderMarker, stdoutTail: "", stderrTail: "", found: false };
+  traceProbe = { rejectedPaths, rejectedMarkers, controlPath, querylessPath: basePath };
+  for (const { path } of variants) {
+    const rejected = await rawHttpRequest(path, "POST", "{}");
+    expect(rejected.status === 422, "Queried POST should return the bounded validation response without redirecting").toBe(true);
+    expect(rejected.headers["cache-control"] === "no-store", "Queried POST should retain the no-store header").toBe(true);
+    expect(typeof rejected.headers["content-type"] === "string" && rejected.headers["content-type"]?.startsWith("application/json"), "Queried POST should retain the JSON content type").toBe(true);
+    expect(rejected.headers["x-content-type-options"] === "nosniff", "Queried POST should retain the nosniff header").toBe(true);
+    expect(rejected.headers.location === undefined && rejected.headers.refresh === undefined, "Queried POST should not redirect").toBe(true);
+    expect(rejected.body === JSON.stringify({ code: "invalid_input", message: "Request validation failed." })
+      && Number(rejected.headers["content-length"]) === Buffer.byteLength(rejected.body)
+      && !rejectedMarkers.some((marker) => rejected.body.includes(marker))
+      && !rejected.body.includes("testMarker"), "Queried POST response should be bounded and contain no query value").toBe(true);
+  }
 
-    const ordinary = await fetch(`${appUrl}${controlPath}`);
+  for (const headers of [
+    { authorization: `Bearer ${authorizationMarker}` },
+    { cookie: `session=${cookieMarker}` }
+  ]) {
+    const rejected = await rawHttpRequest(basePath, "POST", "{}", headers);
+    expect(rejected.status === 422, "Credential-bearing queryless POST should return the bounded validation response without redirecting").toBe(true);
+    expect(rejected.headers["cache-control"] === "no-store", "Credential-bearing POST should retain the no-store header").toBe(true);
+    expect(typeof rejected.headers["content-type"] === "string" && rejected.headers["content-type"]?.startsWith("application/json"), "Credential-bearing POST should retain the JSON content type").toBe(true);
+    expect(rejected.headers["x-content-type-options"] === "nosniff", "Credential-bearing POST should retain the nosniff header").toBe(true);
+    expect(rejected.headers.location === undefined && rejected.headers.refresh === undefined, "Credential-bearing POST should not redirect").toBe(true);
+    expect(rejected.body === JSON.stringify({ code: "invalid_input", message: "Request validation failed." })
+      && Number(rejected.headers["content-length"]) === Buffer.byteLength(rejected.body)
+      && !rejectedMarkers.some((marker) => rejected.body.includes(marker))
+      && !Object.values(rejected.headers).flat().some((value) => typeof value === "string"
+        && rejectedMarkers.some((marker) => value.includes(marker))), "Credential-bearing POST response should be bounded and contain no marker").toBe(true);
+  }
+
+  for (const { path, method } of queryMethodTargets) {
+    const result = await rawHttpRequest(path, method);
+    const expected = method === "OPTIONS" ? 204 : method === "GET" ? 405 : 400;
+    expect(result.status === expected, "Queried non-POST method should retain its bounded route response").toBe(true);
+    if (method === "OPTIONS") expect(result.headers.allow === "OPTIONS, POST", "Queried OPTIONS should retain its allow header").toBe(true);
+    expect(result.headers.location === undefined && result.headers.refresh === undefined, "Queried non-POST method should not redirect").toBe(true);
+  }
+
+    const querylessPost = await rawHttpRequest(basePath, "POST", "{}");
+    expect(querylessPost.status === 422 && querylessPost.headers["cache-control"] === "no-store"
+      && querylessPost.headers["x-content-type-options"] === "nosniff"
+      && querylessPost.body.includes("invalid_input"), "Queryless POST should retain the existing proxy validation behavior").toBe(true);
+    expect(confirmationRequests === initialConfirmationRequests, "Rejected requests must not reach the mock upstream").toBe(true);
+
+    const querylessOptions = await rawHttpRequest(basePath, "OPTIONS");
+    expect(querylessOptions.status === 204 && querylessOptions.headers.allow === "OPTIONS, POST").toBe(true);
+    const querylessGet = await rawHttpRequest(basePath, "GET");
+    expect(querylessGet.status === 405).toBe(true);
+    const querylessOther = await rawHttpRequest(basePath, "PROPFIND");
+    expect(querylessOther.status === 400).toBe(true);
+
+    const ordinary = await rawHttpRequest(controlPath, "GET", undefined, { "x-e2e-debug-header": ordinaryHeaderMarker });
     expect(ordinary.status).toBe(200);
-    await ordinary.text();
+    expect(!ordinary.body.includes(ordinaryHeaderMarker), "Ordinary response should not echo the request header marker").toBe(true);
+    await expect.poll(
+      () => debugHeaderProbe?.found === true,
+      { message: "Expected the ordinary request header marker to appear in Next.js debug output" }
+    ).toBe(true);
     await expect.poll(
       () => nextStdout.includes(`GET ${controlPath} `),
       { message: "Expected an ordinary page request to appear in the Next.js access log" }
     ).toBe(true);
-    expect(probe.found, "Unexpected query marker in Next.js stdout or stderr").toBe(false);
-  } finally {
-    requestLogProbe = undefined;
-  }
+    expect(requestLogProbe.found, "A rejected query, URL, or credential marker appeared in Next.js output").toBe(false);
+
+    // Next.js batches trace events. Let the worker write a batch before Windows teardown stops it.
+    for (let batch = 0; batch < 7; batch++) {
+      await Promise.all(Array.from({ length: 8 }, async () => {
+        const response = await fetch(`${appUrl}/projects/demo/pages/1`);
+        expect(response.status, "Trace flush request failed").toBe(200);
+        await response.arrayBuffer();
+      }));
+    }
 });
 
 test("storyboard controls stay disabled until hydration", async ({ page }) => {

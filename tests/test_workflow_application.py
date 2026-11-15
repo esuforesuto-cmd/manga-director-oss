@@ -79,7 +79,7 @@ def test_execution_loader_uses_load_override_with_one_repository_snapshot(
 
     extended_loader = _ExtendingProjectLoader(repository)
 
-    context = extended_loader.load_for_execution("demo", "1")
+    context = extended_loader._load_for_execution("demo", "1")
 
     assert context.metadata["loader_extension"] == "preserved"
     repository_load.assert_called_once_with("demo")
@@ -142,7 +142,7 @@ def test_execution_snapshot_only_applies_to_the_requested_project_and_page(
 
     monkeypatch.setattr(loader, "load", load_with_other_reads)
 
-    assert loader.load_for_execution("demo", "01").page["page_id"] == "1"
+    assert loader._load_for_execution("demo", "01").page["page_id"] == "1"
     assert repository_load.call_args_list == [call("demo"), call("demo"), call("other")]
 
 
@@ -165,9 +165,9 @@ def test_execution_snapshot_is_released_in_current_and_copied_contexts(
         patch.setattr(loader, "load", capture_context)
         if override_raises:
             with pytest.raises(RuntimeError, match="load override failed"):
-                loader.load_for_execution("demo", "1")
+                loader._load_for_execution("demo", "1")
         else:
-            loader.load_for_execution("demo", "1")
+            loader._load_for_execution("demo", "1")
 
     repository.save(project.replace_page(Page(page_number=1, metadata={"new": True})))
     assert loader.load("demo", "1").metadata["new"] is True
@@ -245,7 +245,7 @@ def test_execution_loader_accepts_legacy_omissions_and_matching_identity(
     context = WorkflowContext(page=page)
     monkeypatch.setattr(loader, "load", Mock(return_value=context))
 
-    assert loader.load_for_execution("demo", "1") is context
+    assert loader._load_for_execution("demo", "1") is context
 
 
 @pytest.mark.parametrize("run_chapter", [False, True], ids=["project", "chapter"])

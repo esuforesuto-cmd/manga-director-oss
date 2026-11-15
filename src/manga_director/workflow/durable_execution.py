@@ -186,6 +186,13 @@ class LocalFileDurablePageStore(DurablePageStorePort):
             project_id, validate_project_identity=True
         )
 
+    def _load_confirmation_revisioned(self, project_id: str) -> RevisionedProjectSnapshot:
+        """Validate the aggregate identity before confirmation can reconcile or mutate it."""
+
+        return self._repository._load_revisioned(
+            project_id, validate_project_identity=True
+        )
+
     def context_from_snapshot(
         self, snapshot: RevisionedProjectSnapshot, page_id: str
     ) -> WorkflowContext:
@@ -496,6 +503,10 @@ class DurableWorkflowExecutionCoordinator:
         self, project_id: str, *, storyboard_confirmation_present: bool
     ) -> RevisionedProjectSnapshot:
         try:
+            if storyboard_confirmation_present and isinstance(
+                self._page_store, LocalFileDurablePageStore
+            ):
+                return self._page_store._load_confirmation_revisioned(project_id)
             return self._page_store.load_revisioned(project_id)
         except _LocalFileProjectAbsentError as exc:
             if not storyboard_confirmation_present:
@@ -741,7 +752,7 @@ def _prepare_storyboard_confirmation(
         _page_number(page_id),
         snapshot.revision,
         snapshot.fingerprint,
-        expected_source,
+        current_source,
         request["panels"],
     )
     confirmed_context = context.model_copy(

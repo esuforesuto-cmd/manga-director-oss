@@ -56,6 +56,14 @@ Pages Router at
 That route validates the request and proxies it to the local Workflow API; the
 browser does not submit this confirmation directly to that API.
 
+The proposed PR #82 acceptance scope covers the exercised standard Windows
+CLI launch and dedicated HTTP confirmation, which uses
+`WindowsPageExecutionFence`. If an eligible confirmation reaches that standard
+fence on Linux, it rejects execution and activation maps to HTTP 503
+(`activation_unavailable`). Standard Linux confirmation success remains
+unverified; a Linux POSIX fence factory has only been exercised when injected.
+This scoped evidence does not establish a product-wide Linux policy.
+
 - **Success:** the UI requests a route refresh so you can inspect the saved
   Page. It does not submit the confirmation again automatically.
 - **HTTP 409:** the source changed or the Page is no longer eligible for

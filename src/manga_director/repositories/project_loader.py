@@ -101,7 +101,7 @@ class ProjectLoader:
         project = self._repository.load(project_id)
         return self._context_from_page(project, project.page(int(page_id)))
 
-    def load_for_execution(self, project_id: str, page_id: str) -> WorkflowContext:
+    def _load_for_execution(self, project_id: str, page_id: str) -> WorkflowContext:
         """Load a Page through the public loader after validating persisted data."""
         project = self._repository.load(project_id)
         if project.id != project_id:

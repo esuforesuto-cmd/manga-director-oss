@@ -62,7 +62,9 @@ from manga_director.repositories.local_file_durability import (
     LocalFileDurabilityError as _LocalFileDurabilityError,
 )
 from manga_director.repositories.local_file_durability import (
+    _PreparedRecord,
     _R29ActivationState,
+    _RevisionRecord,
 )
 from manga_director.workflow import (
     ChapterWorkflowEngine,
@@ -1295,7 +1297,7 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
     with monkeypatch.context() as patch:
         patch.setattr(
             LocalFileDurablePageStore,
-            "load_revisioned",
+            "_load_confirmation_revisioned",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 ValidationError("safe-path diagnostic secret")
             ),
@@ -1310,7 +1312,7 @@ def test_confirmation_missing_project_page_and_damaged_durability_responses(
     with monkeypatch.context() as patch:
         patch.setattr(
             LocalFileDurablePageStore,
-            "load_revisioned",
+            "_load_confirmation_revisioned",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 ProjectNotFoundError("load diagnostic secret")
             ),
@@ -2975,6 +2977,102 @@ def _create_real_uvicorn_confirmation_harness(
         "repository": repository,
         "observer": observer,
     }
+
+
+@pytest.mark.parametrize("recovery", ["initial", "prepared", "r29"])
+@pytest.mark.parametrize("mismatch", [False, True], ids=["matching-id", "mismatched-id"])
+def test_confirmation_checks_project_id_before_revision_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recovery: str,
+    mismatch: bool,
+) -> None:
+    harness = _create_real_uvicorn_confirmation_harness(tmp_path, monkeypatch)
+    repository = harness["repository"]
+    store = repository._revision_store
+    project_id = "isolated-confirmation"
+    project = repository.load("demo").model_copy(update={"id": project_id}, deep=True)
+    repository.save(project)
+    project_path = repository._path(project_id)
+    original_bytes = project_path.read_bytes()
+    restored = project.model_copy(
+        update={"id": "isolated-other" if mismatch else project_id, "title": "Restored fixture"}
+    )
+    restored_bytes = repository._serializer.dumps(restored).encode("utf-8")
+    project_path.write_bytes(restored_bytes)
+    restored_fingerprint = hashlib.sha256(restored_bytes).hexdigest()
+    committed_path = store._committed_path(project_id)
+    prepared_path = store._prepared_path(project_id)
+    activation_path = store._activation_path(project_id)
+    if recovery == "prepared":
+        expected = _RevisionRecord(project_id, 1, hashlib.sha256(original_bytes).hexdigest())
+        store._write_committed(expected)
+        store._write_prepared(
+            _PreparedRecord(expected, _RevisionRecord(project_id, 2, restored_fingerprint))
+        )
+    elif recovery == "r29":
+        store._write_committed(_RevisionRecord(project_id, 1, restored_fingerprint))
+        store._prepare_r29_activation(
+            _R29ActivationState(
+                activation_binding_identity="a" * 64,
+                activation_page_id="1",
+                expected_aggregate_fingerprint=restored_fingerprint,
+                expected_revision=1,
+                project_id=project_id,
+                state="ACTIVATION_PREPARED",
+            )
+        )
+
+    def persisted_bytes() -> dict[Path, bytes]:
+        return {
+            path.relative_to(tmp_path): path.read_bytes()
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        }
+
+    before = persisted_bytes()
+    assert repository._page_path(project_id, 1).is_file()
+    assert committed_path.is_file() is (recovery != "initial")
+    assert prepared_path.is_file() is (recovery == "prepared")
+    assert activation_path.is_file() is (recovery == "r29")
+    origin = LOCAL_WEB_ORIGINS[0]
+    page_url = f"/projects/{project_id}/pages/1"
+    response = TestClient(harness["app"], raise_server_exceptions=False).post(
+        f"{page_url}/storyboard/confirm",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": origin,
+            "Referer": f"{origin}{page_url}",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        },
+        content=harness["request_body"],
+    )
+    events = harness["events"].published
+    if mismatch:
+        assert response.status_code == 503
+        assert response.json() == {
+            "code": "activation_unavailable",
+            "message": "Storyboard confirmation is unavailable.",
+        }
+        _assert_confirmation_headers_are_clean(
+            response.headers, restored.id, restored_fingerprint, harness["request_body"].decode()
+        )
+        assert persisted_bytes() == before
+        assert events == []
+        assert project_id not in harness["authority_by_project"]
+    else:
+        assert response.status_code == 200
+        assert response.json() == {"status": "storyboarded"}
+        assert committed_path.is_file()
+        assert not prepared_path.exists()
+        assert not activation_path.exists()
+        snapshot = repository._load_revisioned(project_id, validate_project_identity=True)
+        assert snapshot.revision == (3 if recovery == "prepared" else 2)
+        assert snapshot.project.page(1).state is PageState.STORYBOARDED
+        assert len(events) == 1
 
 
 def test_cli_api_serve_does_not_log_rejected_storyboard_query(

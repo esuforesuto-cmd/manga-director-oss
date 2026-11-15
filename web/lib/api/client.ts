@@ -217,6 +217,7 @@ export const api = {
       serializedBody?: string
     ) => request<StoryboardConfirmationResponse>(`/api/projects/${encoded(projectId)}/pages/${encoded(pageNumber)}/storyboard/confirm`, {
       method: "POST",
+      credentials: "omit",
       body: serializedBody ?? serializeStoryboardConfirmationRequestBody(body, expectedSourceJson),
       headers: { "Content-Type": "application/json" }
     }, ""),

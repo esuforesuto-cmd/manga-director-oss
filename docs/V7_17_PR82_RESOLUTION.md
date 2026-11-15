@@ -3,7 +3,7 @@
 Date: 2026-11-10 JST.
 Historical corrective-work baseline: `00c79f6a786d3c37794e06835034e737512c3c49` on
 `feat/v7-17-explicit-storyboard-input`.
-Current evidence status (2026-11-13): HOLD / final RFC-V7-015 acceptance remains open. The historical snapshots below are dated evidence; the latest local candidate and live PR state are recorded at the end of this document.
+Current evidence status (2026-11-14): HOLD / final RFC-V7-015 acceptance remains open. The historical snapshots below are dated evidence; current local candidate and live PR state are recorded in the dated section at the end of this document.
 Model routing: GPT-6 Luna High was requested for normal work; actual primary
 runtime model/reasoning setting is UNVERIFIED. GPT-6.1 Sol High was requested
 for the independent review; its actual runtime model/reasoning setting is also
@@ -618,3 +618,108 @@ new full-PR review at `6469adb9` is pending. The ASGI-visible Content-Length
 check still cannot establish the RFC requirement of exactly one such field on
 the wire after server normalization; any RFC amendment is a separate action.
 No tests were run for this documentation-only update.
+
+## Current candidate and bounded acceptance evidence (2026-11-14)
+
+The live PR #82 is open, draft, and unmerged at remote head
+`9945bf666cdf0380a884d0bda80c83e94d18e8da`, targeting base
+`e1863ed436e381c4f055d7169ff4c90441826a93`, with 29 commits and 49 changed
+files and zero submitted reviews. Actions run
+[#43406709466](https://github.com/esuforesuto-cmd/manga-director-oss/actions/runs/43406709466)
+passed all 10 jobs for that remote candidate. Its Windows Python 3.12 job
+reported 3,623 passed and 23 skipped in the suite and separately passed the
+two focused real-Uvicorn disclosure tests. Those hosted results apply to the
+remote candidate only.
+
+Local HEAD is `4494ae8744819b43be89b1a42ca1018dc62fbc64`, a seven-file commit
+on top of the remote head that remains unpushed. The local Python run reported
+363 passed and 9 POSIX skips. Separate uncommitted changes include Project ID
+protection in `durable_execution.py` and tests, and Web changes in
+`dev-server.mjs`, `package.json`, `e2e/start-ui.mjs`,
+`e2e/explicit-storyboard-input.spec.ts`, and `lib/api/client.ts`. These are
+separate local evidence and are not presented as part of the remote PR or as
+results of this documentation update.
+
+The focused Project ID protection report records three mismatched-ID cases
+with no writes or events, three correct-ID paths, bounded HTTP nondisclosure,
+144 passed and 4 skipped, Ruff passing, and an independent review with no
+P0-P2 finding in that fix's limited scope. The reported Web mock E2E covered
+rejected query, Cookie, and Authorization inputs with a clean control trace;
+startup cleanup and three failure cases passed. Separate Next.js 15.5.28
+development-server probes for raw `#`, `Proxy-Authorization`, and invalid
+`Referer` returned 422 with no backend request, dummy response, or marker in
+stdout, stderr, or trace; positive controls passed. In an offline run of the
+standard CLI-launched API server on Windows, the browser sent one dedicated
+HTTP confirmation without ambient Cookie; it returned 200, exact values were
+re-read from LocalFile in a separate process, a separate Project remained
+intact, and a bad Cookie returned 422 without disclosure. No live ComfyUI was
+used. These are reported local results; they are not a whole integrated-
+candidate review or CI run.
+
+### Route, platform, and header-parser limits
+
+The live Web confirmation proxy is the Pages Router API route
+`web/pages/api/projects/[projectId]/pages/[pageNumber]/storyboard/confirm.ts`;
+the Web presentation uses the App Router. An earlier independent-review
+snapshot recorded an App Router proxy path; that path claim is retained as
+historical evidence and is not the live proxy location.
+
+The standard durable confirmation path uses `WindowsPageExecutionFence`. If
+an eligible request reaches that standard fence on Linux, it rejects execution
+and activation maps to HTTP 503 `activation_unavailable`. Standard Linux
+confirmation success remains unverified; in the Storyboard confirmation
+tests, the Linux POSIX fence factory was supplied explicitly. The proposed PR
+#82 acceptance scope is the exercised standard Windows CLI launch and
+dedicated HTTP confirmation. This does not establish final acceptance,
+product-wide Linux behavior, or external-hosting support.
+
+Source inspection shows the `dev` and `start` npm entries both use the shared
+`dev-server.mjs` guard, with `start` selecting production mode. The reported
+runtime probes were development-mode probes; production-mode packaged
+execution and alternate hosting remain unverified. This is not evidence for
+an external-hosting policy.
+
+For Python `Content-Length`, only Windows with Uvicorn 0.54.0 and h11 0.16.0
+has been verified: five reported local Windows probes showed valid identical
+repeated/comma-list lengths exposed to ASGI once, and conflicting/invalid
+lengths rejected before ASGI with HTTP 400. The two focused real-Uvicorn tests
+were separately passed in the Windows CI job; they do not verify this parser
+matrix. Other deployments are unverified. This does not create a normalization
+exemption for Web checks or other fields.
+Historical committed wording required one Content-Length field on the wire;
+the local RFC draft retains a conditional, deployment-specific ASGI
+normalization proposal whose separate formal approval has not been verified.
+The existing draft paragraph was preserved verbatim in this update. This
+observation does not resolve that wording/approval discrepancy; see
+`docs/RFC_V7_015_EXPLICIT_STORYBOARD_PANEL_INPUT.md` under **Implementation
+evidence snapshot**.
+
+### Recovery helper concurrency
+
+`WorkflowRecovery.resume_step` calls `load_for_execution()` and then
+unconditionally calls `save()` without revision compare-and-swap. On a raw
+LocalFile Project that has not been framed or activated, concurrent writes
+through this helper can lose an intervening update because the save has no
+revision check. Serialize writers for the same Project through the helper's
+complete load–execute–save cycle; this remains a tracked P2. The standard
+durable CLI/HTTP confirmation path is fenced separately and is outside this
+helper.
+
+### Current disposition
+
+The last whole-PR review remains limited to an earlier candidate. No final
+whole-candidate independent review or integrated-candidate CI result is
+recorded for the separate local changes above. RFC-V7-015 criteria 7 and 8
+remain HOLD; the Page label/description distinction, inherited
+`load_for_execution()` prevalidation, current full-diff review, PR-body
+synchronization, and deployment limits remain open or unverified. No formal
+RFC amendment or final acceptance has been approved. The recovered 2026-11-12
+approval records remain limited to the two changes they identify; this update
+does not revalidate or reclassify the historical approval dispositions.
+
+Two code-to-RFC review questions remain open. The legacy Storyboard action
+already has the distinct **Storyboard** label but lacks a description that
+distinguishes its behavior from explicit confirmation; RFC-V7-015 requires
+visibly distinct labels and descriptions for both actions. Execution loading
+calls existing `load()` overrides after persisted prevalidation; that ordering
+remains a review question without a coverage claim or formal RFC amendment.
